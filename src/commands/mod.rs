@@ -184,6 +184,42 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "tasks",
+        aliases: &[],
+        description: "List background tasks",
+        hidden: false,
+    },
+    Command {
+        name: "permissions",
+        aliases: &["perms"],
+        description: "Show current permission mode and rules",
+        hidden: false,
+    },
+    Command {
+        name: "theme",
+        aliases: &[],
+        description: "Switch color theme",
+        hidden: false,
+    },
+    Command {
+        name: "stats",
+        aliases: &[],
+        description: "Show session statistics",
+        hidden: false,
+    },
+    Command {
+        name: "log",
+        aliases: &[],
+        description: "Show recent git log",
+        hidden: false,
+    },
+    Command {
+        name: "files",
+        aliases: &[],
+        description: "List files in the working directory",
+        hidden: false,
+    },
+    Command {
         name: "version",
         aliases: &[],
         description: "Show version information",
@@ -540,6 +576,62 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             println!("Verbose mode toggled.");
             CommandResult::Handled
         }
+        Some("tasks") => {
+            CommandResult::Prompt("List all background tasks and their status.".into())
+        }
+        Some("permissions") | Some("perms") => {
+            let config = &engine.state().config;
+            println!("Permission mode: {:?}", config.permissions.default_mode);
+            if config.permissions.rules.is_empty() {
+                println!("No custom rules configured.");
+            } else {
+                println!("Rules:");
+                for rule in &config.permissions.rules {
+                    let pattern = rule.pattern.as_deref().unwrap_or("*");
+                    println!("  {} {} -> {:?}", rule.tool, pattern, rule.action);
+                }
+            }
+            if engine.state().plan_mode {
+                println!("Plan mode: ACTIVE (read-only tools only)");
+            }
+            CommandResult::Handled
+        }
+        Some("theme") => {
+            println!(
+                "Theme: {} (dark is the default)",
+                engine.state().config.ui.theme
+            );
+            println!("Configure in ~/.config/rs-code/config.toml under [ui]");
+            CommandResult::Handled
+        }
+        Some("stats") => {
+            let state = engine.state();
+            let msg_count = state.messages.len();
+            let tool_count = crate::services::history::tool_use_count(&state.messages);
+            let tools_used = crate::services::history::tools_used(&state.messages);
+            println!(
+                "Session stats:\n  \
+                 Turns: {}\n  \
+                 Messages: {msg_count}\n  \
+                 Tool calls: {tool_count}\n  \
+                 Tools used: {}\n  \
+                 Tokens: {}\n  \
+                 Cost: ${:.4}",
+                state.turn_count,
+                tools_used.join(", "),
+                state.total_usage.total(),
+                state.total_cost_usd,
+            );
+            CommandResult::Handled
+        }
+        Some("log") => CommandResult::Prompt(
+            "Show the last 10 git commits with `git log --oneline -10`.".into(),
+        ),
+        Some("files") => CommandResult::Prompt(
+            "List files in the current directory. Use `ls -la` for details \
+                 or Glob for pattern matching."
+                .into(),
+        ),
         Some("version") => {
             println!("rc {}", env!("CARGO_PKG_VERSION"));
             CommandResult::Handled
