@@ -118,6 +118,24 @@ impl QueryEngine {
         &mut self.state
     }
 
+    /// Install a Ctrl+C handler that triggers the cancellation token.
+    /// Call this once at startup. Subsequent Ctrl+C signals during a
+    /// turn will cancel the active operation instead of killing the process.
+    pub fn install_signal_handler(&self) {
+        let cancel = self.cancel.clone();
+        tokio::spawn(async move {
+            loop {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    if cancel.is_cancelled() {
+                        // Second Ctrl+C — hard exit.
+                        std::process::exit(130);
+                    }
+                    cancel.cancel();
+                }
+            }
+        });
+    }
+
     /// Run a single turn: process user input through the full agent loop.
     pub async fn run_turn(&mut self, user_input: &str) -> crate::error::Result<()> {
         self.run_turn_with_sink(user_input, &NullSink).await
@@ -129,6 +147,9 @@ impl QueryEngine {
         user_input: &str,
         sink: &dyn StreamSink,
     ) -> crate::error::Result<()> {
+        // Reset cancellation token for this turn.
+        self.cancel = CancellationToken::new();
+
         // Add the user message to history.
         let user_msg = user_message(user_input);
         self.state.push_message(user_msg);

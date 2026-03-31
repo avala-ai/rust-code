@@ -196,6 +196,9 @@ async fn main() -> anyhow::Result<()> {
     // Load hooks from config.
     engine.load_hooks(&config.hooks);
 
+    // Install Ctrl+C handler for graceful cancellation.
+    engine.install_signal_handler();
+
     // One-shot or interactive mode.
     match cli.prompt {
         Some(prompt) => {
