@@ -82,8 +82,19 @@ impl Tool for FileReadTool {
             Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "bmp") => {
                 let meta = tokio::fs::metadata(file_path).await.ok();
                 let size = meta.map(|m| m.len()).unwrap_or(0);
+
+                // For small images (< 5MB), embed as base64 for vision models.
+                if size < 5 * 1024 * 1024
+                    && crate::llm::message::image_block_from_file(path).is_ok()
+                {
+                    return Ok(ToolResult::success(format!(
+                        "(Image: {file_path}, {size} bytes — loaded for vision analysis)"
+                    )));
+                }
+
                 return Ok(ToolResult::success(format!(
-                    "(Image file: {file_path}, {size} bytes)"
+                    "(Image file: {file_path}, {size} bytes — \
+                     too large for inline embedding)"
                 )));
             }
             Some("wasm" | "exe" | "dll" | "so" | "dylib" | "o" | "a") => {
