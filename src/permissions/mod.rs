@@ -10,6 +10,8 @@
 //! Rules can be configured per-tool and per-pattern (e.g., allow
 //! `Bash` for `git *` commands, deny `FileWrite` outside the project).
 
+pub mod tracking;
+
 use crate::config::{PermissionMode, PermissionRule, PermissionsConfig};
 
 /// Decision from a permission check.
