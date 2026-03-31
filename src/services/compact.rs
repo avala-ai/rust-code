@@ -265,8 +265,8 @@ pub fn parse_prompt_too_long_gap(error_text: &str) -> Option<u64> {
 /// Returns the number of messages removed, or None if compaction failed.
 pub async fn compact_with_llm(
     messages: &mut Vec<Message>,
-    llm: &crate::llm::client::LlmClient,
-    _model: &str,
+    llm: &dyn crate::llm::provider::Provider,
+    model: &str,
 ) -> Option<usize> {
     if messages.len() < 4 {
         return None; // Not enough messages to compact.
@@ -286,16 +286,20 @@ pub async fn compact_with_llm(
 
     // Call the LLM to generate the summary.
     let summary_messages = vec![crate::llm::message::user_message(&summary_prompt)];
-    let request = crate::llm::client::CompletionRequest::simple(
-        &summary_messages,
-        "You are a conversation summarizer. Produce a concise summary \
-         preserving key decisions, file changes, and important context. \
-         Do not use tools.",
-        &[],
-        Some(4096),
-    );
+    let request = crate::llm::provider::ProviderRequest {
+        messages: summary_messages,
+        system_prompt: "You are a conversation summarizer. Produce a concise summary \
+                        preserving key decisions, file changes, and important context. \
+                        Do not use tools."
+            .to_string(),
+        tools: vec![],
+        model: model.to_string(),
+        max_tokens: 4096,
+        temperature: None,
+        enable_caching: false,
+    };
 
-    let mut rx = match llm.stream_completion(request).await {
+    let mut rx = match llm.stream(&request).await {
         Ok(rx) => rx,
         Err(e) => {
             tracing::warn!("Compact LLM call failed: {e}");

@@ -24,8 +24,10 @@ mod ui;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+use std::sync::Arc;
+
 use crate::config::Config;
-use crate::llm::client::LlmClient;
+use crate::llm::provider::{ProviderKind, detect_provider};
 use crate::permissions::PermissionChecker;
 use crate::query::QueryEngine;
 use crate::state::AppState;
@@ -106,8 +108,22 @@ async fn main() -> anyhow::Result<()> {
             anyhow::anyhow!("API key required. Set RC_API_KEY or pass --api-key.")
         })?;
 
-    // Initialize core subsystems.
-    let llm_client = LlmClient::new(&config.api.base_url, api_key, &config.api.model);
+    // Initialize LLM provider based on model/URL auto-detection.
+    let provider_kind = detect_provider(&config.api.model, &config.api.base_url);
+    let llm: Arc<dyn crate::llm::provider::Provider> = match provider_kind {
+        ProviderKind::Anthropic => Arc::new(crate::llm::anthropic::AnthropicProvider::new(
+            &config.api.base_url,
+            api_key,
+        )),
+        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => Arc::new(
+            crate::llm::openai::OpenAiProvider::new(&config.api.base_url, api_key),
+        ),
+    };
+    tracing::info!(
+        "Using {:?} provider at {}",
+        provider_kind,
+        config.api.base_url
+    );
 
     let mut tool_registry = ToolRegistry::default_tools();
     let permission_checker = PermissionChecker::from_config(&config.permissions);
@@ -159,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build the query engine (agent loop).
     let mut engine = QueryEngine::new(
-        llm_client,
+        llm,
         tool_registry,
         permission_checker,
         app_state,

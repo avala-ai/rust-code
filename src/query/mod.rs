@@ -21,10 +21,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::error::LlmError;
 use crate::hooks::{HookEvent, HookRegistry};
-use crate::llm::client::{CompletionRequest, LlmClient};
 use crate::llm::message::*;
+use crate::llm::provider::{Provider, ProviderError, ProviderRequest};
 use crate::llm::stream::StreamEvent;
 use crate::permissions::PermissionChecker;
 use crate::services::compact::{self, CompactTracking, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT};
@@ -45,7 +44,7 @@ pub struct QueryEngineConfig {
 
 /// The query engine orchestrates the agent loop.
 pub struct QueryEngine {
-    llm: LlmClient,
+    llm: Arc<dyn Provider>,
     tools: ToolRegistry,
     permissions: Arc<PermissionChecker>,
     state: AppState,
@@ -78,7 +77,7 @@ impl StreamSink for NullSink {
 
 impl QueryEngine {
     pub fn new(
-        llm: LlmClient,
+        llm: Arc<dyn Provider>,
         tools: ToolRegistry,
         permissions: PermissionChecker,
         state: AppState,
@@ -176,7 +175,7 @@ impl QueryEngine {
                 if post_mc_tokens >= threshold {
                     // Full LLM-based compaction: summarize older messages.
                     info!("Microcompact insufficient, attempting LLM compaction");
-                    match compact::compact_with_llm(&mut self.state.messages, &self.llm, &model)
+                    match compact::compact_with_llm(&mut self.state.messages, &*self.llm, &model)
                         .await
                     {
                         Some(removed) => {
@@ -212,61 +211,71 @@ impl QueryEngine {
             let system_prompt = build_system_prompt(&self.tools, &self.state);
             let tool_schemas = self.tools.schemas();
 
-            let request = CompletionRequest::simple(
-                self.state.history(),
-                &system_prompt,
-                &tool_schemas,
-                self.state.config.api.max_output_tokens,
-            );
+            let request = ProviderRequest {
+                messages: self.state.history().to_vec(),
+                system_prompt: system_prompt.clone(),
+                tools: tool_schemas.clone(),
+                model: model.clone(),
+                max_tokens: self.state.config.api.max_output_tokens.unwrap_or(16384),
+                temperature: None,
+                enable_caching: true,
+            };
 
-            let mut rx = match self.llm.stream_completion(request).await {
+            let mut rx = match self.llm.stream(&request).await {
                 Ok(rx) => {
-                    rate_limit_retries = 0; // Reset on success.
+                    rate_limit_retries = 0;
                     rx
                 }
-                Err(e) => {
-                    match &e {
-                        LlmError::RateLimited { retry_after_ms } => {
-                            rate_limit_retries += 1;
-                            if rate_limit_retries > MAX_RATE_LIMIT_RETRIES {
-                                sink.on_error(&format!(
-                                    "Rate limited {MAX_RATE_LIMIT_RETRIES} times, giving up"
-                                ));
-                                self.state.is_query_active = false;
-                                return Err(e.into());
-                            }
-                            warn!(
-                                "Rate limited (attempt {rate_limit_retries}/{MAX_RATE_LIMIT_RETRIES}), \
+                Err(e) => match &e {
+                    ProviderError::RateLimited { retry_after_ms } => {
+                        rate_limit_retries += 1;
+                        if rate_limit_retries > MAX_RATE_LIMIT_RETRIES {
+                            sink.on_error(&format!(
+                                "Rate limited {MAX_RATE_LIMIT_RETRIES} times, giving up"
+                            ));
+                            self.state.is_query_active = false;
+                            return Err(crate::error::Error::Other(e.to_string()));
+                        }
+                        warn!(
+                            "Rate limited (attempt {rate_limit_retries}/{MAX_RATE_LIMIT_RETRIES}), \
                                  waiting {retry_after_ms}ms"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(*retry_after_ms)).await;
+                        continue;
+                    }
+                    ProviderError::Overloaded => {
+                        rate_limit_retries += 1;
+                        if rate_limit_retries > MAX_RATE_LIMIT_RETRIES {
+                            sink.on_error("Server overloaded, giving up");
+                            self.state.is_query_active = false;
+                            return Err(crate::error::Error::Other(e.to_string()));
+                        }
+                        warn!("Server overloaded, retrying in 5s");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
+                    ProviderError::RequestTooLarge(body) => {
+                        warn!("Request too large, attempting reactive compact");
+                        let gap = compact::parse_prompt_too_long_gap(body);
+                        let freed = compact::microcompact(&mut self.state.messages, 1);
+                        if freed > 0 {
+                            sink.on_compact(freed);
+                            info!(
+                                "Reactive microcompact freed ~{freed} tokens (gap: {:?})",
+                                gap
                             );
-                            tokio::time::sleep(std::time::Duration::from_millis(*retry_after_ms))
-                                .await;
                             continue;
                         }
-                        LlmError::Api { status, body } if *status == 413 => {
-                            // Prompt too long — try reactive compact.
-                            warn!("Prompt too long (413), attempting reactive compact");
-                            let gap = compact::parse_prompt_too_long_gap(body);
-                            let freed = compact::microcompact(&mut self.state.messages, 1);
-                            if freed > 0 {
-                                sink.on_compact(freed);
-                                info!(
-                                    "Reactive microcompact freed ~{freed} tokens (gap: {:?})",
-                                    gap
-                                );
-                                continue; // Retry with smaller context.
-                            }
-                            sink.on_error("Context too large and compaction failed");
-                            self.state.is_query_active = false;
-                            return Err(e.into());
-                        }
-                        _ => {
-                            sink.on_error(&e.to_string());
-                            self.state.is_query_active = false;
-                            return Err(e.into());
-                        }
+                        sink.on_error("Context too large and compaction failed");
+                        self.state.is_query_active = false;
+                        return Err(crate::error::Error::Other(e.to_string()));
                     }
-                }
+                    _ => {
+                        sink.on_error(&e.to_string());
+                        self.state.is_query_active = false;
+                        return Err(crate::error::Error::Other(e.to_string()));
+                    }
+                },
             };
 
             // Step 4: Accumulate content blocks from the stream.
