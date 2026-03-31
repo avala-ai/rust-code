@@ -260,6 +260,132 @@ pub fn parse_prompt_too_long_gap(error_text: &str) -> Option<u64> {
     if gap > 0 { Some(gap) } else { None }
 }
 
+/// Perform full LLM-based compaction of the conversation history.
+///
+/// Splits the message history into two parts: messages to summarize
+/// (older) and messages to keep (recent). Calls the LLM to generate
+/// a summary, then replaces the old messages with:
+/// 1. A compact boundary marker
+/// 2. A summary message (as a user message with is_compact_summary=true)
+/// 3. The kept recent messages
+///
+/// Returns the number of messages removed, or None if compaction failed.
+pub async fn compact_with_llm(
+    messages: &mut Vec<Message>,
+    llm: &crate::llm::client::LlmClient,
+    model: &str,
+) -> Option<usize> {
+    if messages.len() < 4 {
+        return None; // Not enough messages to compact.
+    }
+
+    // Keep the most recent messages (at least 40K tokens worth, or
+    // minimum 5 messages with text content).
+    let keep_count = calculate_keep_count(messages);
+    let split_point = messages.len().saturating_sub(keep_count);
+
+    if split_point < 2 {
+        return None; // Not enough to summarize.
+    }
+
+    let to_summarize = &messages[..split_point];
+    let summary_prompt = build_compact_summary_prompt(to_summarize);
+
+    // Call the LLM to generate the summary.
+    let request = crate::llm::client::CompletionRequest {
+        messages: &[crate::llm::message::user_message(&summary_prompt)],
+        system_prompt: "You are a conversation summarizer. Produce a concise summary \
+                        preserving key decisions, file changes, and important context. \
+                        Do not use tools.",
+        tools: &[],
+        max_tokens: Some(4096),
+    };
+
+    let mut rx = match llm.stream_completion(request).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            tracing::warn!("Compact LLM call failed: {e}");
+            return None;
+        }
+    };
+
+    // Collect the summary text.
+    let mut summary = String::new();
+    while let Some(event) = rx.recv().await {
+        if let crate::llm::stream::StreamEvent::TextDelta(text) = event {
+            summary.push_str(&text);
+        }
+    }
+
+    if summary.is_empty() {
+        return None;
+    }
+
+    // Replace old messages with boundary + summary + kept messages.
+    let kept = messages[split_point..].to_vec();
+    let removed = split_point;
+
+    messages.clear();
+    messages.push(compact_boundary_message(&summary));
+    messages.push(Message::User(UserMessage {
+        uuid: Uuid::new_v4(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        content: vec![ContentBlock::Text {
+            text: format!(
+                "[Conversation compacted. Prior context summary:]\n\n{summary}"
+            ),
+        }],
+        is_meta: true,
+        is_compact_summary: true,
+    }));
+    messages.extend(kept);
+
+    tracing::info!("Compacted {removed} messages into summary");
+    Some(removed)
+}
+
+/// Calculate how many recent messages to keep during compaction.
+///
+/// Keeps at least 5 messages with text content, or messages totaling
+/// at least 10K estimated tokens, whichever is more.
+fn calculate_keep_count(messages: &[Message]) -> usize {
+    let min_text_messages = 5;
+    let min_tokens = 10_000u64;
+    let max_tokens = 40_000u64;
+
+    let mut count = 0usize;
+    let mut text_count = 0usize;
+    let mut token_total = 0u64;
+
+    // Walk backwards from the end.
+    for msg in messages.iter().rev() {
+        let tokens = crate::services::tokens::estimate_message_tokens(msg);
+        token_total += tokens;
+        count += 1;
+
+        // Count messages with text content.
+        let has_text = match msg {
+            Message::User(u) => u.content.iter().any(|b| matches!(b, ContentBlock::Text { .. })),
+            Message::Assistant(a) => a.content.iter().any(|b| matches!(b, ContentBlock::Text { .. })),
+            _ => false,
+        };
+        if has_text {
+            text_count += 1;
+        }
+
+        // Stop if we've met both minimums.
+        if text_count >= min_text_messages && token_total >= min_tokens {
+            break;
+        }
+        // Hard cap.
+        if token_total >= max_tokens {
+            break;
+        }
+    }
+
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

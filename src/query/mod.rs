@@ -153,14 +153,34 @@ impl QueryEngine {
                 // Check if microcompact was enough.
                 let post_mc_tokens = tokens::estimate_context_tokens(self.state.history());
                 if post_mc_tokens >= threshold {
-                    // Full compaction needed — for now, do aggressive microcompact
-                    // keeping only the most recent 2 tool results.
-                    let freed2 = compact::microcompact(&mut self.state.messages, 2);
-                    if freed2 > 0 {
-                        sink.on_compact(freed2);
-                        info!("Aggressive microcompact freed ~{freed2} additional tokens");
+                    // Full LLM-based compaction: summarize older messages.
+                    info!("Microcompact insufficient, attempting LLM compaction");
+                    match compact::compact_with_llm(
+                        &mut self.state.messages,
+                        &self.llm,
+                        &model,
+                    )
+                    .await
+                    {
+                        Some(removed) => {
+                            info!("LLM compaction removed {removed} messages");
+                            compact_tracking.was_compacted = true;
+                            compact_tracking.consecutive_failures = 0;
+                        }
+                        None => {
+                            compact_tracking.consecutive_failures += 1;
+                            warn!(
+                                "LLM compaction failed (attempt {})",
+                                compact_tracking.consecutive_failures
+                            );
+                            // Fallback: aggressive microcompact.
+                            let freed2 =
+                                compact::microcompact(&mut self.state.messages, 2);
+                            if freed2 > 0 {
+                                sink.on_compact(freed2);
+                            }
+                        }
                     }
-                    compact_tracking.was_compacted = true;
                 }
             }
 
