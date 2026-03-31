@@ -112,6 +112,30 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "review",
+        aliases: &[],
+        description: "Ask the agent to review the current diff",
+        hidden: false,
+    },
+    Command {
+        name: "doctor",
+        aliases: &[],
+        description: "Check environment and configuration health",
+        hidden: false,
+    },
+    Command {
+        name: "mcp",
+        aliases: &[],
+        description: "Show connected MCP servers and tools",
+        hidden: false,
+    },
+    Command {
+        name: "plan",
+        aliases: &[],
+        description: "Toggle plan mode (read-only)",
+        hidden: false,
+    },
+    Command {
         name: "verbose",
         aliases: &[],
         description: "Toggle verbose output",
@@ -291,6 +315,71 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                     let desc = skill.metadata.description.as_deref().unwrap_or("");
                     println!("  {}{} — {}", skill.name, invocable, desc);
                 }
+            }
+            CommandResult::Handled
+        }
+        Some("review") => {
+            CommandResult::Prompt(
+                "Review the current git diff. Look for bugs, security issues, \
+                 code quality problems, and suggest improvements."
+                    .to_string(),
+            )
+        }
+        Some("doctor") => {
+            // Quick environment check.
+            let mut checks = Vec::new();
+
+            // Check for required tools.
+            for tool in &["git", "rg", "bash"] {
+                let available = std::process::Command::new("which")
+                    .arg(tool)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                checks.push(format!(
+                    "  {} {}",
+                    if available { "✓" } else { "✗" },
+                    tool,
+                ));
+            }
+
+            // Config status.
+            let config = &engine.state().config;
+            checks.push(format!("  Model: {}", config.api.model));
+            checks.push(format!(
+                "  API key: {}",
+                if config.api.api_key.is_some() { "set" } else { "missing" }
+            ));
+
+            println!("Environment check:\n{}", checks.join("\n"));
+            CommandResult::Handled
+        }
+        Some("mcp") => {
+            let server_count = engine.state().config.mcp_servers.len();
+            if server_count == 0 {
+                println!("No MCP servers configured.");
+            } else {
+                println!("{server_count} MCP server(s) configured:");
+                for (name, entry) in &engine.state().config.mcp_servers {
+                    let transport = if entry.command.is_some() {
+                        "stdio"
+                    } else if entry.url.is_some() {
+                        "sse"
+                    } else {
+                        "unknown"
+                    };
+                    println!("  {name} ({transport})");
+                }
+            }
+            CommandResult::Handled
+        }
+        Some("plan") => {
+            let plan_mode = &mut engine.state_mut().plan_mode;
+            *plan_mode = !*plan_mode;
+            if *plan_mode {
+                println!("Plan mode enabled. Only read-only tools available.");
+            } else {
+                println!("Plan mode disabled. All tools available.");
             }
             CommandResult::Handled
         }
