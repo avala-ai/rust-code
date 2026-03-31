@@ -6,7 +6,7 @@
 //!
 //! Default ratio: 4 bytes per token (conservative for most content).
 
-use crate::llm::message::{ContentBlock, Message, Usage};
+use crate::llm::message::{ContentBlock, Message};
 
 /// Default bytes per token for estimation.
 const BYTES_PER_TOKEN: f64 = 4.0;

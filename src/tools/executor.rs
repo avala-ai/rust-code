@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 
-use crate::error::ToolError;
 use crate::llm::message::ContentBlock;
 use crate::permissions::{PermissionChecker, PermissionDecision};
 

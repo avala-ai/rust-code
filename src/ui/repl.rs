@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use crossterm::style::{self, Stylize};
+use crossterm::style::Stylize;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 

@@ -21,7 +21,6 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
-use crate::error::Result;
 use crate::llm::client::LlmClient;
 use crate::permissions::PermissionChecker;
 use crate::query::QueryEngine;
