@@ -25,6 +25,7 @@ impl ToolRegistry {
         registry.register(Arc::new(super::file_edit::FileEditTool));
         registry.register(Arc::new(super::grep::GrepTool));
         registry.register(Arc::new(super::glob::GlobTool));
+        registry.register(Arc::new(super::notebook_edit::NotebookEditTool));
         registry.register(Arc::new(super::web_fetch::WebFetchTool));
         registry.register(Arc::new(super::ask_user::AskUserQuestionTool));
         registry
