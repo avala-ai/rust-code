@@ -10,5 +10,6 @@ pub mod coordinator;
 pub mod git;
 pub mod lsp;
 pub mod mcp;
+pub mod plugins;
 pub mod session;
 pub mod tokens;
