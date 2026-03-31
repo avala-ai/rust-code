@@ -35,9 +35,7 @@ impl FileCache {
 
     /// Read a file, returning cached content if still fresh.
     pub fn read(&mut self, path: &Path) -> Result<String, String> {
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
         // Check if cached entry is still valid.
         if let Some(cached) = self.entries.get(&canonical) {
@@ -51,11 +49,10 @@ impl FileCache {
         }
 
         // Read fresh.
-        let content = std::fs::read_to_string(&canonical)
-            .map_err(|e| format!("read error: {e}"))?;
+        let content =
+            std::fs::read_to_string(&canonical).map_err(|e| format!("read error: {e}"))?;
 
-        let meta = std::fs::metadata(&canonical)
-            .map_err(|e| format!("metadata error: {e}"))?;
+        let meta = std::fs::metadata(&canonical).map_err(|e| format!("metadata error: {e}"))?;
 
         let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let size = content.len();
@@ -85,9 +82,7 @@ impl FileCache {
 
     /// Invalidate the cache entry for a file (e.g., after a write).
     pub fn invalidate(&mut self, path: &Path) {
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
         if let Some(evicted) = self.entries.remove(&canonical) {
             self.total_bytes -= evicted.size;

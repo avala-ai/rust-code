@@ -12,12 +12,12 @@
 use std::time::Duration;
 
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::error::LlmError;
-use crate::llm::message::{messages_to_api_params, Message};
+use crate::llm::message::{Message, messages_to_api_params};
 use crate::llm::stream::{RawSseEvent, StreamEvent, StreamParser};
 use crate::tools::ToolSchema;
 
@@ -151,13 +151,9 @@ impl LlmClient {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             "x-api-key",
-            HeaderValue::from_str(&self.api_key)
-                .map_err(|e| LlmError::AuthError(e.to_string()))?,
+            HeaderValue::from_str(&self.api_key).map_err(|e| LlmError::AuthError(e.to_string()))?,
         );
-        headers.insert(
-            "anthropic-version",
-            HeaderValue::from_static("2023-06-01"),
-        );
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
         // Collect beta features to enable.
         let mut betas: Vec<&str> = Vec::new();
@@ -178,8 +174,7 @@ impl LlmClient {
         if !betas.is_empty() {
             headers.insert(
                 "anthropic-beta",
-                HeaderValue::from_str(&betas.join(","))
-                    .unwrap_or(HeaderValue::from_static("")),
+                HeaderValue::from_str(&betas.join(",")).unwrap_or(HeaderValue::from_static("")),
             );
         }
 
@@ -339,8 +334,7 @@ impl LlmClient {
                                         if matches!(event, StreamEvent::TextDelta(_)) {
                                             first_token = true;
                                             let ttft = start.elapsed().as_millis() as u64;
-                                            let _ =
-                                                tx.send(StreamEvent::Ttft(ttft)).await;
+                                            let _ = tx.send(StreamEvent::Ttft(ttft)).await;
                                         }
                                     }
                                     if tx.send(event).await.is_err() {

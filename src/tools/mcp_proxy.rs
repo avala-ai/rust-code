@@ -25,11 +25,7 @@ pub struct McpProxyTool {
 }
 
 impl McpProxyTool {
-    pub fn new(
-        definition: McpTool,
-        server_name: &str,
-        client: Arc<Mutex<McpClient>>,
-    ) -> Self {
+    pub fn new(definition: McpTool, server_name: &str, client: Arc<Mutex<McpClient>>) -> Self {
         let qualified_name = format!(
             "mcp__{}__{}",
             normalize_name(server_name),
@@ -76,7 +72,7 @@ impl Tool for McpProxyTool {
     async fn call(
         &self,
         input: serde_json::Value,
-        ctx: &ToolContext,
+        _ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let client = self.client.lock().await;
 
@@ -110,7 +106,13 @@ impl Tool for McpProxyTool {
 /// Normalize a name for use in qualified tool names (lowercase, replace spaces/special chars).
 fn normalize_name(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

@@ -120,13 +120,19 @@ pub async fn execute_tool_calls(
                         let ctx_plan_mode = ctx.plan_mode;
                         // Read-only tools still go through permission checks.
                         handles.push(tokio::spawn(async move {
-                            execute_single_tool(&call, &*tool, &ToolContext {
-                                cwd: ctx_cwd,
-                                cancel: ctx_cancel,
-                                permission_checker: perm_checker.clone(),
-                                verbose: ctx_verbose,
-                                plan_mode: ctx_plan_mode,
-                            }, &*perm_checker).await
+                            execute_single_tool(
+                                &call,
+                                &*tool,
+                                &ToolContext {
+                                    cwd: ctx_cwd,
+                                    cancel: ctx_cancel,
+                                    permission_checker: perm_checker.clone(),
+                                    verbose: ctx_verbose,
+                                    plan_mode: ctx_plan_mode,
+                                },
+                                &*perm_checker,
+                            )
+                            .await
                         }));
                     }
 
@@ -169,13 +175,16 @@ async fn execute_single_tool(
             tool_name: call.name.clone(),
             result: ToolResult::error(
                 "Plan mode active: only read-only tools are allowed. \
-                 Use ExitPlanMode to enable mutations.".to_string(),
+                 Use ExitPlanMode to enable mutations."
+                    .to_string(),
             ),
         };
     }
 
     // Check permissions.
-    let decision = tool.check_permissions(&call.input, permission_checker).await;
+    let decision = tool
+        .check_permissions(&call.input, permission_checker)
+        .await;
     match decision {
         PermissionDecision::Allow => {}
         PermissionDecision::Deny(reason) => {
@@ -191,9 +200,7 @@ async fn execute_single_tool(
             return ToolCallResult {
                 tool_use_id: call.id.clone(),
                 tool_name: call.name.clone(),
-                result: ToolResult::error(format!(
-                    "Permission required (would ask): {prompt}"
-                )),
+                result: ToolResult::error(format!("Permission required (would ask): {prompt}")),
             };
         }
     }
@@ -214,9 +221,7 @@ async fn execute_single_tool(
             let max = tool.max_result_size_chars();
             if result.content.len() > max {
                 result.content.truncate(max);
-                result
-                    .content
-                    .push_str("\n\n(output truncated)");
+                result.content.push_str("\n\n(output truncated)");
             }
             ToolCallResult {
                 tool_use_id: call.id.clone(),

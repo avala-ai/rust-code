@@ -104,9 +104,7 @@ impl HookRegistry {
                 }
                 HookAction::Http { url, method } => {
                     let client = reqwest::Client::new();
-                    let method = method
-                        .as_deref()
-                        .unwrap_or("POST");
+                    let method = method.as_deref().unwrap_or("POST");
                     let req = match method {
                         "GET" => client.get(url),
                         _ => client.post(url),

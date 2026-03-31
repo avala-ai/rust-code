@@ -100,7 +100,11 @@ impl PluginRegistry {
 
             match load_plugin(&path) {
                 Ok(plugin) => {
-                    debug!("Loaded plugin '{}' from {}", plugin.manifest.name, path.display());
+                    debug!(
+                        "Loaded plugin '{}' from {}",
+                        plugin.manifest.name,
+                        path.display()
+                    );
                     self.plugins.push(plugin);
                 }
                 Err(e) => {
@@ -140,11 +144,11 @@ impl PluginRegistry {
 
 fn load_plugin(path: &Path) -> Result<Plugin, String> {
     let manifest_path = path.join("plugin.toml");
-    let content = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("Read error: {e}"))?;
+    let content =
+        std::fs::read_to_string(&manifest_path).map_err(|e| format!("Read error: {e}"))?;
 
-    let manifest: PluginManifest = toml::from_str(&content)
-        .map_err(|e| format!("Parse error: {e}"))?;
+    let manifest: PluginManifest =
+        toml::from_str(&content).map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(Plugin {
         manifest,

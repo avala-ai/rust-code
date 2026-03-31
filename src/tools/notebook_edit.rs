@@ -108,13 +108,16 @@ impl Tool for NotebookEditTool {
                 let idx = edit
                     .get("cell_index")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| ToolError::InvalidInput("'cell_index' required for replace".into()))?
-                    as usize;
+                    .ok_or_else(|| {
+                        ToolError::InvalidInput("'cell_index' required for replace".into())
+                    })? as usize;
 
-                let new_content = edit
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::InvalidInput("'content' required for replace".into()))?;
+                let new_content =
+                    edit.get("content")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            ToolError::InvalidInput("'content' required for replace".into())
+                        })?;
 
                 if idx >= cells.len() {
                     return Err(ToolError::InvalidInput(format!(
@@ -147,10 +150,7 @@ impl Tool for NotebookEditTool {
                     .and_then(|v| v.as_str())
                     .unwrap_or("code");
 
-                let new_content = edit
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let new_content = edit.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
                 let source_lines: Vec<serde_json::Value> = new_content
                     .lines()
@@ -180,8 +180,9 @@ impl Tool for NotebookEditTool {
                 let idx = edit
                     .get("cell_index")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| ToolError::InvalidInput("'cell_index' required for delete".into()))?
-                    as usize;
+                    .ok_or_else(|| {
+                        ToolError::InvalidInput("'cell_index' required for delete".into())
+                    })? as usize;
 
                 if idx >= cells.len() {
                     return Err(ToolError::InvalidInput(format!(

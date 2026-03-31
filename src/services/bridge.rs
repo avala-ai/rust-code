@@ -15,13 +15,10 @@
 //! The bridge runs on localhost with a random high port. The port
 //! is written to a lock file so IDE extensions can discover it.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Bridge server state shared across request handlers.
 pub struct BridgeState {

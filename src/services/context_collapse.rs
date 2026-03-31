@@ -14,7 +14,7 @@
 //! Snipped messages are replaced with a "[messages snipped]" marker
 //! in the API-facing view, while the UI retains the full history.
 
-use crate::llm::message::{ContentBlock, Message};
+use crate::llm::message::Message;
 use crate::services::tokens;
 
 /// Result of a context collapse operation.
@@ -33,10 +33,7 @@ pub struct CollapseResult {
 /// keeping the first message (summary/context) and the most recent
 /// messages intact. Groups are removed oldest-first until the
 /// budget is met.
-pub fn collapse_to_budget(
-    messages: &[Message],
-    max_tokens: u64,
-) -> Option<CollapseResult> {
+pub fn collapse_to_budget(messages: &[Message], max_tokens: u64) -> Option<CollapseResult> {
     let current = tokens::estimate_context_tokens(messages);
     if current <= max_tokens {
         return None; // Already within budget.
@@ -57,7 +54,10 @@ pub fn collapse_to_budget(
 
     for group_idx in 1..groups.len().saturating_sub(1) {
         let group = &groups[group_idx];
-        let group_tokens: u64 = group.iter().map(|m| tokens::estimate_message_tokens(m)).sum();
+        let group_tokens: u64 = group
+            .iter()
+            .map(|m| tokens::estimate_message_tokens(m))
+            .sum();
         freed += group_tokens;
         snip_end = group_idx + 1;
 
@@ -101,9 +101,7 @@ pub fn recover_from_overflow(
     token_gap: Option<u64>,
 ) -> Option<CollapseResult> {
     // If we know the gap, target that plus 10% buffer.
-    let target = token_gap
-        .map(|gap| gap + gap / 10)
-        .unwrap_or(20_000);
+    let target = token_gap.map(|gap| gap + gap / 10).unwrap_or(20_000);
 
     let current = tokens::estimate_context_tokens(messages);
     let budget = current.saturating_sub(target);

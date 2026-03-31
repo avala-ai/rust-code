@@ -49,7 +49,11 @@ impl Tool for EnterWorktreeTool {
             .unwrap_or_else(|| {
                 format!(
                     "worktree-{}",
-                    uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("tmp")
+                    uuid::Uuid::new_v4()
+                        .to_string()
+                        .split('-')
+                        .next()
+                        .unwrap_or("tmp")
                 )
             });
 
@@ -65,7 +69,9 @@ impl Tool for EnterWorktreeTool {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Ok(ToolResult::error(format!("Worktree creation failed: {stderr}")));
+            return Ok(ToolResult::error(format!(
+                "Worktree creation failed: {stderr}"
+            )));
         }
 
         Ok(ToolResult::success(format!(

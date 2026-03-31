@@ -47,14 +47,16 @@ pub fn extract_text(messages: &[Message]) -> String {
 
 /// Find the index of the last user message (non-meta).
 pub fn last_user_message_index(messages: &[Message]) -> Option<usize> {
-    messages.iter().rposition(|m| {
-        matches!(m, Message::User(u) if !u.is_meta)
-    })
+    messages
+        .iter()
+        .rposition(|m| matches!(m, Message::User(u) if !u.is_meta))
 }
 
 /// Find the index of the last assistant message.
 pub fn last_assistant_index(messages: &[Message]) -> Option<usize> {
-    messages.iter().rposition(|m| matches!(m, Message::Assistant(_)))
+    messages
+        .iter()
+        .rposition(|m| matches!(m, Message::Assistant(_)))
 }
 
 /// Count tool use blocks in the conversation.
@@ -106,7 +108,7 @@ pub fn truncate_to_budget(messages: &mut Vec<Message>, max_tokens: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::message::{user_message, AssistantMessage, ContentBlock};
+    use crate::llm::message::{AssistantMessage, ContentBlock, user_message};
     use uuid::Uuid;
 
     fn assistant_msg(text: &str) -> Message {

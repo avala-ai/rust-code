@@ -56,11 +56,7 @@ pub fn check_budget(
             if ratio >= config.warning_threshold {
                 return BudgetDecision::ContinueWithWarning {
                     percent_used: ratio * 100.0,
-                    message: format!(
-                        "Cost at {:.0}% of ${:.4} budget",
-                        ratio * 100.0,
-                        max_cost
-                    ),
+                    message: format!("Cost at {:.0}% of ${:.4} budget", ratio * 100.0, max_cost),
                 };
             }
         }
@@ -81,11 +77,7 @@ pub fn check_budget(
             if ratio >= config.warning_threshold {
                 return BudgetDecision::ContinueWithWarning {
                     percent_used: ratio * 100.0,
-                    message: format!(
-                        "Tokens at {:.0}% of {} budget",
-                        ratio * 100.0,
-                        max_tokens
-                    ),
+                    message: format!("Tokens at {:.0}% of {} budget", ratio * 100.0, max_tokens),
                 };
             }
         }
@@ -134,10 +126,7 @@ mod tests {
             max_cost_usd: Some(1.0),
             ..Default::default()
         };
-        assert_eq!(
-            check_budget(0.5, 0, &config),
-            BudgetDecision::Continue
-        );
+        assert_eq!(check_budget(0.5, 0, &config), BudgetDecision::Continue);
     }
 
     #[test]

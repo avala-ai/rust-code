@@ -48,7 +48,11 @@ pub async fn current_branch(cwd: &Path) -> Option<String> {
 
     if output.status.success() {
         let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if branch.is_empty() { None } else { Some(branch) }
+        if branch.is_empty() {
+            None
+        } else {
+            Some(branch)
+        }
     } else {
         None
     }
@@ -80,7 +84,9 @@ pub async fn status(cwd: &Path) -> Result<String, String> {
 
 /// Get staged and unstaged diff.
 pub async fn diff(cwd: &Path) -> Result<String, String> {
-    let staged = run_git(cwd, &["diff", "--cached"]).await.unwrap_or_default();
+    let staged = run_git(cwd, &["diff", "--cached"])
+        .await
+        .unwrap_or_default();
     let unstaged = run_git(cwd, &["diff"]).await.unwrap_or_default();
 
     let mut result = String::new();
@@ -103,11 +109,7 @@ pub async fn diff(cwd: &Path) -> Result<String, String> {
 
 /// Get recent commit log.
 pub async fn log(cwd: &Path, count: usize) -> Result<String, String> {
-    run_git(
-        cwd,
-        &["log", "--oneline", &format!("-{count}")],
-    )
-    .await
+    run_git(cwd, &["log", "--oneline", &format!("-{count}")]).await
 }
 
 /// Get blame for a file (abbreviated).
@@ -138,11 +140,7 @@ pub fn parse_diff(diff_text: &str) -> Vec<DiffFile> {
             }
 
             // Extract file path from "diff --git a/path b/path".
-            let path = line
-                .split(" b/")
-                .nth(1)
-                .unwrap_or("unknown")
-                .to_string();
+            let path = line.split(" b/").nth(1).unwrap_or("unknown").to_string();
 
             current_file = Some(DiffFile {
                 path,

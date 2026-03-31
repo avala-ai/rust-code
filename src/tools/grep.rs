@@ -89,9 +89,7 @@ impl Tool for GrepTool {
             .get("case_insensitive")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let context_lines = input
-            .get("context_lines")
-            .and_then(|v| v.as_u64());
+        let context_lines = input.get("context_lines").and_then(|v| v.as_u64());
         let max_results = input
             .get("max_results")
             .and_then(|v| v.as_u64())

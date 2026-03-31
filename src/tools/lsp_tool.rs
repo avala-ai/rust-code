@@ -72,7 +72,9 @@ impl Tool for LspTool {
                 let file = input
                     .get("file_path")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::InvalidInput("'file_path' required for diagnostics".into()))?;
+                    .ok_or_else(|| {
+                        ToolError::InvalidInput("'file_path' required for diagnostics".into())
+                    })?;
 
                 // Shell out to common linters as a fallback when no LSP is connected.
                 let ext = std::path::Path::new(file)
@@ -111,12 +113,10 @@ impl Tool for LspTool {
                     Ok(ToolResult::success(combined.to_string()))
                 }
             }
-            "definition" | "references" | "symbols" => {
-                Ok(ToolResult::success(format!(
-                    "LSP '{action}' requires a connected language server. \
+            "definition" | "references" | "symbols" => Ok(ToolResult::success(format!(
+                "LSP '{action}' requires a connected language server. \
                      Configure one in your settings to enable this feature."
-                )))
-            }
+            ))),
             other => Err(ToolError::InvalidInput(format!(
                 "Unknown action '{other}'. Use: diagnostics, definition, references, symbols"
             ))),

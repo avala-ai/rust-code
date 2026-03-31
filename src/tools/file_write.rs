@@ -74,9 +74,9 @@ impl Tool for FileWriteTool {
             })?;
         }
 
-        tokio::fs::write(&path, content).await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("Failed to write {file_path}: {e}"))
-        })?;
+        tokio::fs::write(&path, content)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write {file_path}: {e}")))?;
 
         let lines = content.lines().count();
         let bytes = content.len();

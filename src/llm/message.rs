@@ -215,8 +215,7 @@ pub fn user_message(text: impl Into<String>) -> Message {
 /// Reads the file, base64-encodes it, and infers the media type
 /// from the file extension.
 pub fn image_block_from_file(path: &std::path::Path) -> Result<ContentBlock, String> {
-    let data = std::fs::read(path)
-        .map_err(|e| format!("Failed to read image: {e}"))?;
+    let data = std::fs::read(path).map_err(|e| format!("Failed to read image: {e}"))?;
 
     let media_type = match path.extension().and_then(|e| e.to_str()) {
         Some("png") => "image/png",
@@ -231,7 +230,9 @@ pub fn image_block_from_file(path: &std::path::Path) -> Result<ContentBlock, Str
     let mut encoded = String::new();
     {
         let mut encoder = base64_encode_writer(&mut encoded);
-        encoder.write_all(&data).map_err(|e| format!("base64 error: {e}"))?;
+        encoder
+            .write_all(&data)
+            .map_err(|e| format!("base64 error: {e}"))?;
     }
 
     Ok(ContentBlock::Image {
@@ -242,7 +243,10 @@ pub fn image_block_from_file(path: &std::path::Path) -> Result<ContentBlock, Str
 
 /// Simple base64 encoder (no external dependency).
 fn base64_encode_writer(output: &mut String) -> Base64Writer<'_> {
-    Base64Writer { output, buffer: Vec::new() }
+    Base64Writer {
+        output,
+        buffer: Vec::new(),
+    }
 }
 
 struct Base64Writer<'a> {
@@ -262,9 +266,10 @@ impl<'a> std::io::Write for Base64Writer<'a> {
             let b0 = self.buffer[i] as usize;
             let b1 = self.buffer[i + 1] as usize;
             let b2 = self.buffer[i + 2] as usize;
-            self.output.push(CHARS[(b0 >> 2)] as char);
+            self.output.push(CHARS[b0 >> 2] as char);
             self.output.push(CHARS[((b0 & 3) << 4) | (b1 >> 4)] as char);
-            self.output.push(CHARS[((b1 & 0xf) << 2) | (b2 >> 6)] as char);
+            self.output
+                .push(CHARS[((b1 & 0xf) << 2) | (b2 >> 6)] as char);
             self.output.push(CHARS[b2 & 0x3f] as char);
             i += 3;
         }
@@ -295,7 +300,9 @@ pub fn image_message(path: &std::path::Path, caption: &str) -> Result<Message, S
         timestamp: chrono::Utc::now().to_rfc3339(),
         content: vec![
             image,
-            ContentBlock::Text { text: caption.to_string() },
+            ContentBlock::Text {
+                text: caption.to_string(),
+            },
         ],
         is_meta: false,
         is_compact_summary: false,

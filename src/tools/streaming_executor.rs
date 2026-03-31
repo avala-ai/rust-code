@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::llm::message::ContentBlock;
 use crate::permissions::PermissionChecker;
 
-use super::executor::{execute_tool_calls, PendingToolCall, ToolCallResult};
+use super::executor::{PendingToolCall, ToolCallResult, execute_tool_calls};
 use super::{Tool, ToolContext};
 
 /// Receives tool_use blocks as they finish streaming, queues and
@@ -58,19 +58,11 @@ impl StreamingToolRunner {
                 }
 
                 // Execute the batch.
-                let results = execute_tool_calls(
-                    &batch,
-                    &tools,
-                    &ctx,
-                    &permission_checker,
-                )
-                .await;
+                let results = execute_tool_calls(&batch, &tools, &ctx, &permission_checker).await;
 
                 for result in results {
                     // If a tool failed critically, cancel siblings.
-                    if result.result.is_error
-                        && is_critical_failure(&result.result.content)
-                    {
+                    if result.result.is_error && is_critical_failure(&result.result.content) {
                         cancel.cancel();
                     }
 

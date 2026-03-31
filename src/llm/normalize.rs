@@ -79,17 +79,13 @@ pub fn validate_alternation(messages: &[Message]) -> Result<(), String> {
             Message::System(_) => continue, // System messages don't count.
             Message::User(_) => {
                 if !expect_user {
-                    return Err(format!(
-                        "Message {i}: expected assistant, got user"
-                    ));
+                    return Err(format!("Message {i}: expected assistant, got user"));
                 }
                 expect_user = false;
             }
             Message::Assistant(_) => {
                 if expect_user {
-                    return Err(format!(
-                        "Message {i}: expected user, got assistant"
-                    ));
+                    return Err(format!("Message {i}: expected user, got assistant"));
                 }
                 expect_user = true;
             }
@@ -149,7 +145,10 @@ mod tests {
         // Should have added a synthetic error result.
         assert_eq!(messages.len(), 2);
         if let Message::User(u) = &messages[1] {
-            assert!(matches!(&u.content[0], ContentBlock::ToolResult { is_error: true, .. }));
+            assert!(matches!(
+                &u.content[0],
+                ContentBlock::ToolResult { is_error: true, .. }
+            ));
         } else {
             panic!("Expected user message with tool result");
         }

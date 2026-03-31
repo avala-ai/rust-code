@@ -85,7 +85,10 @@ impl McpTransportConnection {
                 debug!("MCP SSE server reachable at {base_url}");
             }
             Ok(resp) => {
-                debug!("MCP SSE server returned {}, proceeding anyway", resp.status());
+                debug!(
+                    "MCP SSE server returned {}, proceeding anyway",
+                    resp.status()
+                );
             }
             Err(e) => {
                 warn!("MCP SSE server health check failed: {e}, proceeding anyway");
@@ -157,10 +160,7 @@ impl McpTransportConnection {
                     .map_err(|e| format!("Invalid JSON-RPC response: {e}"))?;
 
                 if let Some(error) = response.error {
-                    return Err(format!(
-                        "MCP error ({}): {}",
-                        error.code, error.message
-                    ));
+                    return Err(format!("MCP error ({}): {}", error.code, error.message));
                 }
 
                 response
@@ -188,10 +188,7 @@ impl McpTransportConnection {
                     .map_err(|e| format!("SSE response parse error: {e}"))?;
 
                 if let Some(error) = response.error {
-                    return Err(format!(
-                        "MCP error ({}): {}",
-                        error.code, error.message
-                    ));
+                    return Err(format!("MCP error ({}): {}", error.code, error.message));
                 }
 
                 response
@@ -227,7 +224,10 @@ impl McpTransportConnection {
                     .write_all(b"\n")
                     .await
                     .map_err(|e| format!("Failed to write newline: {e}"))?;
-                stdin.flush().await.map_err(|e| format!("Flush failed: {e}"))?;
+                stdin
+                    .flush()
+                    .await
+                    .map_err(|e| format!("Flush failed: {e}"))?;
             }
             TransportInner::Sse { base_url, http } => {
                 let url = format!("{base_url}/jsonrpc");

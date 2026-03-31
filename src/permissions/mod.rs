@@ -85,9 +85,7 @@ impl PermissionChecker {
                 }
             }
             if matches!(rule.action, PermissionMode::Deny) {
-                return PermissionDecision::Deny(format!(
-                    "Denied by rule for {tool_name}"
-                ));
+                return PermissionDecision::Deny(format!("Denied by rule for {tool_name}"));
             }
         }
         PermissionDecision::Allow
@@ -134,15 +132,13 @@ fn glob_match_inner(pattern: &[char], text: &[char]) -> bool {
 fn mode_to_decision(mode: PermissionMode, tool_name: &str) -> PermissionDecision {
     match mode {
         PermissionMode::Allow | PermissionMode::AcceptEdits => PermissionDecision::Allow,
-        PermissionMode::Deny => PermissionDecision::Deny(format!(
-            "Default mode denies {tool_name}"
-        )),
-        PermissionMode::Ask => PermissionDecision::Ask(format!(
-            "Allow {tool_name} to execute?"
-        )),
-        PermissionMode::Plan => PermissionDecision::Deny(
-            "Plan mode: only read-only operations allowed".into(),
-        ),
+        PermissionMode::Deny => {
+            PermissionDecision::Deny(format!("Default mode denies {tool_name}"))
+        }
+        PermissionMode::Ask => PermissionDecision::Ask(format!("Allow {tool_name} to execute?")),
+        PermissionMode::Plan => {
+            PermissionDecision::Deny("Plan mode: only read-only operations allowed".into())
+        }
     }
 }
 

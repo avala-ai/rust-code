@@ -97,9 +97,7 @@ impl MemoryContext {
 
     /// Check if any memory was loaded.
     pub fn is_empty(&self) -> bool {
-        self.project_context.is_none()
-            && self.user_memory.is_none()
-            && self.memory_files.is_empty()
+        self.project_context.is_none() && self.user_memory.is_none() && self.memory_files.is_empty()
     }
 }
 
@@ -188,12 +186,10 @@ pub fn project_memory_dir(project_root: &Path) -> PathBuf {
 /// Save a memory file to the user memory directory.
 pub fn save_user_memory(filename: &str, content: &str) -> Result<PathBuf, String> {
     let dir = user_memory_dir().ok_or("Could not determine memory directory")?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create memory directory: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create memory directory: {e}"))?;
 
     let path = dir.join(filename);
-    std::fs::write(&path, content)
-        .map_err(|e| format!("Failed to write memory file: {e}"))?;
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write memory file: {e}"))?;
 
     Ok(path)
 }

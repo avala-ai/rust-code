@@ -91,8 +91,7 @@ impl AgentRegistry {
             "plan".to_string(),
             AgentDefinition {
                 name: "plan".to_string(),
-                description: "Planning agent that designs implementation strategies."
-                    .to_string(),
+                description: "Planning agent that designs implementation strategies.".to_string(),
                 system_prompt: Some(
                     "You are a software architect agent. Design implementation plans, \
                      identify critical files, and consider architectural trade-offs. \

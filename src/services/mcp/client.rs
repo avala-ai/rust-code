@@ -3,8 +3,7 @@
 //! Manages the connection lifecycle, tool discovery, and tool
 //! execution for a single MCP server.
 
-use std::collections::HashMap;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::transport::McpTransportConnection;
 use super::types::*;
@@ -63,9 +62,7 @@ impl McpClient {
             McpTransport::Stdio { command, args } => {
                 McpTransportConnection::connect_stdio(command, args, &self.config.env).await?
             }
-            McpTransport::Sse { url } => {
-                McpTransportConnection::connect_sse(url).await?
-            }
+            McpTransport::Sse { url } => McpTransportConnection::connect_sse(url).await?,
         };
 
         // Initialize the connection.
@@ -110,10 +107,7 @@ impl McpClient {
 
     /// Discover available tools from the server.
     async fn discover_tools(&mut self) -> Result<(), String> {
-        let transport = self
-            .transport
-            .as_ref()
-            .ok_or("Not connected")?;
+        let transport = self.transport.as_ref().ok_or("Not connected")?;
 
         let result = transport.request("tools/list", None).await?;
 
@@ -129,10 +123,7 @@ impl McpClient {
 
     /// Discover available resources from the server.
     async fn discover_resources(&mut self) -> Result<(), String> {
-        let transport = self
-            .transport
-            .as_ref()
-            .ok_or("Not connected")?;
+        let transport = self.transport.as_ref().ok_or("Not connected")?;
 
         match transport.request("resources/list", None).await {
             Ok(result) => {
@@ -145,7 +136,10 @@ impl McpClient {
             }
             Err(e) => {
                 // Resources are optional — server may not support them.
-                debug!("MCP server '{}' doesn't support resources: {e}", self.config.name);
+                debug!(
+                    "MCP server '{}' doesn't support resources: {e}",
+                    self.config.name
+                );
             }
         }
 
@@ -158,10 +152,7 @@ impl McpClient {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolResult, String> {
-        let transport = self
-            .transport
-            .as_ref()
-            .ok_or("Not connected")?;
+        let transport = self.transport.as_ref().ok_or("Not connected")?;
 
         let result = transport
             .request(
@@ -173,22 +164,15 @@ impl McpClient {
             )
             .await?;
 
-        serde_json::from_value(result)
-            .map_err(|e| format!("Invalid tool result: {e}"))
+        serde_json::from_value(result).map_err(|e| format!("Invalid tool result: {e}"))
     }
 
     /// Read a resource from the MCP server.
     pub async fn read_resource(&self, uri: &str) -> Result<String, String> {
-        let transport = self
-            .transport
-            .as_ref()
-            .ok_or("Not connected")?;
+        let transport = self.transport.as_ref().ok_or("Not connected")?;
 
         let result = transport
-            .request(
-                "resources/read",
-                Some(serde_json::json!({ "uri": uri })),
-            )
+            .request("resources/read", Some(serde_json::json!({ "uri": uri })))
             .await?;
 
         // Extract text content from the response.

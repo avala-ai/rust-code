@@ -4,6 +4,9 @@
 //! configuration loading, and launches the interactive REPL or
 //! one-shot execution mode.
 
+// Many types exist for the public API surface but aren't used internally yet.
+#![allow(dead_code)]
+
 mod commands;
 mod config;
 mod error;
@@ -98,20 +101,13 @@ async fn main() -> anyhow::Result<()> {
         config.api.api_key = Some(key.clone());
     }
 
-    let api_key = config
-        .api
-        .api_key
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!(
-            "API key required. Set RC_API_KEY or pass --api-key."
-        ))?;
+    let api_key =
+        config.api.api_key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("API key required. Set RC_API_KEY or pass --api-key.")
+        })?;
 
     // Initialize core subsystems.
-    let llm_client = LlmClient::new(
-        &config.api.base_url,
-        api_key,
-        &config.api.model,
-    );
+    let llm_client = LlmClient::new(&config.api.base_url, api_key, &config.api.model);
 
     let mut tool_registry = ToolRegistry::default_tools();
     let permission_checker = PermissionChecker::from_config(&config.permissions);
@@ -142,11 +138,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(()) => {
                 let discovered = client.tools().to_vec();
                 let client_arc = std::sync::Arc::new(tokio::sync::Mutex::new(client));
-                let proxies = tools::mcp_proxy::create_proxy_tools(
-                    name,
-                    &discovered,
-                    client_arc,
-                );
+                let proxies = tools::mcp_proxy::create_proxy_tools(name, &discovered, client_arc);
                 let count = proxies.len();
                 for proxy in proxies {
                     tool_registry.register(proxy);

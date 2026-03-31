@@ -18,7 +18,7 @@
 //! ```
 
 use crate::llm::message::{
-    ContentBlock, Message, SystemMessage, SystemMessageType, MessageLevel, UserMessage,
+    ContentBlock, Message, MessageLevel, SystemMessage, SystemMessageType, UserMessage,
 };
 use crate::services::tokens;
 use uuid::Uuid;
@@ -36,9 +36,7 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 pub const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT: u32 = 3;
 
 /// Tools whose results can be cleared by microcompact.
-const COMPACTABLE_TOOLS: &[&str] = &[
-    "FileRead", "Bash", "Grep", "Glob", "FileEdit", "FileWrite",
-];
+const COMPACTABLE_TOOLS: &[&str] = &["FileRead", "Bash", "Grep", "Glob", "FileEdit", "FileWrite"];
 
 /// Token warning state for the UI.
 #[derive(Debug, Clone)]
@@ -100,11 +98,7 @@ pub fn token_warning_state(messages: &[Message], model: &str) -> TokenWarningSta
 }
 
 /// Check whether auto-compact should fire for this conversation.
-pub fn should_auto_compact(
-    messages: &[Message],
-    model: &str,
-    tracking: &CompactTracking,
-) -> bool {
+pub fn should_auto_compact(messages: &[Message], model: &str, tracking: &CompactTracking) -> bool {
     // Circuit breaker.
     if tracking.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
         return false;
@@ -273,7 +267,7 @@ pub fn parse_prompt_too_long_gap(error_text: &str) -> Option<u64> {
 pub async fn compact_with_llm(
     messages: &mut Vec<Message>,
     llm: &crate::llm::client::LlmClient,
-    model: &str,
+    _model: &str,
 ) -> Option<usize> {
     if messages.len() < 4 {
         return None; // Not enough messages to compact.
@@ -332,9 +326,7 @@ pub async fn compact_with_llm(
         uuid: Uuid::new_v4(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         content: vec![ContentBlock::Text {
-            text: format!(
-                "[Conversation compacted. Prior context summary:]\n\n{summary}"
-            ),
+            text: format!("[Conversation compacted. Prior context summary:]\n\n{summary}"),
         }],
         is_meta: true,
         is_compact_summary: true,
@@ -366,8 +358,14 @@ fn calculate_keep_count(messages: &[Message]) -> usize {
 
         // Count messages with text content.
         let has_text = match msg {
-            Message::User(u) => u.content.iter().any(|b| matches!(b, ContentBlock::Text { .. })),
-            Message::Assistant(a) => a.content.iter().any(|b| matches!(b, ContentBlock::Text { .. })),
+            Message::User(u) => u
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { .. })),
+            Message::Assistant(a) => a
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { .. })),
             _ => false,
         };
         if has_text {

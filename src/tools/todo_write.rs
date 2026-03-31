@@ -77,7 +77,10 @@ impl Tool for TodoWriteTool {
         for todo in todos {
             let id = todo.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             let content = todo.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let status = todo.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+            let status = todo
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("pending");
             let marker = match status {
                 "done" => "[x]",
                 "in_progress" => "[~]",

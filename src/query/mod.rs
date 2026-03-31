@@ -27,14 +27,12 @@ use crate::llm::client::{CompletionRequest, LlmClient};
 use crate::llm::message::*;
 use crate::llm::stream::StreamEvent;
 use crate::permissions::PermissionChecker;
-use crate::services::compact::{
-    self, CompactTracking, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT,
-};
+use crate::services::compact::{self, CompactTracking, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT};
 use crate::services::tokens;
 use crate::state::AppState;
+use crate::tools::ToolContext;
 use crate::tools::executor::{execute_tool_calls, extract_tool_calls};
 use crate::tools::registry::ToolRegistry;
-use crate::tools::ToolContext;
 
 /// Maximum consecutive rate-limit retries before giving up.
 const MAX_RATE_LIMIT_RETRIES: u32 = 5;
@@ -161,16 +159,10 @@ impl QueryEngine {
             let model = self.state.config.api.model.clone();
 
             // Step 1: Auto-compact if context is too large.
-            if compact::should_auto_compact(
-                self.state.history(),
-                &model,
-                &compact_tracking,
-            ) {
+            if compact::should_auto_compact(self.state.history(), &model, &compact_tracking) {
                 let token_count = tokens::estimate_context_tokens(self.state.history());
                 let threshold = compact::auto_compact_threshold(&model);
-                info!(
-                    "Auto-compact triggered: {token_count} tokens >= {threshold} threshold"
-                );
+                info!("Auto-compact triggered: {token_count} tokens >= {threshold} threshold");
 
                 // Microcompact first: clear stale tool results.
                 let freed = compact::microcompact(&mut self.state.messages, 5);
@@ -184,12 +176,8 @@ impl QueryEngine {
                 if post_mc_tokens >= threshold {
                     // Full LLM-based compaction: summarize older messages.
                     info!("Microcompact insufficient, attempting LLM compaction");
-                    match compact::compact_with_llm(
-                        &mut self.state.messages,
-                        &self.llm,
-                        &model,
-                    )
-                    .await
+                    match compact::compact_with_llm(&mut self.state.messages, &self.llm, &model)
+                        .await
                     {
                         Some(removed) => {
                             info!("LLM compaction removed {removed} messages");
@@ -203,8 +191,7 @@ impl QueryEngine {
                                 compact_tracking.consecutive_failures
                             );
                             // Fallback: aggressive microcompact.
-                            let freed2 =
-                                compact::microcompact(&mut self.state.messages, 2);
+                            let freed2 = compact::microcompact(&mut self.state.messages, 2);
                             if freed2 > 0 {
                                 sink.on_compact(freed2);
                             }
@@ -218,10 +205,7 @@ impl QueryEngine {
             if warning.is_blocking {
                 sink.on_warning("Context window nearly full. Consider starting a new session.");
             } else if warning.is_above_warning {
-                sink.on_warning(&format!(
-                    "Context {}% remaining",
-                    warning.percent_left
-                ));
+                sink.on_warning(&format!("Context {}% remaining", warning.percent_left));
             }
 
             // Step 3: Build and send the API request.
@@ -255,10 +239,8 @@ impl QueryEngine {
                                 "Rate limited (attempt {rate_limit_retries}/{MAX_RATE_LIMIT_RETRIES}), \
                                  waiting {retry_after_ms}ms"
                             );
-                            tokio::time::sleep(
-                                std::time::Duration::from_millis(*retry_after_ms),
-                            )
-                            .await;
+                            tokio::time::sleep(std::time::Duration::from_millis(*retry_after_ms))
+                                .await;
                             continue;
                         }
                         LlmError::Api { status, body } if *status == 413 => {
@@ -300,7 +282,9 @@ impl QueryEngine {
                     }
                     StreamEvent::ContentBlockComplete(block) => {
                         if let ContentBlock::ToolUse {
-                            ref name, ref input, ..
+                            ref name,
+                            ref input,
+                            ..
                         } = block
                         {
                             sink.on_tool_start(name, input);
@@ -353,7 +337,9 @@ impl QueryEngine {
                 }
 
                 // Check for max-output-tokens hit (partial response).
-                if content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { .. }))
+                if content_blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { .. }))
                     && error_text.contains("max_tokens")
                 {
                     if max_output_recovery_count < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT {
@@ -394,21 +380,13 @@ impl QueryEngine {
             // Fire pre-tool-use hooks.
             for call in &tool_calls {
                 self.hooks
-                    .run_hooks(
-                        &HookEvent::PreToolUse,
-                        Some(&call.name),
-                        &call.input,
-                    )
+                    .run_hooks(&HookEvent::PreToolUse, Some(&call.name), &call.input)
                     .await;
             }
 
-            let results = execute_tool_calls(
-                &tool_calls,
-                self.tools.all(),
-                &tool_ctx,
-                &self.permissions,
-            )
-            .await;
+            let results =
+                execute_tool_calls(&tool_calls, self.tools.all(), &tool_ctx, &self.permissions)
+                    .await;
 
             // Step 9: Inject tool results + fire post-tool-use hooks.
             for result in &results {
@@ -470,9 +448,7 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
     ));
 
     // Inject memory context (project + user).
-    let memory = crate::memory::MemoryContext::load(
-        Some(std::path::Path::new(&state.cwd)),
-    );
+    let memory = crate::memory::MemoryContext::load(Some(std::path::Path::new(&state.cwd)));
     let memory_section = memory.to_system_prompt_section();
     if !memory_section.is_empty() {
         prompt.push_str(&memory_section);

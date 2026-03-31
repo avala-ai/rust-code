@@ -118,9 +118,9 @@ impl Tool for FileEditTool {
             content.replacen(old_string, new_string, 1)
         };
 
-        tokio::fs::write(file_path, &new_content).await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("Failed to write {file_path}: {e}"))
-        })?;
+        tokio::fs::write(file_path, &new_content)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write {file_path}: {e}")))?;
 
         let replaced = if replace_all { occurrences } else { 1 };
         Ok(ToolResult::success(format!(

@@ -86,10 +86,7 @@ impl Tool for AskUserQuestionTool {
         let mut answers = Vec::new();
 
         for q in questions {
-            let question_text = q
-                .get("question")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let question_text = q.get("question").and_then(|v| v.as_str()).unwrap_or("?");
 
             let options = q
                 .get("options")

@@ -121,7 +121,11 @@ impl SkillRegistry {
 
             match load_skill_file(&skill_path) {
                 Ok(skill) => {
-                    debug!("Loaded skill '{}' from {}", skill.name, skill_path.display());
+                    debug!(
+                        "Loaded skill '{}' from {}",
+                        skill.name,
+                        skill_path.display()
+                    );
                     self.skills.push(skill);
                 }
                 Err(e) => {
@@ -152,8 +156,7 @@ impl SkillRegistry {
 
 /// Load a single skill file, parsing frontmatter and body.
 fn load_skill_file(path: &Path) -> Result<Skill, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Read error: {e}"))?;
+    let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {e}"))?;
 
     // Derive skill name from path.
     let name = path
@@ -166,9 +169,7 @@ fn load_skill_file(path: &Path) -> Result<Skill, String> {
                 None
             }
         })
-        .or_else(|| {
-            path.file_stem().and_then(|s| s.to_str())
-        })
+        .or_else(|| path.file_stem().and_then(|s| s.to_str()))
         .unwrap_or("unknown")
         .to_string();
 

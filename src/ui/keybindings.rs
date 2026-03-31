@@ -47,9 +47,27 @@ impl KeybindingRegistry {
         };
 
         // Add built-in defaults.
-        registry.add_default("ctrl+c", KeyAction::Command { command: "cancel".into() }, "Cancel current operation");
-        registry.add_default("ctrl+d", KeyAction::Command { command: "exit".into() }, "Exit");
-        registry.add_default("ctrl+l", KeyAction::Command { command: "clear".into() }, "Clear conversation");
+        registry.add_default(
+            "ctrl+c",
+            KeyAction::Command {
+                command: "cancel".into(),
+            },
+            "Cancel current operation",
+        );
+        registry.add_default(
+            "ctrl+d",
+            KeyAction::Command {
+                command: "exit".into(),
+            },
+            "Exit",
+        );
+        registry.add_default(
+            "ctrl+l",
+            KeyAction::Command {
+                command: "clear".into(),
+            },
+            "Clear conversation",
+        );
 
         // Load user overrides.
         if let Some(path) = keybindings_path() {
@@ -57,9 +75,7 @@ impl KeybindingRegistry {
                 match load_keybindings_file(&path) {
                     Ok(user_bindings) => {
                         for binding in user_bindings {
-                            registry
-                                .bindings
-                                .insert(binding.key.clone(), binding);
+                            registry.bindings.insert(binding.key.clone(), binding);
                         }
                     }
                     Err(e) => {
@@ -101,7 +117,6 @@ fn keybindings_path() -> Option<PathBuf> {
 }
 
 fn load_keybindings_file(path: &PathBuf) -> Result<Vec<Keybinding>, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Read error: {e}"))?;
+    let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("Parse error: {e}"))
 }

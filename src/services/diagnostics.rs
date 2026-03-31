@@ -138,15 +138,11 @@ pub async fn run_all(cwd: &Path, config: &crate::config::Config) -> Vec<Check> {
             &format!("Git repository on branch '{branch}'"),
         ));
     } else {
-        checks.push(Check::warn(
-            "git:repo",
-            "Not inside a git repository",
-        ));
+        checks.push(Check::warn("git:repo", "Not inside a git repository"));
     }
 
     // 5. Config file locations.
-    let user_config = dirs::config_dir()
-        .map(|d| d.join("rust-code").join("config.toml"));
+    let user_config = dirs::config_dir().map(|d| d.join("rust-code").join("config.toml"));
     if let Some(ref path) = user_config {
         if path.exists() {
             checks.push(Check::pass(
@@ -191,10 +187,7 @@ pub async fn run_all(cwd: &Path, config: &crate::config::Config) -> Vec<Check> {
         if let Some(line) = text.lines().nth(1) {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if let Some(avail) = parts.get(3) {
-                let gb: f64 = avail
-                    .trim_end_matches('G')
-                    .parse()
-                    .unwrap_or(999.0);
+                let gb: f64 = avail.trim_end_matches('G').parse().unwrap_or(999.0);
                 if gb < 1.0 {
                     checks.push(Check::warn(
                         "disk:space",

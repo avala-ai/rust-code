@@ -4,14 +4,13 @@
 //! symbol information, and code intelligence. Communicates via JSON-RPC
 //! over stdio, similar to the MCP transport.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// An LSP client connection to a language server.
 pub struct LspClient {
@@ -63,7 +62,7 @@ impl LspClient {
 
         let root_uri = format!("file://{}", root_path.display());
 
-        let mut client = Self {
+        let client = Self {
             name: name.to_string(),
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
@@ -118,8 +117,7 @@ impl LspClient {
             "params": params,
         });
 
-        let body_str = serde_json::to_string(&body)
-            .map_err(|e| format!("Serialize error: {e}"))?;
+        let body_str = serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?;
 
         let message = format!("Content-Length: {}\r\n\r\n{}", body_str.len(), body_str);
 
@@ -129,7 +127,10 @@ impl LspClient {
                 .write_all(message.as_bytes())
                 .await
                 .map_err(|e| format!("Write error: {e}"))?;
-            stdin.flush().await.map_err(|e| format!("Flush error: {e}"))?;
+            stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Flush error: {e}"))?;
         }
 
         // Read response (Content-Length header + body).
@@ -141,8 +142,8 @@ impl LspClient {
             .await
             .map_err(|e| format!("Read error: {e}"))?;
 
-        let response: serde_json::Value = serde_json::from_slice(&buf)
-            .map_err(|e| format!("Parse error: {e}"))?;
+        let response: serde_json::Value =
+            serde_json::from_slice(&buf).map_err(|e| format!("Parse error: {e}"))?;
 
         if let Some(error) = response.get("error") {
             return Err(format!("LSP error: {error}"));
@@ -159,8 +160,7 @@ impl LspClient {
             "params": params,
         });
 
-        let body_str = serde_json::to_string(&body)
-            .map_err(|e| format!("Serialize error: {e}"))?;
+        let body_str = serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?;
 
         let message = format!("Content-Length: {}\r\n\r\n{}", body_str.len(), body_str);
 
@@ -169,7 +169,10 @@ impl LspClient {
             .write_all(message.as_bytes())
             .await
             .map_err(|e| format!("Write error: {e}"))?;
-        stdin.flush().await.map_err(|e| format!("Flush error: {e}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("Flush error: {e}"))?;
 
         Ok(())
     }
@@ -177,8 +180,7 @@ impl LspClient {
     /// Get diagnostics for a file by opening it and waiting for the server.
     pub async fn get_diagnostics(&self, file_path: &PathBuf) -> Result<Vec<Diagnostic>, String> {
         let uri = format!("file://{}", file_path.display());
-        let content = std::fs::read_to_string(file_path)
-            .map_err(|e| format!("Read error: {e}"))?;
+        let content = std::fs::read_to_string(file_path).map_err(|e| format!("Read error: {e}"))?;
 
         // Notify the server that we opened the file.
         self.notify(

@@ -51,7 +51,7 @@ impl Tool for ToolSearchTool {
     async fn call(
         &self,
         input: serde_json::Value,
-        ctx: &ToolContext,
+        _ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let query = input
             .get("query")

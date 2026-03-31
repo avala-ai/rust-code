@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::llm::message::Message;
@@ -45,8 +45,7 @@ pub fn save_session(
     turn_count: usize,
 ) -> Result<PathBuf, String> {
     let dir = sessions_dir().ok_or("Could not determine sessions directory")?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create sessions dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
 
     let path = dir.join(format!("{session_id}.json"));
 
@@ -63,8 +62,7 @@ pub fn save_session(
     let json = serde_json::to_string_pretty(&data)
         .map_err(|e| format!("Failed to serialize session: {e}"))?;
 
-    std::fs::write(&path, json)
-        .map_err(|e| format!("Failed to write session file: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write session file: {e}"))?;
 
     debug!("Session saved: {}", path.display());
     Ok(path)
@@ -79,13 +77,17 @@ pub fn load_session(session_id: &str) -> Result<SessionData, String> {
         return Err(format!("Session '{session_id}' not found"));
     }
 
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read session: {e}"))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read session: {e}"))?;
 
-    let data: SessionData = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse session: {e}"))?;
+    let data: SessionData =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse session: {e}"))?;
 
-    info!("Session loaded: {} ({} messages)", session_id, data.messages.len());
+    info!(
+        "Session loaded: {} ({} messages)",
+        session_id,
+        data.messages.len()
+    );
     Ok(data)
 }
 
@@ -101,11 +103,7 @@ pub fn list_sessions(limit: usize) -> Vec<SessionSummary> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "json")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .filter_map(|entry| {
             let content = std::fs::read_to_string(entry.path()).ok()?;
             let data: SessionData = serde_json::from_str(&content).ok()?;
@@ -138,5 +136,10 @@ pub struct SessionSummary {
 
 /// Generate a new session ID.
 pub fn new_session_id() -> String {
-    Uuid::new_v4().to_string().split('-').next().unwrap_or("session").to_string()
+    Uuid::new_v4()
+        .to_string()
+        .split('-')
+        .next()
+        .unwrap_or("session")
+        .to_string()
 }

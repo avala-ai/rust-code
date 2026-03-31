@@ -25,16 +25,10 @@ pub enum StreamEvent {
     ContentBlockComplete(ContentBlock),
 
     /// A tool use block is being accumulated (for progress display).
-    ToolUseStart {
-        id: String,
-        name: String,
-    },
+    ToolUseStart { id: String, name: String },
 
     /// Partial JSON for a tool input being accumulated.
-    ToolInputDelta {
-        id: String,
-        partial_json: String,
-    },
+    ToolInputDelta { id: String, partial_json: String },
 
     /// The model has finished generating. Contains final usage.
     Done {
@@ -201,8 +195,7 @@ impl StreamParser {
 
                 let events = match content_block {
                     RawContentBlock::Text { text } => {
-                        self.blocks[index] =
-                            PartialBlock::Text(text.unwrap_or_default());
+                        self.blocks[index] = PartialBlock::Text(text.unwrap_or_default());
                         vec![]
                     }
                     RawContentBlock::ToolUse { id, name, input: _ } => {
@@ -287,10 +280,8 @@ impl StreamParser {
                     return vec![];
                 }
 
-                let block = std::mem::replace(
-                    &mut self.blocks[index],
-                    PartialBlock::Text(String::new()),
-                );
+                let block =
+                    std::mem::replace(&mut self.blocks[index], PartialBlock::Text(String::new()));
 
                 let content_block = match block {
                     PartialBlock::Text(text) => ContentBlock::Text { text },

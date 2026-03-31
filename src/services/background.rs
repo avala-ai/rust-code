@@ -139,7 +139,9 @@ impl TaskManager {
     /// Read the output of a completed task.
     pub async fn read_output(&self, id: &str) -> Result<String, String> {
         let tasks = self.tasks.lock().await;
-        let info = tasks.get(id).ok_or_else(|| format!("Task '{id}' not found"))?;
+        let info = tasks
+            .get(id)
+            .ok_or_else(|| format!("Task '{id}' not found"))?;
         std::fs::read_to_string(&info.output_file)
             .map_err(|e| format!("Failed to read output: {e}"))
     }
@@ -152,7 +154,9 @@ impl TaskManager {
     /// Kill a running task (best-effort).
     pub async fn kill(&self, id: &str) -> Result<(), String> {
         let mut tasks = self.tasks.lock().await;
-        let info = tasks.get_mut(id).ok_or_else(|| format!("Task '{id}' not found"))?;
+        let info = tasks
+            .get_mut(id)
+            .ok_or_else(|| format!("Task '{id}' not found"))?;
         if info.status == TaskStatus::Running {
             info.status = TaskStatus::Killed;
             info.finished_at = Some(std::time::Instant::now());

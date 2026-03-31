@@ -99,9 +99,7 @@ impl Tool for GlobTool {
 
         let mut output = format!("Found {total} files:\n{}", result.join("\n"));
         if truncated {
-            output.push_str(&format!(
-                "\n\n(Showing {max_results} of {total} files)"
-            ));
+            output.push_str(&format!("\n\n(Showing {max_results} of {total} files)"));
         }
 
         Ok(ToolResult::success(output))

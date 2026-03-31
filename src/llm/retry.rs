@@ -49,11 +49,7 @@ pub struct RetryState {
 
 impl RetryState {
     /// Determine the next action after a failure.
-    pub fn next_action(
-        &mut self,
-        error: &RetryableError,
-        config: &RetryConfig,
-    ) -> RetryAction {
+    pub fn next_action(&mut self, error: &RetryableError, config: &RetryConfig) -> RetryAction {
         self.consecutive_failures += 1;
 
         match error {
@@ -96,9 +92,7 @@ impl RetryState {
                 );
                 RetryAction::Retry { after: backoff }
             }
-            RetryableError::NonRetryable(msg) => {
-                RetryAction::Abort(msg.clone())
-            }
+            RetryableError::NonRetryable(msg) => RetryAction::Abort(msg.clone()),
         }
     }
 
@@ -129,12 +123,7 @@ pub enum RetryAction {
 }
 
 /// Calculate exponential backoff with jitter.
-fn calculate_backoff(
-    attempt: u32,
-    initial: Duration,
-    max: Duration,
-    multiplier: f64,
-) -> Duration {
+fn calculate_backoff(attempt: u32, initial: Duration, max: Duration, multiplier: f64) -> Duration {
     let base = initial.as_millis() as f64 * multiplier.powi(attempt as i32 - 1);
     let capped = base.min(max.as_millis() as f64);
     // Add 10% jitter.

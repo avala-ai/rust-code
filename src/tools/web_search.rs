@@ -58,9 +58,7 @@ impl Tool for WebSearchTool {
         // Use a search API if configured, otherwise fall back to a
         // simple web fetch of a search engine results page.
         let encoded = urlencoded(query);
-        let search_url = format!(
-            "https://html.duckduckgo.com/html/?q={encoded}"
-        );
+        let search_url = format!("https://html.duckduckgo.com/html/?q={encoded}");
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -77,7 +75,9 @@ impl Tool for WebSearchTool {
             }
         };
 
-        let body = response.text().await
+        let body = response
+            .text()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Read failed: {e}")))?;
 
         // Extract search results from HTML (simplified parsing).

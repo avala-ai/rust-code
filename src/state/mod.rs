@@ -87,8 +87,7 @@ fn estimate_cost(usage: &Usage, model: &str) -> f64 {
     let output_cost = (usage.output_tokens as f64 / 1_000_000.0) * output_price;
     let cache_write_cost =
         (usage.cache_creation_input_tokens as f64 / 1_000_000.0) * input_price * 1.25;
-    let cache_read_cost =
-        (usage.cache_read_input_tokens as f64 / 1_000_000.0) * input_price * 0.1;
+    let cache_read_cost = (usage.cache_read_input_tokens as f64 / 1_000_000.0) * input_price * 0.1;
 
     input_cost + output_cost + cache_write_cost + cache_read_cost
 }

@@ -65,15 +65,9 @@ impl Tool for FileReadTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidInput("'file_path' is required".into()))?;
 
-        let offset = input
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as usize;
+        let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
 
-        let limit = input
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2000) as usize;
+        let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
 
         let path = std::path::Path::new(file_path);
 

@@ -62,11 +62,7 @@ pub mod attrs {
 }
 
 /// Build telemetry attributes for an API call.
-pub fn api_call_span(
-    model: &str,
-    turn: usize,
-    session_id: &str,
-) -> TelemetrySpan {
+pub fn api_call_span(model: &str, turn: usize, session_id: &str) -> TelemetrySpan {
     let mut span = TelemetrySpan::new();
     span.set(attrs::MODEL, model);
     span.set(attrs::TURN_NUMBER, turn);

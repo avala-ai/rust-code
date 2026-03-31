@@ -43,9 +43,7 @@ impl SessionEnvironment {
             None
         };
 
-        let terminal_width = crossterm::terminal::size()
-            .map(|(w, _)| w)
-            .unwrap_or(80);
+        let terminal_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
 
         Self {
             original_cwd: cwd,
@@ -68,7 +66,13 @@ async fn detect_project_root(cwd: &Path) -> PathBuf {
     }
 
     // Look for project markers.
-    let markers = [".rc", "Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
+    let markers = [
+        ".rc",
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+    ];
     let mut dir = cwd.to_path_buf();
     loop {
         for marker in &markers {
@@ -85,25 +89,17 @@ async fn detect_project_root(cwd: &Path) -> PathBuf {
 }
 
 fn detect_shell() -> String {
-    std::env::var("SHELL")
-        .unwrap_or_else(|_| "bash".to_string())
+    std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string())
 }
 
 fn atty_check() -> bool {
-    // Simple check: if stdin is a terminal.
-    unsafe { libc_isatty() }
+    #[cfg(unix)]
+    {
+        // SAFETY: isatty is a standard POSIX function with no preconditions.
+        unsafe { libc::isatty(0) != 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
-
-#[cfg(unix)]
-fn libc_isatty() -> bool {
-    unsafe { libc::isatty(0) != 0 }
-}
-
-#[cfg(not(unix))]
-fn libc_isatty() -> bool {
-    true // Assume interactive on non-Unix.
-}
-
-// libc is needed for isatty on Unix.
-#[cfg(unix)]
-extern crate libc;

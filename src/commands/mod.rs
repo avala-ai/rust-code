@@ -200,9 +200,9 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
         .unwrap_or((input, None));
 
     // Check built-in commands.
-    let matched = COMMANDS.iter().find(|c| {
-        c.name == cmd || c.aliases.contains(&cmd)
-    });
+    let matched = COMMANDS
+        .iter()
+        .find(|c| c.name == cmd || c.aliases.contains(&cmd));
 
     match matched.map(|c| c.name) {
         Some("help") => {
@@ -217,18 +217,14 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             }
 
             // Show skill commands.
-            let skills = crate::skills::SkillRegistry::load_all(
-                Some(std::path::Path::new(&engine.state().cwd)),
-            );
+            let skills = crate::skills::SkillRegistry::load_all(Some(std::path::Path::new(
+                &engine.state().cwd,
+            )));
             let invocable = skills.user_invocable();
             if !invocable.is_empty() {
                 println!("\nSkills:");
                 for skill in invocable {
-                    let desc = skill
-                        .metadata
-                        .description
-                        .as_deref()
-                        .unwrap_or("");
+                    let desc = skill.metadata.description.as_deref().unwrap_or("");
                     println!("  /{:<18} {}", skill.name, desc);
                 }
             }
@@ -242,10 +238,7 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             CommandResult::Handled
         }
         Some("compact") => {
-            let freed = crate::services::compact::microcompact(
-                &mut engine.state_mut().messages,
-                2,
-            );
+            let freed = crate::services::compact::microcompact(&mut engine.state_mut().messages, 2);
             if freed > 0 {
                 println!("Freed ~{freed} estimated tokens.");
             } else {
@@ -329,9 +322,8 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             CommandResult::Prompt(msg)
         }
         Some("memory") => {
-            let memory = crate::memory::MemoryContext::load(
-                Some(std::path::Path::new(&engine.state().cwd)),
-            );
+            let memory =
+                crate::memory::MemoryContext::load(Some(std::path::Path::new(&engine.state().cwd)));
             if memory.is_empty() {
                 println!("No memory loaded.");
             } else {
@@ -345,28 +337,32 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             CommandResult::Handled
         }
         Some("skills") => {
-            let skills = crate::skills::SkillRegistry::load_all(
-                Some(std::path::Path::new(&engine.state().cwd)),
-            );
+            let skills = crate::skills::SkillRegistry::load_all(Some(std::path::Path::new(
+                &engine.state().cwd,
+            )));
             if skills.all().is_empty() {
-                println!("No skills loaded. Add .md files to .rc/skills/ or ~/.config/rust-code/skills/");
+                println!(
+                    "No skills loaded. Add .md files to .rc/skills/ or ~/.config/rust-code/skills/"
+                );
             } else {
                 println!("Loaded {} skills:", skills.all().len());
                 for skill in skills.all() {
-                    let invocable = if skill.metadata.user_invocable { " [invocable]" } else { "" };
+                    let invocable = if skill.metadata.user_invocable {
+                        " [invocable]"
+                    } else {
+                        ""
+                    };
                     let desc = skill.metadata.description.as_deref().unwrap_or("");
                     println!("  {}{} — {}", skill.name, invocable, desc);
                 }
             }
             CommandResult::Handled
         }
-        Some("review") => {
-            CommandResult::Prompt(
-                "Review the current git diff. Look for bugs, security issues, \
+        Some("review") => CommandResult::Prompt(
+            "Review the current git diff. Look for bugs, security issues, \
                  code quality problems, and suggest improvements."
-                    .to_string(),
-            )
-        }
+                .to_string(),
+        ),
         Some("doctor") => {
             // Quick environment check.
             let mut checks = Vec::new();
@@ -378,11 +374,7 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
-                checks.push(format!(
-                    "  {} {}",
-                    if available { "✓" } else { "✗" },
-                    tool,
-                ));
+                checks.push(format!("  {} {}", if available { "✓" } else { "✗" }, tool,));
             }
 
             // Config status.
@@ -390,7 +382,11 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             checks.push(format!("  Model: {}", config.api.model));
             checks.push(format!(
                 "  API key: {}",
-                if config.api.api_key.is_some() { "set" } else { "missing" }
+                if config.api.api_key.is_some() {
+                    "set"
+                } else {
+                    "missing"
+                }
             ));
 
             println!("Environment check:\n{}", checks.join("\n"));
@@ -470,8 +466,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                         _ => {}
                     }
                 }
-                let path = format!("conversation-export-{}.md",
-                    chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+                let path = format!(
+                    "conversation-export-{}.md",
+                    chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                );
                 match std::fs::write(&path, &md) {
                     Ok(_) => println!("Exported to {path}"),
                     Err(e) => println!("Export failed: {e}"),
@@ -483,13 +481,13 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             if let Some(name) = args {
                 CommandResult::Prompt(format!("Switch to git branch '{name}' and confirm."))
             } else {
-                CommandResult::Prompt("Show the current git branch and list recent branches.".into())
+                CommandResult::Prompt(
+                    "Show the current git branch and list recent branches.".into(),
+                )
             }
         }
         Some("context") | Some("ctx") => {
-            let tokens = crate::services::tokens::estimate_context_tokens(
-                &engine.state().messages,
-            );
+            let tokens = crate::services::tokens::estimate_context_tokens(&engine.state().messages);
             let model = &engine.state().config.api.model;
             let window = crate::services::tokens::context_window_for_model(model);
             let threshold = crate::services::compact::auto_compact_threshold(model);
@@ -523,11 +521,13 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             CommandResult::Handled
         }
         Some("plugins") => {
-            let plugins = crate::services::plugins::PluginRegistry::load_all(
-                Some(std::path::Path::new(&engine.state().cwd)),
-            );
+            let plugins = crate::services::plugins::PluginRegistry::load_all(Some(
+                std::path::Path::new(&engine.state().cwd),
+            ));
             if plugins.all().is_empty() {
-                println!("No plugins loaded. Add plugin directories to ~/.config/rust-code/plugins/");
+                println!(
+                    "No plugins loaded. Add plugin directories to ~/.config/rust-code/plugins/"
+                );
             } else {
                 println!("Loaded {} plugins:", plugins.all().len());
                 for p in plugins.all() {
@@ -548,9 +548,9 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
         }
         _ => {
             // Check if it's a skill invocation.
-            let skills = crate::skills::SkillRegistry::load_all(
-                Some(std::path::Path::new(&engine.state().cwd)),
-            );
+            let skills = crate::skills::SkillRegistry::load_all(Some(std::path::Path::new(
+                &engine.state().cwd,
+            )));
             if let Some(skill) = skills.find(cmd) {
                 let expanded = skill.expand(args);
                 CommandResult::Prompt(expanded)

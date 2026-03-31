@@ -99,18 +99,14 @@ impl Tool for AgentTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidInput("'prompt' is required".into()))?;
 
-        let isolation = input
-            .get("isolation")
-            .and_then(|v| v.as_str());
+        let isolation = input.get("isolation").and_then(|v| v.as_str());
 
         // Determine working directory (worktree isolation if requested).
         let agent_cwd = if isolation == Some("worktree") {
             match create_worktree(&ctx.cwd).await {
                 Ok(path) => path,
                 Err(e) => {
-                    return Ok(ToolResult::error(format!(
-                        "Failed to create worktree: {e}"
-                    )));
+                    return Ok(ToolResult::error(format!("Failed to create worktree: {e}")));
                 }
             }
         } else {
@@ -181,7 +177,14 @@ impl Tool for AgentTool {
 
 /// Create a temporary git worktree for isolated execution.
 async fn create_worktree(base_cwd: &PathBuf) -> Result<PathBuf, String> {
-    let branch_name = format!("agent-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("tmp"));
+    let branch_name = format!(
+        "agent-{}",
+        uuid::Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("tmp")
+    );
     let worktree_path = std::env::temp_dir().join(format!("rc-worktree-{branch_name}"));
 
     let output = tokio::process::Command::new("git")

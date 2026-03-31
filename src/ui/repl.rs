@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 
 use crossterm::style::Stylize;
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
 
 use crate::llm::message::Usage;
 use crate::query::{QueryEngine, StreamSink};
@@ -47,13 +46,21 @@ impl StreamSink for TerminalSink {
         self.ensure_newline();
         let label = format!(" {tool_name} ");
         let detail = summarize_tool_input(tool_name, input);
-        eprintln!("{} {}", label.on_dark_cyan().white().bold(), detail.dark_grey());
+        eprintln!(
+            "{} {}",
+            label.on_dark_cyan().white().bold(),
+            detail.dark_grey()
+        );
     }
 
     fn on_tool_result(&self, tool_name: &str, result: &ToolResult) {
         if result.is_error {
             let label = format!(" {tool_name} ERROR ");
-            eprintln!("{} {}", label.on_red().white().bold(), result.content.lines().next().unwrap_or("").red());
+            eprintln!(
+                "{} {}",
+                label.on_red().white().bold(),
+                result.content.lines().next().unwrap_or("").red()
+            );
         }
     }
 
@@ -85,14 +92,14 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     let rl_config = rustyline::Config::builder()
         .edit_mode(input_mode.to_edit_mode())
         .build();
-    let mut rl = rustyline::Editor::<(), rustyline::history::DefaultHistory>::with_config(rl_config)?;
+    let mut rl =
+        rustyline::Editor::<(), rustyline::history::DefaultHistory>::with_config(rl_config)?;
 
     // Generate a session ID for persistence.
     let session_id = crate::services::session::new_session_id();
 
     // Load history.
-    let history_path = dirs::data_dir()
-        .map(|d| d.join("rust-code").join("history.txt"));
+    let history_path = dirs::data_dir().map(|d| d.join("rust-code").join("history.txt"));
     if let Some(ref path) = history_path {
         let _ = std::fs::create_dir_all(path.parent().unwrap());
         let _ = rl.load_history(path);
@@ -109,10 +116,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     let sink = TerminalSink::new();
 
     loop {
-        let prompt = format!(
-            "{} ",
-            ">".dark_cyan().bold(),
-        );
+        let prompt = format!("{} ", ">".dark_cyan().bold(),);
 
         match rl.readline(&prompt) {
             Ok(line) => {
