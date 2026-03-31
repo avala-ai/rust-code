@@ -31,9 +31,11 @@ pub mod mcp_proxy;
 pub mod notebook_edit;
 pub mod plan_mode;
 pub mod registry;
+pub mod send_message;
 pub mod tasks;
 pub mod tool_search;
 pub mod web_fetch;
+pub mod worktree;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

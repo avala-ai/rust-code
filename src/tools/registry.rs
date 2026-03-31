@@ -28,9 +28,12 @@ impl ToolRegistry {
         registry.register(Arc::new(super::notebook_edit::NotebookEditTool));
         registry.register(Arc::new(super::plan_mode::EnterPlanModeTool));
         registry.register(Arc::new(super::plan_mode::ExitPlanModeTool));
+        registry.register(Arc::new(super::send_message::SendMessageTool));
         registry.register(Arc::new(super::tasks::TaskCreateTool));
         registry.register(Arc::new(super::tasks::TaskUpdateTool));
         registry.register(Arc::new(super::tool_search::ToolSearchTool));
+        registry.register(Arc::new(super::worktree::EnterWorktreeTool));
+        registry.register(Arc::new(super::worktree::ExitWorktreeTool));
         registry.register(Arc::new(super::web_fetch::WebFetchTool));
         registry.register(Arc::new(super::ask_user::AskUserQuestionTool));
         registry
