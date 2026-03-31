@@ -114,16 +114,26 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 
                 rl.add_history_entry(input)?;
 
-                // Handle commands.
+                // Handle slash commands.
                 if input.starts_with('/') {
-                    match handle_command(input, engine) {
-                        CommandResult::Continue => continue,
-                        CommandResult::Exit => break,
-                        CommandResult::Passthrough(text) => {
-                            // Not a recognized command, send as prompt.
+                    match crate::commands::execute(input, engine) {
+                        crate::commands::CommandResult::Handled => continue,
+                        crate::commands::CommandResult::Exit => break,
+                        crate::commands::CommandResult::Passthrough(text) => {
+                            sink.ensure_newline();
                             if let Err(e) = engine.run_turn_with_sink(&text, &sink).await {
                                 eprintln!("{} {e}", " ERROR ".on_red().white().bold());
                             }
+                            sink.ensure_newline();
+                            println!();
+                        }
+                        crate::commands::CommandResult::Prompt(prompt) => {
+                            sink.ensure_newline();
+                            if let Err(e) = engine.run_turn_with_sink(&prompt, &sink).await {
+                                eprintln!("{} {e}", " ERROR ".on_red().white().bold());
+                            }
+                            sink.ensure_newline();
+                            println!();
                         }
                     }
                     continue;
@@ -169,53 +179,6 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-enum CommandResult {
-    Continue,
-    Exit,
-    Passthrough(String),
-}
-
-fn handle_command(input: &str, _engine: &mut QueryEngine) -> CommandResult {
-    let parts: Vec<&str> = input.splitn(2, ' ').collect();
-    let cmd = parts[0];
-
-    match cmd {
-        "/exit" | "/quit" | "/q" => CommandResult::Exit,
-        "/help" | "/h" => {
-            println!(
-                "\n{}\n\
-                 /help        Show this help message\n\
-                 /exit        Exit the REPL\n\
-                 /cost        Show session cost summary\n\
-                 /clear       Clear conversation history\n\
-                 /model       Show or change the current model\n",
-                " Commands ".on_dark_cyan().white().bold()
-            );
-            CommandResult::Continue
-        }
-        "/cost" => {
-            let state = _engine.state();
-            println!(
-                "Turns: {}, Tokens: {}, Cost: ${:.4}",
-                state.turn_count,
-                state.total_usage.total(),
-                state.total_cost_usd,
-            );
-            CommandResult::Continue
-        }
-        "/clear" => {
-            _engine.state_mut().messages.clear();
-            println!("Conversation cleared.");
-            CommandResult::Continue
-        }
-        "/model" => {
-            println!("Model: {}", _engine.state().config.api.model);
-            CommandResult::Continue
-        }
-        _ => CommandResult::Passthrough(input.to_string()),
-    }
 }
 
 /// Create a short summary of tool input for display.
