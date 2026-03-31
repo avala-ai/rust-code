@@ -27,6 +27,7 @@ pub mod file_read;
 pub mod file_write;
 pub mod glob;
 pub mod grep;
+pub mod mcp_proxy;
 pub mod notebook_edit;
 pub mod plan_mode;
 pub mod registry;

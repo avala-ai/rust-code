@@ -113,42 +113,49 @@ async fn main() -> anyhow::Result<()> {
         &config.api.model,
     );
 
-    let tool_registry = ToolRegistry::default_tools();
+    let mut tool_registry = ToolRegistry::default_tools();
     let permission_checker = PermissionChecker::from_config(&config.permissions);
     let app_state = AppState::new(config.clone());
 
-    // Connect configured MCP servers.
-    if !config.mcp_servers.is_empty() {
-        for (name, entry) in &config.mcp_servers {
-            let transport = if let Some(ref cmd) = entry.command {
-                services::mcp::McpTransport::Stdio {
-                    command: cmd.clone(),
-                    args: entry.args.clone(),
-                }
-            } else if let Some(ref url) = entry.url {
-                services::mcp::McpTransport::Sse { url: url.clone() }
-            } else {
-                tracing::warn!("MCP server '{name}' has no command or url, skipping");
-                continue;
-            };
-
-            let mcp_config = services::mcp::McpServerConfig {
-                transport,
-                name: name.clone(),
-                env: entry.env.clone(),
-            };
-
-            let mut client = services::mcp::McpClient::new(mcp_config);
-            match client.connect().await {
-                Ok(()) => {
-                    let tool_count = client.tools().len();
-                    tracing::info!("MCP server '{name}' connected ({tool_count} tools)");
-                }
-                Err(e) => {
-                    tracing::warn!("MCP server '{name}' failed to connect: {e}");
-                }
+    // Connect configured MCP servers and register their tools.
+    for (name, entry) in &config.mcp_servers {
+        let transport = if let Some(ref cmd) = entry.command {
+            services::mcp::McpTransport::Stdio {
+                command: cmd.clone(),
+                args: entry.args.clone(),
             }
-            // TODO: register MCP tools into the tool registry
+        } else if let Some(ref url) = entry.url {
+            services::mcp::McpTransport::Sse { url: url.clone() }
+        } else {
+            tracing::warn!("MCP server '{name}': no command or url configured, skipping");
+            continue;
+        };
+
+        let mcp_config = services::mcp::McpServerConfig {
+            transport,
+            name: name.clone(),
+            env: entry.env.clone(),
+        };
+
+        let mut client = services::mcp::McpClient::new(mcp_config);
+        match client.connect().await {
+            Ok(()) => {
+                let discovered = client.tools().to_vec();
+                let client_arc = std::sync::Arc::new(tokio::sync::Mutex::new(client));
+                let proxies = tools::mcp_proxy::create_proxy_tools(
+                    name,
+                    &discovered,
+                    client_arc,
+                );
+                let count = proxies.len();
+                for proxy in proxies {
+                    tool_registry.register(proxy);
+                }
+                tracing::info!("MCP '{name}': registered {count} tools");
+            }
+            Err(e) => {
+                tracing::warn!("MCP '{name}': connection failed: {e}");
+            }
         }
     }
 
