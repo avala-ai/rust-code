@@ -136,6 +136,48 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "init",
+        aliases: &[],
+        description: "Initialize project config (.rc/settings.toml)",
+        hidden: false,
+    },
+    Command {
+        name: "export",
+        aliases: &[],
+        description: "Export conversation as markdown",
+        hidden: false,
+    },
+    Command {
+        name: "branch",
+        aliases: &[],
+        description: "Show or switch git branch",
+        hidden: false,
+    },
+    Command {
+        name: "context",
+        aliases: &["ctx"],
+        description: "Show context window usage",
+        hidden: false,
+    },
+    Command {
+        name: "agents",
+        aliases: &[],
+        description: "List available agent types",
+        hidden: false,
+    },
+    Command {
+        name: "hooks",
+        aliases: &[],
+        description: "List configured hooks",
+        hidden: false,
+    },
+    Command {
+        name: "plugins",
+        aliases: &[],
+        description: "List loaded plugins",
+        hidden: false,
+    },
+    Command {
         name: "verbose",
         aliases: &[],
         description: "Toggle verbose output",
@@ -380,6 +422,119 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                 println!("Plan mode enabled. Only read-only tools available.");
             } else {
                 println!("Plan mode disabled. All tools available.");
+            }
+            CommandResult::Handled
+        }
+        Some("init") => {
+            let config_dir = std::path::Path::new(&engine.state().cwd).join(".rc");
+            let config_file = config_dir.join("settings.toml");
+            if config_file.exists() {
+                println!("Project already initialized: {}", config_file.display());
+            } else {
+                let _ = std::fs::create_dir_all(&config_dir);
+                let default = "[api]\n# model = \"claude-sonnet-4-20250514\"\n\n\
+                               [permissions]\ndefault_mode = \"ask\"\n";
+                match std::fs::write(&config_file, default) {
+                    Ok(_) => println!("Created {}", config_file.display()),
+                    Err(e) => println!("Failed to create config: {e}"),
+                }
+            }
+            CommandResult::Handled
+        }
+        Some("export") => {
+            let messages = &engine.state().messages;
+            if messages.is_empty() {
+                println!("No conversation to export.");
+            } else {
+                let mut md = String::from("# Conversation Export\n\n");
+                for msg in messages {
+                    match msg {
+                        crate::llm::message::Message::User(u) => {
+                            md.push_str("## User\n\n");
+                            for block in &u.content {
+                                if let crate::llm::message::ContentBlock::Text { text } = block {
+                                    md.push_str(text);
+                                    md.push_str("\n\n");
+                                }
+                            }
+                        }
+                        crate::llm::message::Message::Assistant(a) => {
+                            md.push_str("## Assistant\n\n");
+                            for block in &a.content {
+                                if let crate::llm::message::ContentBlock::Text { text } = block {
+                                    md.push_str(text);
+                                    md.push_str("\n\n");
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let path = format!("conversation-export-{}.md",
+                    chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+                match std::fs::write(&path, &md) {
+                    Ok(_) => println!("Exported to {path}"),
+                    Err(e) => println!("Export failed: {e}"),
+                }
+            }
+            CommandResult::Handled
+        }
+        Some("branch") => {
+            if let Some(name) = args {
+                CommandResult::Prompt(format!("Switch to git branch '{name}' and confirm."))
+            } else {
+                CommandResult::Prompt("Show the current git branch and list recent branches.".into())
+            }
+        }
+        Some("context") | Some("ctx") => {
+            let tokens = crate::services::tokens::estimate_context_tokens(
+                &engine.state().messages,
+            );
+            let model = &engine.state().config.api.model;
+            let window = crate::services::tokens::context_window_for_model(model);
+            let threshold = crate::services::compact::auto_compact_threshold(model);
+            let pct = if window > 0 {
+                (tokens as f64 / window as f64 * 100.0).round() as u64
+            } else {
+                0
+            };
+            println!(
+                "Context: ~{tokens} tokens ({pct}% of {window} window)\n\
+                 Auto-compact at: {threshold} tokens\n\
+                 Messages: {}",
+                engine.state().messages.len(),
+            );
+            CommandResult::Handled
+        }
+        Some("agents") => {
+            let registry = crate::services::coordinator::AgentRegistry::with_defaults();
+            println!("Available agent types:\n");
+            for agent in registry.list() {
+                let ro = if agent.read_only { " (read-only)" } else { "" };
+                println!("  {}{ro} — {}", agent.name, agent.description);
+            }
+            CommandResult::Handled
+        }
+        Some("hooks") => {
+            println!("Hook system active. Configure hooks in .rc/settings.toml:");
+            println!("  [[hooks]]");
+            println!("  event = \"pre_tool_use\"");
+            println!("  action = {{ type = \"shell\", command = \"./check.sh\" }}");
+            CommandResult::Handled
+        }
+        Some("plugins") => {
+            let plugins = crate::services::plugins::PluginRegistry::load_all(
+                Some(std::path::Path::new(&engine.state().cwd)),
+            );
+            if plugins.all().is_empty() {
+                println!("No plugins loaded. Add plugin directories to ~/.config/rust-code/plugins/");
+            } else {
+                println!("Loaded {} plugins:", plugins.all().len());
+                for p in plugins.all() {
+                    let desc = p.manifest.description.as_deref().unwrap_or("");
+                    let ver = p.manifest.version.as_deref().unwrap_or("?");
+                    println!("  {} v{} — {}", p.manifest.name, ver, desc);
+                }
             }
             CommandResult::Handled
         }
