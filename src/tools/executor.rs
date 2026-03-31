@@ -1,0 +1,219 @@
+//! Tool executor: manages concurrent and serial tool execution.
+//!
+//! The executor partitions tool calls into batches:
+//! - Read-only (concurrency-safe) tools run in parallel
+//! - Mutation tools run serially
+//!
+//! This mirrors the streaming tool executor pattern where tools
+//! begin execution as soon as their input is fully parsed from
+//! the stream, maximizing throughput.
+
+use std::sync::Arc;
+
+use crate::error::ToolError;
+use crate::llm::message::ContentBlock;
+use crate::permissions::{PermissionChecker, PermissionDecision};
+
+use super::{Tool, ToolContext, ToolResult};
+
+/// A pending tool call extracted from the model's response.
+#[derive(Debug, Clone)]
+pub struct PendingToolCall {
+    pub id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+}
+
+/// Result of executing a tool call.
+#[derive(Debug)]
+pub struct ToolCallResult {
+    pub tool_use_id: String,
+    pub tool_name: String,
+    pub result: ToolResult,
+}
+
+impl ToolCallResult {
+    /// Convert to a content block for sending back to the API.
+    pub fn to_content_block(&self) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: self.tool_use_id.clone(),
+            content: self.result.content.clone(),
+            is_error: self.result.is_error,
+        }
+    }
+}
+
+/// Extract pending tool calls from assistant content blocks.
+pub fn extract_tool_calls(content: &[ContentBlock]) -> Vec<PendingToolCall> {
+    content
+        .iter()
+        .filter_map(|block| {
+            if let ContentBlock::ToolUse { id, name, input } = block {
+                Some(PendingToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Execute a batch of tool calls, respecting concurrency constraints.
+///
+/// Tools that are concurrency-safe run in parallel. Other tools run
+/// serially. Results are returned in the same order as the input.
+pub async fn execute_tool_calls(
+    calls: &[PendingToolCall],
+    tools: &[Arc<dyn Tool>],
+    ctx: &ToolContext,
+    permission_checker: &PermissionChecker,
+) -> Vec<ToolCallResult> {
+    // Partition into concurrent and serial batches.
+    let mut results = Vec::with_capacity(calls.len());
+
+    // Group consecutive concurrency-safe calls together.
+    let mut i = 0;
+    while i < calls.len() {
+        let call = &calls[i];
+        let tool = tools.iter().find(|t| t.name() == call.name);
+
+        match tool {
+            None => {
+                results.push(ToolCallResult {
+                    tool_use_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    result: ToolResult::error(format!("Tool '{}' not found", call.name)),
+                });
+                i += 1;
+            }
+            Some(tool) => {
+                if tool.is_concurrency_safe() {
+                    // Collect consecutive concurrency-safe calls.
+                    let batch_start = i;
+                    while i < calls.len() {
+                        let t = tools.iter().find(|t| t.name() == calls[i].name);
+                        if t.is_some_and(|t| t.is_concurrency_safe()) {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Execute batch concurrently.
+                    let batch = &calls[batch_start..i];
+                    let mut handles = Vec::new();
+
+                    for call in batch {
+                        let tool = tools
+                            .iter()
+                            .find(|t| t.name() == call.name)
+                            .unwrap()
+                            .clone();
+                        let call = call.clone();
+                        let ctx_cwd = ctx.cwd.clone();
+                        let ctx_cancel = ctx.cancel.clone();
+                        let ctx_verbose = ctx.verbose;
+                        let perm_checker = ctx.permission_checker.clone();
+
+                        handles.push(tokio::spawn(async move {
+                            execute_single_tool(&call, &*tool, &ToolContext {
+                                cwd: ctx_cwd,
+                                cancel: ctx_cancel,
+                                permission_checker: perm_checker,
+                                verbose: ctx_verbose,
+                            }, &PermissionChecker::allow_all()).await
+                        }));
+                    }
+
+                    for handle in handles {
+                        match handle.await {
+                            Ok(result) => results.push(result),
+                            Err(e) => {
+                                results.push(ToolCallResult {
+                                    tool_use_id: String::new(),
+                                    tool_name: String::new(),
+                                    result: ToolResult::error(format!("Task join error: {e}")),
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    // Execute serially.
+                    let result = execute_single_tool(call, &**tool, ctx, permission_checker).await;
+                    results.push(result);
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Execute a single tool call with permission checking.
+async fn execute_single_tool(
+    call: &PendingToolCall,
+    tool: &dyn Tool,
+    ctx: &ToolContext,
+    permission_checker: &PermissionChecker,
+) -> ToolCallResult {
+    // Check permissions.
+    let decision = tool.check_permissions(&call.input, permission_checker).await;
+    match decision {
+        PermissionDecision::Allow => {}
+        PermissionDecision::Deny(reason) => {
+            return ToolCallResult {
+                tool_use_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                result: ToolResult::error(format!("Permission denied: {reason}")),
+            };
+        }
+        PermissionDecision::Ask(prompt) => {
+            // In non-interactive mode, deny. In interactive mode,
+            // this would prompt the user (handled at a higher layer).
+            return ToolCallResult {
+                tool_use_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                result: ToolResult::error(format!(
+                    "Permission required (would ask): {prompt}"
+                )),
+            };
+        }
+    }
+
+    // Validate input.
+    if let Err(msg) = tool.validate_input(&call.input) {
+        return ToolCallResult {
+            tool_use_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            result: ToolResult::error(format!("Invalid input: {msg}")),
+        };
+    }
+
+    // Execute.
+    match tool.call(call.input.clone(), ctx).await {
+        Ok(mut result) => {
+            // Truncate if needed.
+            let max = tool.max_result_size_chars();
+            if result.content.len() > max {
+                result.content.truncate(max);
+                result
+                    .content
+                    .push_str("\n\n(output truncated)");
+            }
+            ToolCallResult {
+                tool_use_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                result,
+            }
+        }
+        Err(e) => ToolCallResult {
+            tool_use_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            result: ToolResult::error(e.to_string()),
+        },
+    }
+}
