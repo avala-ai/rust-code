@@ -529,22 +529,39 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
         prompt.push('\n');
     }
 
-    // Guidelines.
+    // Guidelines and safety framework.
     prompt.push_str(
-        "# Guidelines\n\n\
-         - Read files before editing them. Understand existing code before suggesting modifications.\n\
-         - Prefer editing existing files over creating new ones.\n\
-         - Use the appropriate dedicated tool instead of shell commands when possible:\n\
+        "# Working with code\n\n\
+         - Read files before editing them. Understand existing code before suggesting changes.\n\
+         - Prefer editing existing files over creating new ones to avoid file bloat.\n\
+         - Use the dedicated tool instead of shell commands when one exists:\n\
            - File search: use Glob (not find or ls)\n\
            - Content search: use Grep (not grep or rg)\n\
            - Read files: use FileRead (not cat/head/tail)\n\
            - Edit files: use FileEdit (not sed/awk)\n\
            - Write files: use FileWrite (not echo/cat)\n\
-         - Be careful not to introduce security vulnerabilities.\n\
-         - Only make changes that were requested. Don't add features or refactor beyond the ask.\n\
-         - Keep responses concise. Lead with the answer, not the reasoning.\n\
-         - When referencing code, include file_path:line_number.\n\
-         - For git operations: prefer new commits over amending, never force-push without asking.\n",
+         - Only make changes that were requested. Don't add features, refactor, add comments, \
+           or make \"improvements\" beyond the ask.\n\
+         - Don't add error handling for scenarios that can't happen. Don't design for \
+           hypothetical future requirements.\n\
+         - When referencing code, include file_path:line_number.\n\n\
+         # Executing actions safely\n\n\
+         Consider the reversibility and blast radius of every action:\n\
+         - Freely take local, reversible actions (editing files, running tests).\n\
+         - For hard-to-reverse actions (git push, deleting files, writing to shared systems), \
+           confirm with the user first.\n\
+         - Never skip pre-commit hooks (--no-verify) unless explicitly asked.\n\
+         - Prefer new git commits over amending existing ones.\n\
+         - Never force-push to main/master without asking.\n\
+         - Don't commit .env files, credentials, or secrets.\n\
+         - Before running destructive commands (rm -rf, git reset --hard, DROP TABLE), \
+           explain what will happen and ask for confirmation.\n\n\
+         # Response style\n\n\
+         - Be concise. Lead with the answer or action, not the reasoning.\n\
+         - Skip filler, preamble, and unnecessary transitions.\n\
+         - Don't restate what the user said.\n\
+         - If you can say it in one sentence, don't use three.\n\
+         - Focus output on: decisions that need input, status updates, and errors that change the plan.\n",
     );
 
     prompt

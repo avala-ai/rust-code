@@ -56,11 +56,16 @@ impl Provider for AnthropicProvider {
         );
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
-        // Enable prompt caching if requested.
+        // Enable beta features.
+        let mut betas = Vec::new();
+        betas.push("interleaved-thinking-2025-05-14"); // Extended thinking.
         if request.enable_caching {
+            betas.push("prompt-caching-2024-07-31");
+        }
+        if !betas.is_empty() {
             headers.insert(
                 "anthropic-beta",
-                HeaderValue::from_static("prompt-caching-2024-07-31"),
+                HeaderValue::from_str(&betas.join(",")).unwrap_or(HeaderValue::from_static("")),
             );
         }
 
