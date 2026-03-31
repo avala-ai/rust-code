@@ -104,7 +104,6 @@ impl Tool for GrepTool {
             .arg("--color=never");
 
         if case_insensitive {
-            cmd.arg("--case-sensitive");
             cmd.arg("-i");
         }
 

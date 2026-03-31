@@ -118,13 +118,14 @@ pub async fn execute_tool_calls(
                         let ctx_verbose = ctx.verbose;
                         let perm_checker = ctx.permission_checker.clone();
 
+                        // Read-only tools still go through permission checks.
                         handles.push(tokio::spawn(async move {
                             execute_single_tool(&call, &*tool, &ToolContext {
                                 cwd: ctx_cwd,
                                 cancel: ctx_cancel,
-                                permission_checker: perm_checker,
+                                permission_checker: perm_checker.clone(),
                                 verbose: ctx_verbose,
-                            }, &PermissionChecker::allow_all()).await
+                            }, &*perm_checker).await
                         }));
                     }
 
