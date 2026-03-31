@@ -125,10 +125,34 @@ impl QueryEngine {
         let mut rate_limit_retries = 0u32;
         let mut max_output_recovery_count = 0u32;
 
-        // Agent loop: compact → call LLM → execute tools → repeat.
+        // Agent loop: budget check → normalize → compact → call LLM → execute tools → repeat.
         for turn in 0..max_turns {
             self.state.turn_count = turn + 1;
             self.state.is_query_active = true;
+
+            // Budget check before each turn.
+            let budget_config = crate::services::budget::BudgetConfig::default();
+            match crate::services::budget::check_budget(
+                self.state.total_cost_usd,
+                self.state.total_usage.total(),
+                &budget_config,
+            ) {
+                crate::services::budget::BudgetDecision::Stop { message } => {
+                    sink.on_warning(&message);
+                    self.state.is_query_active = false;
+                    return Ok(());
+                }
+                crate::services::budget::BudgetDecision::ContinueWithWarning {
+                    message, ..
+                } => {
+                    sink.on_warning(&message);
+                }
+                crate::services::budget::BudgetDecision::Continue => {}
+            }
+
+            // Normalize messages: ensure tool result pairing, merge consecutive users.
+            crate::llm::normalize::ensure_tool_result_pairing(&mut self.state.messages);
+            crate::llm::normalize::merge_consecutive_user_messages(&mut self.state.messages);
 
             debug!("Agent turn {}/{}", turn + 1, max_turns);
 
@@ -202,12 +226,12 @@ impl QueryEngine {
             let system_prompt = build_system_prompt(&self.tools, &self.state);
             let tool_schemas = self.tools.schemas();
 
-            let request = CompletionRequest {
-                messages: self.state.history(),
-                system_prompt: &system_prompt,
-                tools: &tool_schemas,
-                max_tokens: self.state.config.api.max_output_tokens,
-            };
+            let request = CompletionRequest::simple(
+                self.state.history(),
+                &system_prompt,
+                &tool_schemas,
+                self.state.config.api.max_output_tokens,
+            );
 
             let mut rx = match self.llm.stream_completion(request).await {
                 Ok(rx) => {
