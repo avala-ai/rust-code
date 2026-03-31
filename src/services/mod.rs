@@ -4,6 +4,7 @@
 //! token estimation, MCP server management, and memory persistence.
 
 pub mod background;
+pub mod bridge;
 pub mod compact;
 pub mod coordinator;
 pub mod lsp;
