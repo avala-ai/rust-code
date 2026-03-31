@@ -1,6 +1,6 @@
 [package]
 name = "rs-code"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "An AI-powered coding agent for the terminal, written in pure Rust"
 license = "MIT"
