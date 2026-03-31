@@ -98,6 +98,16 @@ impl QueryEngine {
         }
     }
 
+    /// Load hooks from configuration into the registry.
+    pub fn load_hooks(&mut self, hook_defs: &[crate::hooks::HookDefinition]) {
+        for def in hook_defs {
+            self.hooks.register(def.clone());
+        }
+        if !hook_defs.is_empty() {
+            tracing::info!("Loaded {} hooks from config", hook_defs.len());
+        }
+    }
+
     /// Get a reference to the app state.
     pub fn state(&self) -> &AppState {
         &self.state

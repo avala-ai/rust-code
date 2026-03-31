@@ -13,6 +13,9 @@ pub struct Config {
     /// MCP server configurations.
     #[serde(default)]
     pub mcp_servers: std::collections::HashMap<String, McpServerEntry>,
+    /// Lifecycle hooks.
+    #[serde(default)]
+    pub hooks: Vec<crate::hooks::HookDefinition>,
 }
 
 /// Entry for a configured MCP server.
