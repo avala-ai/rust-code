@@ -12,6 +12,8 @@
 //! 8. Inject tool results into history
 //! 9. Repeat from step 1 until no tool_use or max turns
 
+pub mod source;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
