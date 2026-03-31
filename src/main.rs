@@ -1,4 +1,4 @@
-//! rust-code: An AI-powered coding agent for the terminal.
+//! rs-code: An AI-powered coding agent for the terminal.
 //!
 //! Entry point for the `rc` binary. Handles CLI argument parsing,
 //! configuration loading, and launches the interactive REPL or

@@ -6,8 +6,8 @@ Thank you for your interest in contributing.
 
 ```bash
 # Clone
-git clone https://github.com/avala-ai/rust-code.git
-cd rust-code
+git clone https://github.com/avala-ai/rs-code.git
+cd rs-code
 
 # Build
 cargo build

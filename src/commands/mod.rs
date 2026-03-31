@@ -342,7 +342,7 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             )));
             if skills.all().is_empty() {
                 println!(
-                    "No skills loaded. Add .md files to .rc/skills/ or ~/.config/rust-code/skills/"
+                    "No skills loaded. Add .md files to .rc/skills/ or ~/.config/rs-code/skills/"
                 );
             } else {
                 println!("Loaded {} skills:", skills.all().len());
@@ -526,7 +526,7 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             ));
             if plugins.all().is_empty() {
                 println!(
-                    "No plugins loaded. Add plugin directories to ~/.config/rust-code/plugins/"
+                    "No plugins loaded. Add plugin directories to ~/.config/rs-code/plugins/"
                 );
             } else {
                 println!("Loaded {} plugins:", plugins.all().len());

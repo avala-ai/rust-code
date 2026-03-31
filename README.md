@@ -1,161 +1,297 @@
-# rust-code
+<p align="center">
+  <h1 align="center">rs-code</h1>
+  <p align="center">
+    A fast, open-source AI coding agent for the terminal.<br>
+    Built in pure Rust by <a href="https://github.com/avala-ai">Avala AI</a>.
+  </p>
+</p>
 
-An AI-powered coding agent for the terminal, written in pure Rust.
+<p align="center">
+  <a href="https://crates.io/crates/rs-code"><img src="https://img.shields.io/crates/v/rs-code.svg" alt="crates.io"></a>
+  <a href="https://github.com/avala-ai/rs-code/actions"><img src="https://github.com/avala-ai/rs-code/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/avala-ai/rs-code/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+</p>
 
-## Features
+---
 
-- **Interactive REPL** with streaming responses, markdown rendering, and syntax highlighting
-- **23 built-in tools** for file operations, shell commands, code search, web access, and more
-- **26 slash commands** for git, session management, diagnostics, and agent control
-- **Permission system** with configurable rules (allow/deny/ask per tool and pattern)
-- **Agent loop** that autonomously executes multi-step coding tasks with error recovery
-- **MCP support** for connecting external tool servers (stdio + SSE transports)
-- **Memory system** for persistent context across sessions (project + user level)
-- **Skills** for custom reusable workflows loaded from markdown files
-- **Plugin system** for bundling skills, hooks, and config as packages
-- **Session persistence** with save, resume, and history
-- **Plan mode** for safe read-only exploration before making changes
-- **Multi-agent coordination** with typed agent definitions (general, explore, plan)
-- **IDE bridge protocol** for VS Code and JetBrains integration
-- **Vi/Emacs editing modes** with customizable keybindings
-
-## Architecture
+`rs-code` is an AI-powered coding agent that lives in your terminal. It reads your codebase, executes commands, edits files, and handles multi-step engineering tasks autonomously. Think of it as a senior engineer that works alongside you in the shell.
 
 ```
-┌───────────────────────────────────────────────────────┐
-│               ENTRYPOINT (main.rs / cli)               │
-│          CLI parsing, initialization, bootstrap        │
-└─────────────────────────┬─────────────────────────────┘
-                          │
-┌─────────────────────────▼─────────────────────────────┐
-│            CONFIG & BOOTSTRAP (config/)                 │
-│      Settings loading, environment, MCP connect        │
-└─────────────────────────┬─────────────────────────────┘
-                          │
-┌─────────────────────────▼─────────────────────────────┐
-│             QUERY ENGINE (query/)                       │
-│    Agent loop: compact → stream → tools → loop         │
-└────────┬────────────┬──────────────┬──────────────────┘
-         │            │              │
-┌────────▼───┐  ┌─────▼─────┐  ┌────▼───────┐
-│ TOOL LAYER │  │ PERMISSION │  │   HOOKS    │
-│            │  │   SYSTEM   │  │            │
-│ 23 tools   │  │ Rules      │  │ Pre/Post   │
-│ MCP proxy  │  │ Plan mode  │  │ Shell/HTTP │
-│ Executor   │  │ Ask/Deny   │  │ Lifecycle  │
-└────────────┘  └────────────┘  └────────────┘
-         │            │              │
-┌────────▼────────────▼──────────────▼──────────────────┐
-│                  SERVICES (12)                          │
-│  LLM Client │ Compact │ MCP │ LSP │ Git │ Session     │
-│  Tokens │ Bridge │ Coordinator │ Background │ Plugins  │
-└───────────────────────────────────────────────────────┘
+$ cargo install rs-code
+$ export RC_API_KEY="your-api-key"
+$ rc
 ```
+
+## Why rs-code
+
+- **Fast.** Single static binary, ~8MB. Starts instantly. Streams responses as they arrive.
+- **Private.** Runs locally. No telemetry. Your code never leaves your machine except for the LLM API call.
+- **Extensible.** Connect external tools via MCP servers, write custom skills as markdown files, build plugins as TOML packages.
+- **Safe.** Every tool call goes through a permission system. Plan mode locks the agent to read-only. Configurable rules per tool and pattern.
+- **Provider-agnostic.** Works with any API that speaks the Messages protocol. Swap models with `--model` or `/model`.
+
+## Install
+
+**From crates.io** (recommended):
+```bash
+cargo install rs-code
+```
+
+**From source:**
+```bash
+git clone https://github.com/avala-ai/rs-code.git
+cd rs-code
+cargo build --release
+# Binary is at target/release/rc
+```
+
+**From GitHub Releases:**
+
+Download prebuilt binaries for Linux (x86_64, aarch64) and macOS (x86_64, aarch64) from the [Releases page](https://github.com/avala-ai/rs-code/releases).
 
 ## Quick Start
 
 ```bash
-# Build
-cargo build --release
-
 # Set your API key
 export RC_API_KEY="your-api-key"
 
-# Run interactive mode
-./target/release/rc
+# Interactive mode
+rc
 
-# One-shot mode
-./target/release/rc --prompt "explain this codebase"
+# One-shot: ask a question and exit
+rc --prompt "find all TODO comments in this repo"
+
+# Use a specific model
+rc --model claude-opus-4-20250514
+
+# Print the system prompt (useful for debugging)
+rc --dump-system-prompt
 ```
+
+Once inside the REPL, type naturally. The agent reads files, runs commands, and edits code to accomplish what you ask. Type `/help` to see all available commands.
+
+## What It Can Do
+
+The agent has 23 built-in tools and 26 slash commands. Here are the highlights:
+
+**Read and understand code:**
+```
+> explain how the authentication middleware works
+> find where the database connection pool is configured
+> what changed in the last 3 commits?
+```
+
+**Write and edit code:**
+```
+> add input validation to the signup endpoint
+> refactor this function to use async/await
+> fix the failing test in tests/auth_test.rs
+```
+
+**Run commands and manage git:**
+```
+> run the test suite and fix any failures
+> /commit  (reviews diff and creates a commit)
+> /review  (analyzes diff for bugs and issues)
+```
+
+**Multi-step tasks:**
+```
+> add a new API endpoint for user preferences with tests, migration, and docs
+```
+
+The agent handles this by reading existing patterns, creating the migration, writing the endpoint, adding tests, and updating documentation, all in one turn.
+
+## Architecture
+
+```
+                              ┌─────────────┐
+                              │   CLI / REPL │
+                              └──────┬───────┘
+                                     │
+                    ┌────────────────▼────────────────┐
+                    │          Query Engine            │
+                    │  stream → tools → loop → compact │
+                    └──┬──────────┬──────────┬────────┘
+                       │          │          │
+              ┌────────▼──┐ ┌────▼─────┐ ┌──▼───────┐
+              │   Tools   │ │ Perms    │ │  Hooks   │
+              │  23 built │ │ allow    │ │ pre/post │
+              │  + MCP    │ │ deny/ask │ │ shell    │
+              └────��──────┘ └──────────┘ └──────────┘
+                       │          │          │
+   ┌───────────────────▼──────────▼──────────▼──────┐
+   │                    Services                     │
+   │  LLM  Compact  MCP  LSP  Git  Session  Budget  │
+   │  Cache  Bridge  Coordinator  Telemetry  Plugins │
+   └─────────────────────────────────────────────────┘
+```
+
+The core loop: receive user input, call the LLM with conversation history and tool definitions, stream the response, execute any tool calls the model makes, feed results back, repeat until done. Compaction keeps the context window in check during long sessions.
 
 ## Configuration
 
-Configuration is loaded from (highest to lowest priority):
-1. CLI flags and environment variables
-2. Project-local `.rc/settings.toml`
-3. User config `~/.config/rust-code/config.toml`
+Configuration loads from three layers (highest priority first):
+
+1. **CLI flags and environment variables** (`RC_API_KEY`, `--model`, etc.)
+2. **Project config** (`.rc/settings.toml` in your repo)
+3. **User config** (`~/.config/rs-code/config.toml`)
 
 ```toml
+# ~/.config/rs-code/config.toml
+
 [api]
 base_url = "https://api.anthropic.com/v1"
 model = "claude-sonnet-4-20250514"
 
 [permissions]
-default_mode = "ask"
+default_mode = "ask"   # "ask", "allow", or "deny"
 
 [[permissions.rules]]
 tool = "Bash"
 pattern = "git *"
+action = "allow"       # auto-approve git commands
+
+[[permissions.rules]]
+tool = "FileWrite"
+pattern = "/tmp/*"
 action = "allow"
 
+# Connect an MCP server for additional tools
 [mcp_servers.filesystem]
 command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
-
-[ui]
-markdown = true
-syntax_highlight = true
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
 ```
 
 ## Tools
 
-| Tool | Description | Read-only |
-|------|-------------|-----------|
-| `Agent` | Spawn subagents for parallel tasks | No |
-| `AskUserQuestion` | Interactive multi-choice prompts | Yes |
-| `Bash` | Execute shell commands | No |
-| `FileEdit` | Search-and-replace editing | No |
-| `FileRead` | Read files with line ranges | Yes |
-| `FileWrite` | Create or overwrite files | No |
-| `Glob` | Find files by pattern | Yes |
-| `Grep` | Regex content search (ripgrep) | Yes |
-| `LSP` | Language server diagnostics | Yes |
-| `McpProxy` | Bridge to MCP server tools | No |
-| `NotebookEdit` | Edit Jupyter notebook cells | No |
-| `EnterPlanMode` | Switch to read-only mode | Yes |
-| `ExitPlanMode` | Re-enable all tools | Yes |
-| `SendMessage` | Inter-agent communication | No |
-| `Sleep` | Async pause with cancellation | Yes |
-| `TaskCreate` | Create progress tracking tasks | Yes |
-| `TaskUpdate` | Update task status | Yes |
-| `TodoWrite` | Structured todo list management | Yes |
-| `ToolSearch` | Find tools by keyword | Yes |
-| `EnterWorktree` | Create isolated git worktree | No |
-| `ExitWorktree` | Clean up git worktree | No |
-| `WebFetch` | Fetch content from URLs | Yes |
-| `WebSearch` | Search the web | Yes |
+| Tool | What it does |
+|------|-------------|
+| **Agent** | Spawn subagents for parallel work (with optional git worktree isolation) |
+| **Bash** | Run shell commands with timeout and cancellation |
+| **FileRead** | Read files with line numbers (handles binary, PDF, images gracefully) |
+| **FileWrite** | Create or overwrite files, auto-creates parent directories |
+| **FileEdit** | Targeted search-and-replace with uniqueness validation |
+| **Grep** | Regex search powered by ripgrep, with context lines and filtering |
+| **Glob** | Find files by pattern, sorted by modification time |
+| **WebFetch** | Fetch URLs with HTML-to-text conversion |
+| **WebSearch** | Web search with result extraction |
+| **LSP** | Query language servers for diagnostics (falls back to linters) |
+| **NotebookEdit** | Edit Jupyter notebook cells (replace, insert, delete) |
+| **AskUserQuestion** | Prompt the user with structured choices during execution |
+| **ToolSearch** | Discover tools by keyword or direct selection |
+| **SendMessage** | Inter-agent communication for multi-agent workflows |
+| **EnterPlanMode / ExitPlanMode** | Toggle read-only mode for safe exploration |
+| **EnterWorktree / ExitWorktree** | Manage isolated git worktrees |
+| **TaskCreate / TaskUpdate** | Track progress on multi-step work |
+| **TodoWrite** | Structured todo list management |
+| **Sleep** | Async pause with cancellation support |
+| **McpProxy** | Bridge to any MCP server tool |
 
 ## Commands
 
-| Command | Description |
+| Command | What it does |
 |---------|-------------|
-| `/help` | Show available commands |
-| `/exit` | Exit the REPL |
-| `/clear` | Clear conversation history |
-| `/compact` | Free context by clearing old tool results |
-| `/cost` | Show session cost and token usage |
-| `/model` | Show or change the current model |
-| `/diff` | Show git diff |
+| `/help` | Show all commands and loaded skills |
+| `/clear` | Reset conversation history |
+| `/compact` | Free context by clearing stale tool results |
+| `/cost` | Token usage and estimated cost for the session |
+| `/context` | Context window usage and auto-compact threshold |
+| `/model [name]` | Show or switch the active model |
+| `/diff` | Show current git changes |
 | `/status` | Show git status |
-| `/commit` | Commit current changes |
-| `/review` | Review current diff for issues |
-| `/branch` | Show or switch git branch |
-| `/resume` | Resume a previous session |
+| `/commit [msg]` | Review diff and create a commit |
+| `/review` | Analyze diff for bugs, security issues, code quality |
+| `/branch [name]` | Show or switch git branch |
+| `/plan` | Toggle plan mode (read-only tools only) |
+| `/resume <id>` | Restore a previous session |
 | `/sessions` | List saved sessions |
+| `/export` | Export conversation to markdown |
+| `/init` | Create `.rc/settings.toml` for this project |
+| `/doctor` | Check environment (tools, config, git, disk) |
+| `/mcp` | List connected MCP servers |
 | `/memory` | Show loaded memory context |
-| `/skills` | List available skills |
-| `/doctor` | Check environment health |
-| `/mcp` | List MCP server connections |
-| `/plan` | Toggle plan mode |
-| `/init` | Initialize project config |
-| `/export` | Export conversation as markdown |
-| `/context` | Show context window usage |
-| `/agents` | List agent types |
-| `/hooks` | Show hook configuration |
+| `/skills` | List available custom skills |
+| `/agents` | List agent types (general, explore, plan) |
 | `/plugins` | List loaded plugins |
-| `/verbose` | Toggle verbose output |
-| `/version` | Show version |
+| `/hooks` | Show hook configuration |
+
+## Extending rs-code
+
+### Skills
+
+Skills are reusable workflows defined as markdown files with YAML frontmatter. Drop them in `.rc/skills/` or `~/.config/rs-code/skills/`.
+
+```markdown
+---
+description: Run tests and fix failures
+userInvocable: true
+---
+
+Run the test suite. If any tests fail, read the failing test and the
+source code it tests, then fix the issue. Run the tests again to verify.
+```
+
+Invoke with `/skill-name` or let the agent pick it up contextually.
+
+### MCP Servers
+
+Connect any [Model Context Protocol](https://modelcontextprotocol.io/) server to add tools. Servers communicate over stdio or HTTP.
+
+```toml
+[mcp_servers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "ghp_..." }
+```
+
+### Plugins
+
+Plugins bundle skills, hooks, and configuration into installable packages. A plugin is a directory with a `plugin.toml` manifest.
+
+```
+my-plugin/
+  plugin.toml
+  skills/
+    deploy.md
+    rollback.md
+```
+
+### Hooks
+
+Run shell commands or HTTP requests at lifecycle points:
+
+```toml
+# .rc/settings.toml
+[[hooks]]
+event = "post_tool_use"
+tool_name = "FileWrite"
+action = { type = "shell", command = "cargo fmt" }
+```
+
+### Memory
+
+Persistent context that carries across sessions:
+
+- **Project memory:** `.rc/CONTEXT.md` in your repo root. Loaded automatically.
+- **User memory:** `~/.config/rs-code/memory/MEMORY.md`. Personal preferences and patterns.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and PR process.
+
+```bash
+git clone https://github.com/avala-ai/rs-code.git
+cd rs-code
+cargo build
+cargo test
+cargo clippy
+```
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
+
+---
+
+Built by [Avala AI](https://github.com/avala-ai).

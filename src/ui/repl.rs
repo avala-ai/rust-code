@@ -99,7 +99,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     let session_id = crate::services::session::new_session_id();
 
     // Load history.
-    let history_path = dirs::data_dir().map(|d| d.join("rust-code").join("history.txt"));
+    let history_path = dirs::data_dir().map(|d| d.join("rs-code").join("history.txt"));
     if let Some(ref path) = history_path {
         let _ = std::fs::create_dir_all(path.parent().unwrap());
         let _ = rl.load_history(path);
