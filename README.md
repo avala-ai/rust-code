@@ -32,9 +32,19 @@ $ rc
 
 ## Install
 
-**From crates.io** (recommended):
+**One-line install** (Linux/macOS):
+```bash
+curl -fsSL https://raw.githubusercontent.com/avala-ai/rs-code/main/install.sh | bash
+```
+
+**From crates.io:**
 ```bash
 cargo install rs-code
+```
+
+**Homebrew:**
+```bash
+brew install avala-ai/tap/rs-code
 ```
 
 **From source:**

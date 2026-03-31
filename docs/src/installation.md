@@ -6,7 +6,17 @@
 
 ## Install methods
 
-### Cargo (recommended)
+### One-line install (recommended)
+
+Works on Linux and macOS (x86_64 and aarch64):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/avala-ai/rs-code/main/install.sh | bash
+```
+
+Detects your OS and architecture, downloads the latest release, and installs `rc` to `/usr/local/bin`. Set `RC_INSTALL_DIR` to change the install location.
+
+### Cargo
 
 If you have Rust installed:
 

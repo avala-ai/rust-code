@@ -1,20 +1,20 @@
 
 ## Install
 
+**One-line install** (Linux/macOS):
 
-```bash cargo (recommended)
+```bash
+curl -fsSL https://raw.githubusercontent.com/avala-ai/rs-code/main/install.sh | bash
+```
+
+Or via package managers:
+
+```bash
+# crates.io
 cargo install rs-code
-```
 
-```bash homebrew
+# homebrew
 brew install avala-ai/tap/rs-code
-```
-
-```bash from source
-git clone https://github.com/avala-ai/rs-code.git
-cd rs-code
-cargo build --release
-# Binary: target/release/rc
 ```
 
 
