@@ -88,6 +88,18 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "resume",
+        aliases: &[],
+        description: "Resume a previous session by ID",
+        hidden: false,
+    },
+    Command {
+        name: "sessions",
+        aliases: &[],
+        description: "List recent sessions",
+        hidden: false,
+    },
+    Command {
         name: "memory",
         aliases: &[],
         description: "Show loaded memory context",
@@ -196,6 +208,43 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                 println!("Model changed to: {new_model}");
             } else {
                 println!("Model: {}", engine.state().config.api.model);
+            }
+            CommandResult::Handled
+        }
+        Some("resume") => {
+            if let Some(id) = args {
+                match crate::services::session::load_session(id) {
+                    Ok(data) => {
+                        engine.state_mut().messages = data.messages;
+                        engine.state_mut().turn_count = data.turn_count;
+                        println!(
+                            "Resumed session {} ({} messages, {} turns)",
+                            id,
+                            engine.state().messages.len(),
+                            data.turn_count,
+                        );
+                    }
+                    Err(e) => println!("Failed to resume: {e}"),
+                }
+            } else {
+                println!("Usage: /resume <session-id>");
+                println!("Use /sessions to list recent sessions.");
+            }
+            CommandResult::Handled
+        }
+        Some("sessions") => {
+            let sessions = crate::services::session::list_sessions(10);
+            if sessions.is_empty() {
+                println!("No saved sessions.");
+            } else {
+                println!("Recent sessions:\n");
+                for s in &sessions {
+                    println!(
+                        "  {} — {} ({} turns, {} msgs, {})",
+                        s.id, s.cwd, s.turn_count, s.message_count, s.updated_at,
+                    );
+                }
+                println!("\nUse /resume <id> to restore a session.");
             }
             CommandResult::Handled
         }

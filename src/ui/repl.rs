@@ -82,6 +82,9 @@ impl StreamSink for TerminalSink {
 pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     let mut rl = DefaultEditor::new()?;
 
+    // Generate a session ID for persistence.
+    let session_id = crate::services::session::new_session_id();
+
     // Load history.
     let history_path = dirs::data_dir()
         .map(|d| d.join("rust-code").join("history.txt"));
@@ -92,8 +95,9 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 
     // Welcome message.
     println!(
-        "{}\n{}\n",
+        "{} {}\n{}\n",
         " rc ".on_dark_cyan().white().bold(),
+        format!("session {session_id}").dark_grey(),
         "Type your message, or /help for commands. Ctrl+C to cancel, Ctrl+D to exit.".dark_grey(),
     );
 
@@ -166,8 +170,22 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
         let _ = rl.save_history(path);
     }
 
-    // Print session summary.
+    // Persist session for later resume.
     let state = engine.state();
+    if !state.messages.is_empty() {
+        match crate::services::session::save_session(
+            &session_id,
+            &state.messages,
+            &state.cwd,
+            &state.config.api.model,
+            state.turn_count,
+        ) {
+            Ok(_) => {}
+            Err(e) => eprintln!("{}", format!("Failed to save session: {e}").dark_grey()),
+        }
+    }
+
+    // Print session summary.
     if state.total_usage.total() > 0 {
         println!(
             "\n{} {} turns, {} tokens, ${:.4}",
