@@ -80,7 +80,12 @@ impl StreamSink for TerminalSink {
 
 /// Run the interactive REPL loop.
 pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
-    let mut rl = DefaultEditor::new()?;
+    // Configure editing mode (vi if EDITOR contains "vi", else emacs).
+    let input_mode = super::keymap::InputMode::default();
+    let rl_config = rustyline::Config::builder()
+        .edit_mode(input_mode.to_edit_mode())
+        .build();
+    let mut rl = rustyline::Editor::<(), rustyline::history::DefaultHistory>::with_config(rl_config)?;
 
     // Generate a session ID for persistence.
     let session_id = crate::services::session::new_session_id();

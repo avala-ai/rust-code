@@ -4,5 +4,6 @@
 //! output display. Built on crossterm and rustyline.
 
 pub mod activity;
+pub mod keymap;
 pub mod render;
 pub mod repl;
