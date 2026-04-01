@@ -20,6 +20,7 @@
 
 pub mod consolidation;
 pub mod scanner;
+pub mod session_notes;
 pub mod types;
 pub mod writer;
 
@@ -115,17 +116,68 @@ impl MemoryContext {
     }
 }
 
+/// Load project context by traversing the directory hierarchy.
+///
+/// Checks (in priority order, lowest to highest):
+/// 1. User global: ~/.config/agent-code/CONTEXT.md
+/// 2. Project root: CONTEXT.md, .rc/CONTEXT.md
+/// 3. Project rules: .rc/rules/*.md (all files concatenated)
+/// 4. Project local: CONTEXT.local.md (gitignored overrides)
+///
+/// Files closer to cwd have higher priority (loaded later, overrides earlier).
 fn load_project_context(project_root: &Path) -> Option<String> {
+    let mut sections = Vec::new();
+
+    // Layer 1: User global context.
+    if let Some(global_path) = dirs::config_dir().map(|d| d.join("agent-code").join("CONTEXT.md"))
+        && let Some(content) = load_truncated_file(&global_path)
+    {
+        debug!("Loaded global context from {}", global_path.display());
+        sections.push(content);
+    }
+
+    // Layer 2: Project root context.
     for path in &[
-        project_root.join(".rc").join("CONTEXT.md"),
         project_root.join("CONTEXT.md"),
+        project_root.join(".rc").join("CONTEXT.md"),
     ] {
         if let Some(content) = load_truncated_file(path) {
             debug!("Loaded project context from {}", path.display());
-            return Some(content);
+            sections.push(content);
         }
     }
-    None
+
+    // Layer 3: Rules directory (all .md files).
+    let rules_dir = project_root.join(".rc").join("rules");
+    if rules_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&rules_dir)
+    {
+        let mut rule_files: Vec<_> = entries
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md") && e.path().is_file())
+            .collect();
+        rule_files.sort_by_key(|e| e.file_name());
+
+        for entry in rule_files {
+            if let Some(content) = load_truncated_file(&entry.path()) {
+                debug!("Loaded rule from {}", entry.path().display());
+                sections.push(content);
+            }
+        }
+    }
+
+    // Layer 4: Local overrides (gitignored).
+    let local_path = project_root.join("CONTEXT.local.md");
+    if let Some(content) = load_truncated_file(&local_path) {
+        debug!("Loaded local context from {}", local_path.display());
+        sections.push(content);
+    }
+
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
 }
 
 fn load_truncated_file(path: &Path) -> Option<String> {

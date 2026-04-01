@@ -526,8 +526,32 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
         if is_git { "yes" } else { "no" },
     ));
 
-    // Inject memory context (project + user).
-    let memory = crate::memory::MemoryContext::load(Some(std::path::Path::new(&state.cwd)));
+    // Inject memory context (project + user + on-demand relevant).
+    let mut memory = crate::memory::MemoryContext::load(Some(std::path::Path::new(&state.cwd)));
+
+    // On-demand: surface relevant memories based on recent conversation.
+    let recent_text: String = state
+        .messages
+        .iter()
+        .rev()
+        .take(5)
+        .filter_map(|m| match m {
+            crate::llm::message::Message::User(u) => Some(
+                u.content
+                    .iter()
+                    .filter_map(|b| b.as_text())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if !recent_text.is_empty() {
+        memory.load_relevant(&recent_text);
+    }
+
     let memory_section = memory.to_system_prompt_section();
     if !memory_section.is_empty() {
         prompt.push_str(&memory_section);
