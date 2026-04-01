@@ -443,6 +443,11 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                     println!("  {}", "─".repeat(50).with(t.muted));
                     println!(
                         "  {}  {}",
+                        "! command".with(t.text),
+                        "run shell command directly".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
                         "/ + command".with(t.text),
                         "slash commands (/help to list all)".with(t.muted),
                     );
@@ -508,6 +513,32 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                 }
 
                 rl.add_history_entry(input)?;
+
+                // ! prefix: run shell command directly (bash mode).
+                if input.starts_with('!') {
+                    let cmd = input.strip_prefix('!').unwrap_or("").trim();
+                    if !cmd.is_empty() {
+                        let output = std::process::Command::new("bash")
+                            .arg("-c")
+                            .arg(cmd)
+                            .current_dir(&engine.state().cwd)
+                            .output();
+                        match output {
+                            Ok(out) => {
+                                let stdout = String::from_utf8_lossy(&out.stdout);
+                                let stderr = String::from_utf8_lossy(&out.stderr);
+                                if !stdout.is_empty() {
+                                    print!("{stdout}");
+                                }
+                                if !stderr.is_empty() {
+                                    eprint!("{stderr}");
+                                }
+                            }
+                            Err(e) => eprintln!("bash error: {e}"),
+                        }
+                    }
+                    continue;
+                }
 
                 // Handle slash commands.
                 if input.starts_with('/') {
