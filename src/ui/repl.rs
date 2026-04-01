@@ -333,9 +333,26 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 
     let mut ctrl_c_pending = false;
 
+    // Render the status bar before each prompt.
+    let render_status = |engine: &QueryEngine| {
+        let state = engine.state();
+        let turns = state.turn_count;
+        if turns == 0 {
+            return;
+        }
+        let tokens = state.total_usage.total();
+        let cost = state.total_cost_usd;
+        let model_str = &state.config.api.model;
+        super::tui::render_status_bar(model_str, turns, tokens, cost);
+    };
+
     loop {
         let sink = TerminalSink::new(verbose);
         let t = super::theme::current();
+
+        // Show status bar before prompt.
+        render_status(engine);
+
         let prompt = format!("{} ", "❯".with(t.accent).bold());
 
         match rl.readline(&prompt) {

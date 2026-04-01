@@ -384,6 +384,251 @@ fn color_to_bg_code(color: Color) -> String {
     }
 }
 
+// ---- Scrollback viewer ----
+
+/// Interactive scrollable conversation history viewer.
+/// Uses crossterm raw mode for keyboard input. Press q or Esc to exit.
+pub fn scrollback_viewer(messages: &[crate::llm::message::Message]) {
+    use crossterm::{
+        event::{self, Event, KeyCode, KeyEvent},
+        terminal,
+    };
+
+    let t = super::theme::current();
+    let accent = theme_to_ratatui(t.accent);
+    let muted = theme_to_ratatui(t.muted);
+    let success = theme_to_ratatui(t.success);
+    let error = theme_to_ratatui(t.error);
+
+    // Build display lines from messages.
+    let mut all_lines: Vec<Line<'static>> = Vec::new();
+
+    for (idx, msg) in messages.iter().enumerate() {
+        match msg {
+            crate::llm::message::Message::User(u) => {
+                // User header.
+                all_lines.push(Line::from(vec![Span::styled(
+                    format!(" [{idx}] USER "),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(accent)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                // User content.
+                for block in &u.content {
+                    match block {
+                        crate::llm::message::ContentBlock::Text { text } => {
+                            for line in text.lines() {
+                                all_lines.push(Line::from(Span::raw(format!("  {line}"))));
+                            }
+                        }
+                        crate::llm::message::ContentBlock::ToolResult {
+                            content, is_error, ..
+                        } => {
+                            let color = if *is_error { error } else { success };
+                            let icon = if *is_error { "✗" } else { "✓" };
+                            let preview: String = content
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .chars()
+                                .take(60)
+                                .collect();
+                            all_lines.push(Line::from(vec![
+                                Span::styled(format!("  {icon} "), Style::default().fg(color)),
+                                Span::styled(preview, Style::default().fg(muted)),
+                            ]));
+                        }
+                        _ => {}
+                    }
+                }
+                all_lines.push(Line::from(""));
+            }
+            crate::llm::message::Message::Assistant(a) => {
+                // Assistant header.
+                let model_tag = a
+                    .model
+                    .as_deref()
+                    .map(|m| format!(" ({m})"))
+                    .unwrap_or_default();
+                all_lines.push(Line::from(vec![Span::styled(
+                    format!(" [{idx}] ASSISTANT{model_tag} "),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(success)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                // Content.
+                let mut tool_count = 0;
+                for block in &a.content {
+                    match block {
+                        crate::llm::message::ContentBlock::Text { text } => {
+                            for line in text.lines().take(20) {
+                                all_lines.push(Line::from(Span::raw(format!("  {line}"))));
+                            }
+                            if text.lines().count() > 20 {
+                                all_lines.push(Line::from(Span::styled(
+                                    format!("  ... ({} more lines)", text.lines().count() - 20),
+                                    Style::default().fg(muted),
+                                )));
+                            }
+                        }
+                        crate::llm::message::ContentBlock::ToolUse { name, .. } => {
+                            tool_count += 1;
+                            all_lines.push(Line::from(vec![
+                                Span::styled("  → ", Style::default().fg(muted)),
+                                Span::styled(
+                                    name.to_string(),
+                                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                                ),
+                            ]));
+                        }
+                        crate::llm::message::ContentBlock::Thinking { thinking, .. } => {
+                            let preview: String = thinking.chars().take(80).collect();
+                            all_lines.push(Line::from(Span::styled(
+                                format!("  (thinking: {preview}...)"),
+                                Style::default().fg(muted).add_modifier(Modifier::ITALIC),
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
+                if tool_count > 0 {
+                    all_lines.push(Line::from(Span::styled(
+                        format!(
+                            "  ({tool_count} tool call{})",
+                            if tool_count != 1 { "s" } else { "" }
+                        ),
+                        Style::default().fg(muted),
+                    )));
+                }
+                all_lines.push(Line::from(""));
+            }
+            _ => {}
+        }
+    }
+
+    if all_lines.is_empty() {
+        return;
+    }
+
+    // Enter scrollable view.
+    let (term_w, term_h) = terminal::size().unwrap_or((80, 24));
+    let view_height = (term_h as usize).saturating_sub(3); // Reserve for header + footer.
+    let max_scroll = all_lines.len().saturating_sub(view_height);
+    let mut scroll: usize = max_scroll; // Start at bottom (most recent).
+
+    terminal::enable_raw_mode().expect("raw mode");
+
+    render_scrollback(
+        &all_lines,
+        scroll,
+        view_height,
+        term_w as usize,
+        messages.len(),
+    );
+
+    loop {
+        if let Ok(Event::Key(KeyEvent { code, .. })) = event::read() {
+            match code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    scroll = scroll.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    scroll = scroll.min(max_scroll).saturating_add(1).min(max_scroll);
+                }
+                KeyCode::PageUp => {
+                    scroll = scroll.saturating_sub(view_height);
+                }
+                KeyCode::PageDown => {
+                    scroll = (scroll + view_height).min(max_scroll);
+                }
+                KeyCode::Home => {
+                    scroll = 0;
+                }
+                KeyCode::End => {
+                    scroll = max_scroll;
+                }
+                _ => continue,
+            }
+            // Clear and re-render.
+            clear_scrollback(view_height + 2);
+            render_scrollback(
+                &all_lines,
+                scroll,
+                view_height,
+                term_w as usize,
+                messages.len(),
+            );
+        }
+    }
+
+    terminal::disable_raw_mode().expect("disable raw mode");
+    clear_scrollback(view_height + 2);
+    println!("  (exited scroll view)\r");
+}
+
+fn render_scrollback(
+    lines: &[Line<'_>],
+    scroll: usize,
+    view_height: usize,
+    width: usize,
+    msg_count: usize,
+) {
+    let t = super::theme::current();
+    let muted = theme_to_ratatui(t.muted);
+    let accent = theme_to_ratatui(t.accent);
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    // Header.
+    let header = format!(
+        " Conversation ({msg_count} messages) │ ↑↓ scroll │ PgUp/PgDn │ Home/End │ q quit "
+    );
+    let hdr_line = Line::from(Span::styled(
+        truncate(&header, width),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+    ));
+    write!(out, "{}", render_lines_to_ansi(&[hdr_line])).ok();
+
+    // Content.
+    let end = (scroll + view_height).min(lines.len());
+    let visible = &lines[scroll..end];
+    let buf = render_lines_to_ansi(visible);
+    write!(out, "{buf}").ok();
+
+    // Pad remaining lines.
+    for _ in visible.len()..view_height {
+        write!(out, "  ~\r\n").ok();
+    }
+
+    // Footer: scroll position.
+    let pct = if lines.len() <= view_height {
+        100
+    } else {
+        (scroll * 100) / lines.len().saturating_sub(view_height).max(1)
+    };
+    let footer = format!(" line {}-{} of {} ({pct}%) ", scroll + 1, end, lines.len());
+    let ftr_line = Line::from(Span::styled(
+        truncate(&footer, width),
+        Style::default().fg(muted),
+    ));
+    write!(out, "{}", render_lines_to_ansi(&[ftr_line])).ok();
+
+    out.flush().ok();
+}
+
+fn clear_scrollback(lines: usize) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    for _ in 0..lines {
+        write!(out, "\x1b[A\x1b[2K").ok();
+    }
+    out.flush().ok();
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()

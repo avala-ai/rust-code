@@ -220,6 +220,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "scroll",
+        aliases: &["history-view"],
+        description: "Scrollable view of conversation history (arrow keys to navigate, q to exit)",
+        hidden: false,
+    },
+    Command {
         name: "rewind",
         aliases: &["undo"],
         description: "Undo the last assistant turn (removes last assistant + tool messages)",
@@ -697,6 +703,15 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                  or Glob for pattern matching."
                 .into(),
         ),
+        Some("scroll") => {
+            let messages = &engine.state().messages;
+            if messages.is_empty() {
+                println!("No conversation history yet.");
+            } else {
+                crate::ui::tui::scrollback_viewer(messages);
+            }
+            CommandResult::Handled
+        }
         Some("rewind") => {
             let messages = &mut engine.state_mut().messages;
             // Remove messages from the end until we've removed the last assistant turn.
