@@ -48,6 +48,7 @@ impl ToolRegistry {
         registry.register(Arc::new(super::web_fetch::WebFetchTool));
         registry.register(Arc::new(super::web_search::WebSearchTool));
         registry.register(Arc::new(super::ask_user::AskUserQuestionTool));
+        registry.register(Arc::new(super::powershell::PowerShellTool));
         registry
     }
 
@@ -74,4 +75,45 @@ impl ToolRegistry {
             .map(|t| ToolSchema::from(t.as_ref()))
             .collect()
     }
+
+    /// Get only always-loaded (core) tool schemas.
+    /// Deferred tools are discoverable via ToolSearch but not sent on every request.
+    pub fn core_schemas(&self) -> Vec<ToolSchema> {
+        self.tools
+            .iter()
+            .filter(|t| t.is_enabled() && !is_deferred(t.name()))
+            .map(|t| ToolSchema::from(t.as_ref()))
+            .collect()
+    }
+
+    /// Get deferred tool names (for the ToolSearch system prompt).
+    pub fn deferred_names(&self) -> Vec<&str> {
+        self.tools
+            .iter()
+            .filter(|t| t.is_enabled() && is_deferred(t.name()))
+            .map(|t| t.name())
+            .collect()
+    }
+}
+
+/// Tools that are deferred — not sent on every request to save prompt tokens.
+/// These are discoverable via ToolSearch and loaded on demand.
+const DEFERRED_TOOLS: &[&str] = &[
+    "NotebookEdit",
+    "LSP",
+    "ListMcpResources",
+    "ReadMcpResource",
+    "EnterWorktree",
+    "ExitWorktree",
+    "Sleep",
+    "TodoWrite",
+    "REPL",
+    "SendMessage",
+    "TaskStop",
+    "TaskOutput",
+    "TaskGet",
+];
+
+fn is_deferred(name: &str) -> bool {
+    DEFERRED_TOOLS.contains(&name)
 }

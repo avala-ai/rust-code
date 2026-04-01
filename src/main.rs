@@ -192,6 +192,8 @@ async fn main() -> anyhow::Result<()> {
     let provider_kind = match cli.provider.as_str() {
         "anthropic" => ProviderKind::Anthropic,
         "openai" => ProviderKind::OpenAi,
+        "bedrock" | "aws" => ProviderKind::Bedrock,
+        "vertex" | "gcp" => ProviderKind::Vertex,
         "xai" | "grok" => ProviderKind::Xai,
         "google" | "gemini" => ProviderKind::Google,
         "deepseek" => ProviderKind::DeepSeek,
@@ -205,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
     if cli.api_base_url.is_none() {
         let default_url = match provider_kind {
             ProviderKind::Anthropic => "https://api.anthropic.com/v1",
+            ProviderKind::Bedrock | ProviderKind::Vertex => &config.api.base_url,
             ProviderKind::OpenAi => "https://api.openai.com/v1",
             ProviderKind::Xai => "https://api.x.ai/v1",
             ProviderKind::Google => "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -217,10 +220,9 @@ async fn main() -> anyhow::Result<()> {
         config.api.base_url = default_url.to_string();
     }
     let llm: Arc<dyn crate::llm::provider::Provider> = match provider_kind {
-        ProviderKind::Anthropic => Arc::new(crate::llm::anthropic::AnthropicProvider::new(
-            &config.api.base_url,
-            api_key,
-        )),
+        ProviderKind::Anthropic | ProviderKind::Bedrock | ProviderKind::Vertex => Arc::new(
+            crate::llm::anthropic::AnthropicProvider::new(&config.api.base_url, api_key),
+        ),
         // All other providers use the OpenAI-compatible wire format.
         ProviderKind::OpenAi
         | ProviderKind::Xai

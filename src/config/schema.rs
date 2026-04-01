@@ -77,8 +77,25 @@ impl Default for ApiConfig {
             .ok();
 
         // Auto-detect base URL from which key is set.
+        // Check for cloud provider env vars first.
+        let use_bedrock = std::env::var("AGENT_CODE_USE_BEDROCK").is_ok()
+            || std::env::var("AWS_REGION").is_ok() && api_key.is_some();
+        let use_vertex = std::env::var("AGENT_CODE_USE_VERTEX").is_ok();
+
         let has_generic = std::env::var("AGENT_CODE_API_KEY").is_ok();
-        let base_url = if has_generic {
+        let base_url = if use_bedrock {
+            // AWS Bedrock — URL constructed from region.
+            let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+            format!("https://bedrock-runtime.{region}.amazonaws.com")
+        } else if use_vertex {
+            // Google Vertex AI.
+            let project = std::env::var("GOOGLE_CLOUD_PROJECT").unwrap_or_default();
+            let location = std::env::var("GOOGLE_CLOUD_LOCATION")
+                .unwrap_or_else(|_| "us-central1".to_string());
+            format!(
+                "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models"
+            )
+        } else if has_generic {
             // Generic key — default to OpenAI (default model is gpt-5.4).
             "https://api.openai.com/v1".to_string()
         } else if std::env::var("GOOGLE_API_KEY").is_ok() {

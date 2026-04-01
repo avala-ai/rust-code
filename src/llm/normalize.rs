@@ -95,6 +95,39 @@ pub fn validate_alternation(messages: &[Message]) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove empty messages (messages with no content blocks after stripping).
+pub fn remove_empty_messages(messages: &mut Vec<Message>) {
+    messages.retain(|msg| match msg {
+        Message::User(u) => !u.content.is_empty(),
+        Message::Assistant(a) => !a.content.is_empty(),
+        Message::System(_) => true,
+    });
+}
+
+/// Cap oversized document blocks to prevent context blowout.
+pub fn cap_document_blocks(messages: &mut [Message], max_bytes: usize) {
+    for msg in messages.iter_mut() {
+        let content = match msg {
+            Message::User(u) => &mut u.content,
+            Message::Assistant(a) => &mut a.content,
+            _ => continue,
+        };
+        for block in content.iter_mut() {
+            if let ContentBlock::Document { data, title, .. } = block
+                && data.len() > max_bytes
+            {
+                let name = title.as_deref().unwrap_or("document");
+                *block = ContentBlock::Text {
+                    text: format!(
+                        "(Document '{name}' too large for context: {} bytes, max {max_bytes})",
+                        data.len()
+                    ),
+                };
+            }
+        }
+    }
+}
+
 /// Merge consecutive user messages into a single message.
 /// The API requires strict user/assistant alternation.
 pub fn merge_consecutive_user_messages(messages: &mut Vec<Message>) {

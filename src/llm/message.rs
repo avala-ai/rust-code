@@ -145,6 +145,16 @@ pub enum ContentBlock {
         media_type: String,
         data: String,
     },
+
+    /// Document content (e.g., PDF pages sent inline).
+    #[serde(rename = "document")]
+    Document {
+        #[serde(rename = "media_type")]
+        media_type: String,
+        data: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
 }
 
 /// A block within a rich tool result (for multi-modal tool output).
@@ -404,6 +414,24 @@ fn content_blocks_to_api(blocks: &[ContentBlock]) -> serde_json::Value {
                     "data": data,
                 }
             }),
+            ContentBlock::Document {
+                media_type,
+                data,
+                title,
+            } => {
+                let mut doc = serde_json::json!({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    }
+                });
+                if let Some(t) = title {
+                    doc["title"] = serde_json::json!(t);
+                }
+                doc
+            }
         })
         .collect();
 

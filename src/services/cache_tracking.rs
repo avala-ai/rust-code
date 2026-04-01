@@ -22,11 +22,31 @@ pub struct CacheTracker {
     /// Last observed cache state.
     last_write: u64,
     last_read: u64,
+    /// Fingerprint of the last request prefix (system prompt hash + tool count).
+    /// Used to detect when prompt changes cause cache invalidation.
+    last_fingerprint: u64,
 }
 
 impl CacheTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Update the fingerprint of the cacheable request prefix.
+    /// Call before each API request. Returns true if the fingerprint changed
+    /// (indicating the cache will likely break).
+    pub fn update_fingerprint(&mut self, system_prompt: &str, tool_count: usize) -> bool {
+        let mut hasher = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&system_prompt.len(), &mut hasher);
+        // Hash first and last 200 chars for speed (full hash unnecessary).
+        let prefix = &system_prompt[..system_prompt.len().min(200)];
+        std::hash::Hash::hash(prefix, &mut hasher);
+        std::hash::Hash::hash(&tool_count, &mut hasher);
+        let fp = std::hash::Hasher::finish(&hasher);
+
+        let changed = self.last_fingerprint != 0 && self.last_fingerprint != fp;
+        self.last_fingerprint = fp;
+        changed
     }
 
     /// Record usage from an API call and detect cache breaks.

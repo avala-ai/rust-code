@@ -484,6 +484,10 @@ fn blocks_to_openai_content(blocks: &[ContentBlock]) -> serde_json::Value {
                 "type": "text",
                 "text": format!("[Tool call: {name}({input})]"),
             }),
+            ContentBlock::Document { title, .. } => serde_json::json!({
+                "type": "text",
+                "text": format!("[Document: {}]", title.as_deref().unwrap_or("untitled")),
+            }),
         })
         .collect();
 

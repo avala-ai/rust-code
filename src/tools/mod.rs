@@ -32,6 +32,7 @@ pub mod mcp_proxy;
 pub mod mcp_resources;
 pub mod notebook_edit;
 pub mod plan_mode;
+pub mod powershell;
 pub mod registry;
 pub mod repl_tool;
 pub mod send_message;

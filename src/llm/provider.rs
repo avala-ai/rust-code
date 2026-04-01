@@ -88,6 +88,14 @@ pub fn detect_provider(model: &str, base_url: &str) -> ProviderKind {
     let model_lower = model.to_lowercase();
     let url_lower = base_url.to_lowercase();
 
+    // AWS Bedrock (Claude via AWS).
+    if url_lower.contains("bedrock") || url_lower.contains("amazonaws.com") {
+        return ProviderKind::Bedrock;
+    }
+    // Google Vertex AI (Claude via GCP).
+    if url_lower.contains("aiplatform.googleapis.com") {
+        return ProviderKind::Vertex;
+    }
     if url_lower.contains("anthropic.com") {
         return ProviderKind::Anthropic;
     }
@@ -153,6 +161,8 @@ pub fn detect_provider(model: &str, base_url: &str) -> ProviderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     Anthropic,
+    Bedrock,
+    Vertex,
     OpenAi,
     Xai,
     Google,

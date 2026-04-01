@@ -194,8 +194,11 @@ impl QueryEngine {
                 crate::services::budget::BudgetDecision::Continue => {}
             }
 
-            // Normalize messages: ensure tool result pairing, merge consecutive users.
+            // Normalize messages for API compatibility.
             crate::llm::normalize::ensure_tool_result_pairing(&mut self.state.messages);
+            crate::llm::normalize::strip_empty_blocks(&mut self.state.messages);
+            crate::llm::normalize::remove_empty_messages(&mut self.state.messages);
+            crate::llm::normalize::cap_document_blocks(&mut self.state.messages, 500_000);
             crate::llm::normalize::merge_consecutive_user_messages(&mut self.state.messages);
 
             debug!("Agent turn {}/{}", turn + 1, max_turns);
@@ -281,7 +284,8 @@ impl QueryEngine {
 
             // Step 3: Build and send the API request.
             let system_prompt = build_system_prompt(&self.tools, &self.state);
-            let tool_schemas = self.tools.schemas();
+            // Use core schemas (deferred tools loaded on demand via ToolSearch).
+            let tool_schemas = self.tools.core_schemas();
 
             let request = ProviderRequest {
                 messages: self.state.history().to_vec(),

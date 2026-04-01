@@ -30,6 +30,11 @@ pub fn estimate_block_tokens(block: &ContentBlock) -> u64 {
         ContentBlock::ToolResult { content, .. } => estimate_tokens(content),
         ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking),
         ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+        ContentBlock::Document { data, .. } => {
+            // Base64-encoded documents: estimate from decoded size.
+            let decoded_size = (data.len() as f64 * 0.75) as u64;
+            (decoded_size as f64 / BYTES_PER_TOKEN).round() as u64
+        }
     }
 }
 
