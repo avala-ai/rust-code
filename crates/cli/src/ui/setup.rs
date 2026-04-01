@@ -157,6 +157,12 @@ pub fn run_setup() -> Option<SetupResult> {
             preview: None,
         },
         SelectOption {
+            label: "Zhipu (z.ai)".into(),
+            description: "GLM-4.7, GLM-4.6, GLM-4.5".into(),
+            value: "zhipu".into(),
+            preview: None,
+        },
+        SelectOption {
             label: "Ollama (local)".into(),
             description: "Run models locally, no API key needed".into(),
             value: "ollama".into(),
@@ -201,6 +207,11 @@ pub fn run_setup() -> Option<SetupResult> {
             "TOGETHER_API_KEY",
             "https://api.together.xyz/v1",
             "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        ),
+        "zhipu" => (
+            "ZHIPU_API_KEY",
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-4.7",
         ),
         "ollama" => ("", "http://localhost:11434/v1", "qwen3:latest"),
         "custom" => ("AGENT_CODE_API_KEY", "", ""),

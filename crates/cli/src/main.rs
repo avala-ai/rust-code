@@ -177,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
         "groq" => ProviderKind::Groq,
         "mistral" => ProviderKind::Mistral,
         "together" => ProviderKind::Together,
+        "zhipu" | "glm" | "z.ai" => ProviderKind::Zhipu,
         _ => detect_provider(&config.api.model, &config.api.base_url),
     };
 

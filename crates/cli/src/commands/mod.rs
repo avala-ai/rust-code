@@ -409,6 +409,12 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                         ("mistral-large-latest", "Mistral Large · Most capable"),
                         ("codestral-latest", "Codestral · Code-focused"),
                     ],
+                    ProviderKind::Zhipu => vec![
+                        ("glm-4.7", "GLM-4.7 · Latest"),
+                        ("glm-4.6", "GLM-4.6 · Balanced"),
+                        ("glm-4.6-air", "GLM-4.6 Air · Fast"),
+                        ("glm-4.5", "GLM-4.5 · Previous gen"),
+                    ],
                     _ => vec![],
                 };
 

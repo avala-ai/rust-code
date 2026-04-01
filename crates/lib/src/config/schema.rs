@@ -97,6 +97,7 @@ impl Default for ApiConfig {
             .or_else(|_| std::env::var("DEEPSEEK_API_KEY"))
             .or_else(|_| std::env::var("GROQ_API_KEY"))
             .or_else(|_| std::env::var("MISTRAL_API_KEY"))
+            .or_else(|_| std::env::var("ZHIPU_API_KEY"))
             .or_else(|_| std::env::var("TOGETHER_API_KEY"))
             .ok();
 

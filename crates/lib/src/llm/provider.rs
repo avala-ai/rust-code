@@ -120,6 +120,12 @@ pub fn detect_provider(model: &str, base_url: &str) -> ProviderKind {
     if url_lower.contains("together.xyz") || url_lower.contains("together.ai") {
         return ProviderKind::Together;
     }
+    if url_lower.contains("bigmodel.cn")
+        || url_lower.contains("z.ai")
+        || url_lower.contains("zhipu")
+    {
+        return ProviderKind::Zhipu;
+    }
     if url_lower.contains("localhost") || url_lower.contains("127.0.0.1") {
         return ProviderKind::OpenAiCompatible;
     }
@@ -153,6 +159,9 @@ pub fn detect_provider(model: &str, base_url: &str) -> ProviderKind {
     if model_lower.starts_with("mistral") || model_lower.starts_with("codestral") {
         return ProviderKind::Mistral;
     }
+    if model_lower.starts_with("glm") {
+        return ProviderKind::Zhipu;
+    }
 
     ProviderKind::OpenAiCompatible
 }
@@ -179,6 +188,7 @@ pub enum ProviderKind {
     Groq,
     Mistral,
     Together,
+    Zhipu,
     OpenAiCompatible,
 }
 
@@ -194,6 +204,7 @@ impl ProviderKind {
             | Self::Groq
             | Self::Mistral
             | Self::Together
+            | Self::Zhipu
             | Self::OpenAiCompatible => WireFormat::OpenAiCompatible,
         }
     }
@@ -211,6 +222,7 @@ impl ProviderKind {
             Self::Groq => Some("https://api.groq.com/openai/v1"),
             Self::Mistral => Some("https://api.mistral.ai/v1"),
             Self::Together => Some("https://api.together.xyz/v1"),
+            Self::Zhipu => Some("https://open.bigmodel.cn/api/paas/v4"),
             // These require user-supplied URLs.
             Self::Bedrock | Self::Vertex | Self::OpenAiCompatible => None,
         }
@@ -227,6 +239,7 @@ impl ProviderKind {
             Self::Groq => "GROQ_API_KEY",
             Self::Mistral => "MISTRAL_API_KEY",
             Self::Together => "TOGETHER_API_KEY",
+            Self::Zhipu => "ZHIPU_API_KEY",
             Self::OpenAiCompatible => "OPENAI_API_KEY",
         }
     }
