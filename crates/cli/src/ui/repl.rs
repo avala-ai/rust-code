@@ -270,24 +270,8 @@ impl StreamSink for TerminalSink {
     }
 }
 
-/// Spawn a background task that watches for Escape key during streaming.
-/// Returns a join handle that should be aborted when the turn completes.
-fn spawn_escape_watcher(engine_cancel: impl Fn() + Send + 'static) -> tokio::task::JoinHandle<()> {
-    tokio::task::spawn_blocking(move || {
-        use crossterm::event::{self, Event, KeyCode, KeyEvent};
-        // Poll for Escape key. Exits when Escape is pressed or the task is aborted.
-        loop {
-            if event::poll(std::time::Duration::from_millis(100)).unwrap_or(false)
-                && let Ok(Event::Key(KeyEvent {
-                    code: KeyCode::Esc, ..
-                })) = event::read()
-            {
-                engine_cancel();
-                break;
-            }
-        }
-    })
-}
+// Escape key watcher removed — it competed with rustyline for stdin,
+// causing dropped keystrokes. Use Ctrl+C to cancel streaming instead.
 
 /// Run the interactive REPL loop.
 pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
@@ -456,13 +440,17 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
         let sink = TerminalSink::new(verbose);
         let t = super::theme::current();
 
-        // Update the pinned footer.
+        // Update the pinned footer, then temporarily reset scroll region
+        // so rustyline gets clean terminal state for input.
         update_footer(engine);
+        reset_scroll_region();
 
         let prompt = format!("{} ", "❯".with(t.accent).bold());
 
         match rl.readline(&prompt) {
             Ok(line) => {
+                // Restore scroll region for output.
+                setup_scroll_region();
                 ctrl_c_pending = false;
                 let mut input_buf = line.clone();
 
@@ -618,8 +606,6 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                         // TODO: spawn actual background agent turn.
                         // For now, just run it as a normal turn.
                         sink.start_indicator();
-                        let cancel_token = engine.cancel_token();
-                        let esc_watcher = spawn_escape_watcher(move || cancel_token.cancel());
                         if let Err(e) = engine.run_turn_with_sink(&bg_input, &sink).await {
                             let t = super::theme::current();
                             eprintln!(
@@ -631,7 +617,6 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                                 )
                             );
                         }
-                        esc_watcher.abort();
                         sink.ensure_newline();
                         println!();
                     }
@@ -711,8 +696,6 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 
                 // Run the agent turn with Escape key watcher for cancellation.
                 sink.start_indicator();
-                let cancel_token = engine.cancel_token();
-                let esc_watcher = spawn_escape_watcher(move || cancel_token.cancel());
                 if let Err(e) = engine.run_turn_with_sink(input, &sink).await {
                     {
                         let t = super::theme::current();
@@ -722,7 +705,6 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                         );
                     }
                 }
-                esc_watcher.abort();
                 sink.ensure_newline();
                 println!();
 
