@@ -21,5 +21,5 @@ labels: bug
 ## Environment
 
 - OS:
-- `rc --version`:
+- `agent --version`:
 - Model:

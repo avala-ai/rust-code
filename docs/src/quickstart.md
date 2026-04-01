@@ -48,7 +48,7 @@ rc
 You'll see:
 
 ```
- rc  session a1b2c3d
+ agent  session a1b2c3d
 Type your message, or /help for commands. Ctrl+C to cancel, Ctrl+D to exit.
 
 >
@@ -101,7 +101,7 @@ Available commands:
 For scripting and CI, use `--prompt` to run a single task and exit:
 
 ```bash
-rc --prompt "fix the failing tests" --dangerously-skip-permissions
+agent --prompt "fix the failing tests" --dangerously-skip-permissions
 ```
 
 ## Next steps

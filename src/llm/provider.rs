@@ -79,6 +79,21 @@ pub fn detect_provider(model: &str, base_url: &str) -> ProviderKind {
     if url_lower.contains("x.ai") || url_lower.contains("xai.") {
         return ProviderKind::Xai;
     }
+    if url_lower.contains("googleapis.com") || url_lower.contains("google") {
+        return ProviderKind::Google;
+    }
+    if url_lower.contains("deepseek.com") {
+        return ProviderKind::DeepSeek;
+    }
+    if url_lower.contains("groq.com") {
+        return ProviderKind::Groq;
+    }
+    if url_lower.contains("mistral.ai") {
+        return ProviderKind::Mistral;
+    }
+    if url_lower.contains("together.xyz") || url_lower.contains("together.ai") {
+        return ProviderKind::Together;
+    }
     if url_lower.contains("localhost") || url_lower.contains("127.0.0.1") {
         return ProviderKind::OpenAiCompatible;
     }
@@ -100,6 +115,18 @@ pub fn detect_provider(model: &str, base_url: &str) -> ProviderKind {
     if model_lower.starts_with("grok") {
         return ProviderKind::Xai;
     }
+    if model_lower.starts_with("gemini") {
+        return ProviderKind::Google;
+    }
+    if model_lower.starts_with("deepseek") {
+        return ProviderKind::DeepSeek;
+    }
+    if model_lower.starts_with("llama") && url_lower.contains("groq") {
+        return ProviderKind::Groq;
+    }
+    if model_lower.starts_with("mistral") || model_lower.starts_with("codestral") {
+        return ProviderKind::Mistral;
+    }
 
     ProviderKind::OpenAiCompatible
 }
@@ -110,5 +137,10 @@ pub enum ProviderKind {
     Anthropic,
     OpenAi,
     Xai,
+    Google,
+    DeepSeek,
+    Groq,
+    Mistral,
+    Together,
     OpenAiCompatible,
 }

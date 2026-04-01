@@ -19,7 +19,7 @@
 ```
 $ cargo install agent-code
 $ export AGENT_CODE_API_KEY="your-api-key"
-$ rc
+$ agent
 ```
 
 ## Why agent-code
@@ -66,7 +66,7 @@ Download prebuilt binaries for Linux (x86_64, aarch64) and macOS (x86_64, aarch6
 export AGENT_CODE_API_KEY="your-api-key"
 
 # Interactive mode
-rc
+agent
 
 # One-shot: ask a question and exit
 agent --prompt "find all TODO comments in this repo"

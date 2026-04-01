@@ -135,6 +135,11 @@ async fn main() -> anyhow::Result<()> {
         "anthropic" => ProviderKind::Anthropic,
         "openai" => ProviderKind::OpenAi,
         "xai" | "grok" => ProviderKind::Xai,
+        "google" | "gemini" => ProviderKind::Google,
+        "deepseek" => ProviderKind::DeepSeek,
+        "groq" => ProviderKind::Groq,
+        "mistral" => ProviderKind::Mistral,
+        "together" => ProviderKind::Together,
         _ => detect_provider(&config.api.model, &config.api.base_url),
     };
     let llm: Arc<dyn crate::llm::provider::Provider> = match provider_kind {
@@ -142,9 +147,18 @@ async fn main() -> anyhow::Result<()> {
             &config.api.base_url,
             api_key,
         )),
-        ProviderKind::OpenAi | ProviderKind::Xai | ProviderKind::OpenAiCompatible => Arc::new(
-            crate::llm::openai::OpenAiProvider::new(&config.api.base_url, api_key),
-        ),
+        // All other providers use the OpenAI-compatible wire format.
+        ProviderKind::OpenAi
+        | ProviderKind::Xai
+        | ProviderKind::Google
+        | ProviderKind::DeepSeek
+        | ProviderKind::Groq
+        | ProviderKind::Mistral
+        | ProviderKind::Together
+        | ProviderKind::OpenAiCompatible => Arc::new(crate::llm::openai::OpenAiProvider::new(
+            &config.api.base_url,
+            api_key,
+        )),
     };
     tracing::info!(
         "Using {:?} provider at {}",

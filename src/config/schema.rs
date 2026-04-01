@@ -66,19 +66,31 @@ impl Default for ApiConfig {
             .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
             .or_else(|_| std::env::var("XAI_API_KEY"))
+            .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+            .or_else(|_| std::env::var("DEEPSEEK_API_KEY"))
+            .or_else(|_| std::env::var("GROQ_API_KEY"))
+            .or_else(|_| std::env::var("MISTRAL_API_KEY"))
+            .or_else(|_| std::env::var("TOGETHER_API_KEY"))
             .ok();
 
         // Auto-detect base URL from which key is set.
-        let base_url = if std::env::var("XAI_API_KEY").is_ok()
-            && std::env::var("AGENT_CODE_API_KEY").is_err()
-            && std::env::var("ANTHROPIC_API_KEY").is_err()
-            && std::env::var("OPENAI_API_KEY").is_err()
-        {
+        let has_generic = std::env::var("AGENT_CODE_API_KEY").is_ok();
+        let base_url = if has_generic {
+            // Generic key — default to Anthropic unless base URL is overridden.
+            "https://api.anthropic.com/v1".to_string()
+        } else if std::env::var("GOOGLE_API_KEY").is_ok() {
+            "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
+        } else if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+            "https://api.deepseek.com/v1".to_string()
+        } else if std::env::var("XAI_API_KEY").is_ok() {
             "https://api.x.ai/v1".to_string()
-        } else if std::env::var("OPENAI_API_KEY").is_ok()
-            && std::env::var("AGENT_CODE_API_KEY").is_err()
-            && std::env::var("ANTHROPIC_API_KEY").is_err()
-        {
+        } else if std::env::var("GROQ_API_KEY").is_ok() {
+            "https://api.groq.com/openai/v1".to_string()
+        } else if std::env::var("MISTRAL_API_KEY").is_ok() {
+            "https://api.mistral.ai/v1".to_string()
+        } else if std::env::var("TOGETHER_API_KEY").is_ok() {
+            "https://api.together.xyz/v1".to_string()
+        } else if std::env::var("OPENAI_API_KEY").is_ok() {
             "https://api.openai.com/v1".to_string()
         } else {
             "https://api.anthropic.com/v1".to_string()

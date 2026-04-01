@@ -1,10 +1,10 @@
 ---
 title: "CLI Flags"
-description: "Command-line options for the rc binary"
+description: "Command-line options for the agent binary"
 ---
 
 ```
-rc [OPTIONS]
+agent [OPTIONS]
 ```
 
 ## Options
@@ -39,20 +39,20 @@ rc [OPTIONS]
 
 ```bash
 # Interactive mode with Anthropic
-ANTHROPIC_API_KEY=sk-ant-... rc
+ANTHROPIC_API_KEY=sk-ant-... agent
 
 # One-shot with OpenAI
-OPENAI_API_KEY=sk-... rc --model gpt-4o --prompt "explain main.rs"
+OPENAI_API_KEY=sk-... agent --model gpt-4o --prompt "explain main.rs"
 
 # Local Ollama
-rc --api-base-url http://localhost:11434/v1 --model llama3 --api-key x
+agent --api-base-url http://localhost:11434/v1 --model llama3 --api-key x
 
 # CI: fix tests without asking
-rc --dangerously-skip-permissions --prompt "fix the failing tests"
+agent --dangerously-skip-permissions --prompt "fix the failing tests"
 
 # Read-only exploration
-rc --permission-mode plan
+agent --permission-mode plan
 
 # Debug: see what the LLM receives
-rc --dump-system-prompt
+agent --dump-system-prompt
 ```

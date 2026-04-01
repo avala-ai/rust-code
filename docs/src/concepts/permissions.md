@@ -15,10 +15,10 @@ Set the mode via CLI flag or config:
 
 ```bash
 # CLI
-rc --permission-mode plan
+agent --permission-mode plan
 
 # Skip all checks (CI/scripting only)
-rc --dangerously-skip-permissions
+agent --dangerously-skip-permissions
 ```
 
 ## Permission rules

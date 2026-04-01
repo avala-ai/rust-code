@@ -24,7 +24,7 @@ If you have Rust installed:
 cargo install agent-code
 ```
 
-This installs the `rc` binary to `~/.cargo/bin/`.
+This installs the `agent` binary to `~/.cargo/bin/`.
 
 ### Homebrew
 
@@ -40,14 +40,14 @@ Download from [GitHub Releases](https://github.com/avala-ai/agent-code/releases)
 
 | Platform | Architecture | Download |
 |----------|-------------|----------|
-| Linux    | x86_64      | `rc-linux-x86_64.tar.gz` |
-| Linux    | aarch64     | `rc-linux-aarch64.tar.gz` |
-| macOS    | x86_64      | `rc-macos-x86_64.tar.gz` |
-| macOS    | Apple Silicon| `rc-macos-aarch64.tar.gz` |
+| Linux    | x86_64      | `agent-linux-x86_64.tar.gz` |
+| Linux    | aarch64     | `agent-linux-aarch64.tar.gz` |
+| macOS    | x86_64      | `agent-macos-x86_64.tar.gz` |
+| macOS    | Apple Silicon| `agent-macos-aarch64.tar.gz` |
 
 ```bash
 # Example: macOS Apple Silicon
-curl -L https://github.com/avala-ai/agent-code/releases/latest/download/rc-macos-aarch64.tar.gz | tar xz
+curl -L https://github.com/avala-ai/agent-code/releases/latest/download/agent-macos-aarch64.tar.gz | tar xz
 sudo mv agent /usr/local/bin/
 ```
 
@@ -63,14 +63,14 @@ sudo cp target/release/agent /usr/local/bin/
 ## Verify installation
 
 ```bash
-rc --version
-# rc 0.1.1
+agent --version
+# agent 0.1.1
 ```
 
 Run the environment check:
 
 ```bash
-rc --dump-system-prompt | head -5
+agent --dump-system-prompt | head -5
 # You are an AI coding agent...
 ```
 

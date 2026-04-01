@@ -132,6 +132,11 @@ impl Tool for AgentTool {
             "ANTHROPIC_API_KEY",
             "OPENAI_API_KEY",
             "XAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "GROQ_API_KEY",
+            "MISTRAL_API_KEY",
+            "TOGETHER_API_KEY",
             "AGENT_CODE_API_BASE_URL",
             "AGENT_CODE_MODEL",
         ] {
