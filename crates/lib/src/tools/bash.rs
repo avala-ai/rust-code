@@ -200,6 +200,14 @@ impl Tool for BashTool {
             }
         }
 
+        // Tree-sitter AST analysis (catches obfuscation that regex misses).
+        if let Some(parsed) = super::bash_parse::parse_bash(command) {
+            let violations = super::bash_parse::check_parsed_security(&parsed);
+            if let Some(first) = violations.first() {
+                return Err(format!("AST security check: {first}"));
+            }
+        }
+
         Ok(())
     }
 

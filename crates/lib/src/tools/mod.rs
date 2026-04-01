@@ -21,6 +21,7 @@
 pub mod agent;
 pub mod ask_user;
 pub mod bash;
+pub mod bash_parse;
 pub mod executor;
 pub mod file_edit;
 pub mod file_read;
