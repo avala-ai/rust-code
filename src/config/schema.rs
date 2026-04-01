@@ -10,6 +10,9 @@ pub struct Config {
     pub api: ApiConfig,
     pub permissions: PermissionsConfig,
     pub ui: UiConfig,
+    /// Feature flags — all enabled by default.
+    #[serde(default)]
+    pub features: FeaturesConfig,
     /// MCP server configurations.
     #[serde(default)]
     pub mcp_servers: std::collections::HashMap<String, McpServerEntry>,
@@ -176,6 +179,56 @@ impl Default for UiConfig {
             syntax_highlight: true,
             theme: "dark".to_string(),
             edit_mode: "emacs".to_string(),
+        }
+    }
+}
+
+/// Feature flags. All enabled by default — no artificial gates.
+/// Users can disable individual features in config.toml under [features].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FeaturesConfig {
+    /// Track per-turn token usage and warn when approaching budget.
+    pub token_budget: bool,
+    /// Add co-author attribution line to git commits.
+    pub commit_attribution: bool,
+    /// Show a system reminder after context compaction.
+    pub compaction_reminders: bool,
+    /// Auto retry on capacity/overload errors in non-interactive mode.
+    pub unattended_retry: bool,
+    /// Enable /snip command to remove message ranges from history.
+    pub history_snip: bool,
+    /// Auto-detect system dark/light mode for theme.
+    pub auto_theme: bool,
+    /// Rich formatting for MCP tool output.
+    pub mcp_rich_output: bool,
+    /// Enable /fork command to branch conversation.
+    pub fork_conversation: bool,
+    /// Verification agent that checks completed tasks.
+    pub verification_agent: bool,
+    /// Background memory extraction after each turn.
+    pub extract_memories: bool,
+    /// Context collapse (snip old messages) when approaching limits.
+    pub context_collapse: bool,
+    /// Reactive auto-compaction when token budget is tight.
+    pub reactive_compact: bool,
+}
+
+impl Default for FeaturesConfig {
+    fn default() -> Self {
+        Self {
+            token_budget: true,
+            commit_attribution: true,
+            compaction_reminders: true,
+            unattended_retry: true,
+            history_snip: true,
+            auto_theme: true,
+            mcp_rich_output: true,
+            fork_conversation: true,
+            verification_agent: true,
+            extract_memories: true,
+            context_collapse: true,
+            reactive_compact: true,
         }
     }
 }

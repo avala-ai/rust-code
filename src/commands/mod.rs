@@ -220,6 +220,24 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "snip",
+        aliases: &[],
+        description: "Remove a range of messages from history (e.g., /snip 3-7)",
+        hidden: false,
+    },
+    Command {
+        name: "fork",
+        aliases: &[],
+        description: "Branch the conversation from this point",
+        hidden: false,
+    },
+    Command {
+        name: "features",
+        aliases: &[],
+        description: "Show enabled feature flags",
+        hidden: false,
+    },
+    Command {
         name: "transcript",
         aliases: &[],
         description: "Show conversation transcript",
@@ -661,6 +679,94 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                  or Glob for pattern matching."
                 .into(),
         ),
+        Some("snip") => {
+            if !engine.state().config.features.history_snip {
+                println!("Feature disabled. Enable with: [features] history_snip = true");
+                return CommandResult::Handled;
+            }
+            if let Some(range) = args {
+                let parts: Vec<&str> = range.split('-').collect();
+                let (start, end) = match parts.len() {
+                    1 => {
+                        let idx = parts[0].parse::<usize>().unwrap_or(0);
+                        (idx, idx)
+                    }
+                    2 => {
+                        let s = parts[0].parse::<usize>().unwrap_or(0);
+                        let e = parts[1].parse::<usize>().unwrap_or(0);
+                        (s, e)
+                    }
+                    _ => {
+                        println!("Usage: /snip <index> or /snip <start>-<end>");
+                        return CommandResult::Handled;
+                    }
+                };
+                let messages = &mut engine.state_mut().messages;
+                let len = messages.len();
+                if start >= len || end >= len || start > end {
+                    println!("Invalid range. Messages: 0-{}", len.saturating_sub(1));
+                } else {
+                    let count = end - start + 1;
+                    messages.drain(start..=end);
+                    println!(
+                        "Removed {count} message(s) ({start}-{end}). {} remaining.",
+                        messages.len()
+                    );
+                }
+            } else {
+                println!("Usage: /snip <index> or /snip <start>-<end>");
+                println!("Use /transcript to see message indices.");
+            }
+            CommandResult::Handled
+        }
+        Some("fork") => {
+            if !engine.state().config.features.fork_conversation {
+                println!("Feature disabled. Enable with: [features] fork_conversation = true");
+                return CommandResult::Handled;
+            }
+            // Fork = save current session, start fresh from this point
+            let state = engine.state();
+            let fork_id = crate::services::session::new_session_id();
+            let msg_count = state.messages.len();
+            match crate::services::session::save_session(
+                &fork_id,
+                &state.messages,
+                &state.cwd,
+                &state.config.api.model,
+                state.turn_count,
+            ) {
+                Ok(_) => {
+                    println!("Forked conversation at message {msg_count} -> session {fork_id}",);
+                    println!("Continue here, or /resume {fork_id} to return to this point.");
+                }
+                Err(e) => println!("Fork failed: {e}"),
+            }
+            CommandResult::Handled
+        }
+        Some("features") => {
+            let f = &engine.state().config.features;
+            println!("Feature flags:\n");
+            let flags = [
+                ("token_budget", f.token_budget),
+                ("commit_attribution", f.commit_attribution),
+                ("compaction_reminders", f.compaction_reminders),
+                ("unattended_retry", f.unattended_retry),
+                ("history_snip", f.history_snip),
+                ("auto_theme", f.auto_theme),
+                ("mcp_rich_output", f.mcp_rich_output),
+                ("fork_conversation", f.fork_conversation),
+                ("verification_agent", f.verification_agent),
+                ("extract_memories", f.extract_memories),
+                ("context_collapse", f.context_collapse),
+                ("reactive_compact", f.reactive_compact),
+            ];
+            for (name, enabled) in flags {
+                let icon = if enabled { "on " } else { "off" };
+                println!("  {icon}  {name}");
+            }
+            println!("\nConfigure in ~/.config/agent-code/config.toml under [features]");
+            CommandResult::Handled
+        }
         Some("transcript") => {
             let messages = &engine.state().messages;
             if messages.is_empty() {

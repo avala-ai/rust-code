@@ -298,6 +298,7 @@ async fn main() -> anyhow::Result<()> {
         query::QueryEngineConfig {
             max_turns: cli.max_turns,
             verbose: cli.verbose,
+            unattended: cli.prompt.is_some(),
         },
     );
 

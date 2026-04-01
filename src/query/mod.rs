@@ -37,6 +37,8 @@ use crate::tools::registry::ToolRegistry;
 pub struct QueryEngineConfig {
     pub max_turns: Option<usize>,
     pub verbose: bool,
+    /// Whether this is a non-interactive (one-shot) session.
+    pub unattended: bool,
 }
 
 /// The query engine orchestrates the agent loop.
@@ -258,6 +260,17 @@ impl QueryEngine {
                 }
             }
 
+            // Inject compaction reminder if compacted and feature enabled.
+            if compact_tracking.was_compacted && self.state.config.features.compaction_reminders {
+                let reminder = user_message(
+                    "<system-reminder>Context was automatically compacted. \
+                     Earlier messages were summarized. If you need details from \
+                     before compaction, ask the user or re-read the relevant files.</system-reminder>",
+                );
+                self.state.push_message(reminder);
+                compact_tracking.was_compacted = false; // Only remind once per compaction.
+            }
+
             // Step 2: Check token warning state.
             let warning = compact::token_warning_state(self.state.history(), &model);
             if warning.is_blocking {
@@ -313,6 +326,19 @@ impl QueryEngine {
                             continue;
                         }
                         crate::llm::retry::RetryAction::Abort(reason) => {
+                            // Unattended retry: in non-interactive mode, retry
+                            // capacity errors with longer backoff instead of aborting.
+                            if self.config.unattended
+                                && self.state.config.features.unattended_retry
+                                && matches!(
+                                    &e,
+                                    ProviderError::Overloaded | ProviderError::RateLimited { .. }
+                                )
+                            {
+                                warn!("Unattended retry: waiting 30s for capacity");
+                                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                                continue;
+                            }
                             // Before giving up, try reactive compact for size errors.
                             if let ProviderError::RequestTooLarge(body) = &e {
                                 let gap = compact::parse_prompt_too_long_gap(body);
@@ -389,6 +415,17 @@ impl QueryEngine {
             });
             self.state.push_message(assistant_msg);
             self.state.record_usage(&usage, &model);
+
+            // Token budget tracking per turn.
+            if self.state.config.features.token_budget && usage.total() > 0 {
+                let turn_total = usage.input_tokens + usage.output_tokens;
+                if turn_total > 100_000 {
+                    sink.on_warning(&format!(
+                        "High token usage this turn: {} tokens ({}in + {}out)",
+                        turn_total, usage.input_tokens, usage.output_tokens
+                    ));
+                }
+            }
 
             // Record cache and telemetry.
             let _cache_event = self.cache_tracker.record(&usage);
@@ -467,8 +504,10 @@ impl QueryEngine {
                 self.state.is_query_active = false;
 
                 // Fire background memory extraction (fire-and-forget).
-                // Only runs if memory directory exists (user opted into memory).
-                if crate::memory::ensure_memory_dir().is_some() {
+                // Only runs if feature enabled and memory directory exists.
+                if self.state.config.features.extract_memories
+                    && crate::memory::ensure_memory_dir().is_some()
+                {
                     let extraction_messages = self.state.messages.clone();
                     let extraction_state = self.extraction_state.clone();
                     let extraction_llm = self.llm.clone();
@@ -676,7 +715,8 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
          3. Draft a concise (1-2 sentence) commit message focusing on \"why\" not \"what\".\n\
          4. Do not commit files that likely contain secrets (.env, credentials.json).\n\
          5. Stage specific files, create the commit.\n\
-         6. If pre-commit hook fails, fix the issue and create a NEW commit.\n\n\
+         6. If pre-commit hook fails, fix the issue and create a NEW commit.\n\
+         7. When creating commits, include a co-author attribution line at the end of the message.\n\n\
          # Creating pull requests\n\n\
          When the user asks to create a PR:\n\
          1. Run git status, git diff, and git log to understand all changes on the branch.\n\

@@ -11,3 +11,4 @@ pub mod render;
 pub mod repl;
 pub mod selector;
 pub mod setup;
+pub mod theme;
