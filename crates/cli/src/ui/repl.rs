@@ -370,6 +370,21 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     println!();
     println!("{}", divider.with(t.muted));
 
+    // Keyboard shortcuts help (shown once on startup).
+    println!(
+        "  {}  {}  {}",
+        "/help for commands".with(t.muted),
+        "/model to switch".with(t.muted),
+        "Ctrl+C twice to exit".with(t.muted),
+    );
+    println!(
+        "  {}  {}  {}",
+        "\\ + Enter for newline".with(t.muted),
+        "Tab to complete /cmds".with(t.muted),
+        "/scroll to view history".with(t.muted),
+    );
+    println!();
+
     let mut ctrl_c_pending = false;
 
     let mut status_visible = false;
