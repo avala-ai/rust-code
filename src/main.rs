@@ -150,7 +150,8 @@ async fn main() -> anyhow::Result<()> {
         anyhow::anyhow!("API key required. Set AGENT_CODE_API_KEY or pass --api-key.")
     })?;
 
-    // Initialize LLM provider.
+    // Initialize LLM provider. If --model or --provider implies a different
+    // provider than what's in the config, override the base URL to match.
     let provider_kind = match cli.provider.as_str() {
         "anthropic" => ProviderKind::Anthropic,
         "openai" => ProviderKind::OpenAi,
@@ -162,6 +163,22 @@ async fn main() -> anyhow::Result<()> {
         "together" => ProviderKind::Together,
         _ => detect_provider(&config.api.model, &config.api.base_url),
     };
+
+    // Override base URL if the detected provider doesn't match the configured URL.
+    if cli.api_base_url.is_none() {
+        let default_url = match provider_kind {
+            ProviderKind::Anthropic => "https://api.anthropic.com/v1",
+            ProviderKind::OpenAi => "https://api.openai.com/v1",
+            ProviderKind::Xai => "https://api.x.ai/v1",
+            ProviderKind::Google => "https://generativelanguage.googleapis.com/v1beta/openai",
+            ProviderKind::DeepSeek => "https://api.deepseek.com/v1",
+            ProviderKind::Groq => "https://api.groq.com/openai/v1",
+            ProviderKind::Mistral => "https://api.mistral.ai/v1",
+            ProviderKind::Together => "https://api.together.xyz/v1",
+            ProviderKind::OpenAiCompatible => &config.api.base_url,
+        };
+        config.api.base_url = default_url.to_string();
+    }
     let llm: Arc<dyn crate::llm::provider::Provider> = match provider_kind {
         ProviderKind::Anthropic => Arc::new(crate::llm::anthropic::AnthropicProvider::new(
             &config.api.base_url,
@@ -255,7 +272,27 @@ async fn main() -> anyhow::Result<()> {
     // One-shot or interactive mode.
     match cli.prompt {
         Some(prompt) => {
-            engine.run_turn(&prompt).await?;
+            // One-shot mode: use a simple sink that prints to stdout.
+            struct StdoutSink;
+            impl query::StreamSink for StdoutSink {
+                fn on_text(&self, text: &str) {
+                    print!("{text}");
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                }
+                fn on_tool_start(&self, name: &str, _: &serde_json::Value) {
+                    eprintln!("[{name}]");
+                }
+                fn on_tool_result(&self, name: &str, r: &tools::ToolResult) {
+                    if r.is_error {
+                        eprintln!("[{name} error: {}]", r.content.lines().next().unwrap_or(""));
+                    }
+                }
+                fn on_error(&self, e: &str) {
+                    eprintln!("Error: {e}");
+                }
+            }
+            engine.run_turn_with_sink(&prompt, &StdoutSink).await?;
+            println!();
         }
         None => {
             ui::repl::run_repl(&mut engine).await?;
