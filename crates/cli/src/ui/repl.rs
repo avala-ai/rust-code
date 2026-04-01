@@ -370,19 +370,8 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     println!();
     println!("{}", divider.with(t.muted));
 
-    // Keyboard shortcuts help (shown once on startup).
-    println!(
-        "  {}  {}  {}",
-        "/help for commands".with(t.muted),
-        "/model to switch".with(t.muted),
-        "Ctrl+C twice to exit".with(t.muted),
-    );
-    println!(
-        "  {}  {}  {}",
-        "\\ + Enter for newline".with(t.muted),
-        "Tab to complete /cmds".with(t.muted),
-        "/scroll to view history".with(t.muted),
-    );
+    // Show hint for shortcuts.
+    println!("  {}", "? for shortcuts".with(t.muted),);
     println!();
 
     let mut ctrl_c_pending = false;
@@ -443,6 +432,78 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 
                 let input = input_buf.trim();
                 if input.is_empty() {
+                    continue;
+                }
+
+                // Toggle shortcuts help panel on "?".
+                if input == "?" {
+                    let t = super::theme::current();
+                    println!();
+                    println!("  {}", "Keyboard Shortcuts".with(t.accent).bold());
+                    println!("  {}", "─".repeat(50).with(t.muted));
+                    println!(
+                        "  {}  {}",
+                        "/ + command".with(t.text),
+                        "slash commands (/help to list all)".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "Tab".with(t.text),
+                        "auto-complete /commands".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "\\ + Enter".with(t.text),
+                        "multi-line input".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "Ctrl+C".with(t.text),
+                        "cancel (twice to exit)".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "Ctrl+R".with(t.text),
+                        "search history".with(t.muted),
+                    );
+                    println!("  {}  {}", "Ctrl+D".with(t.text), "exit".with(t.muted),);
+                    println!("  {}", "─".repeat(50).with(t.muted));
+                    println!(
+                        "  {}  {}",
+                        "/model <name>".with(t.text),
+                        "switch model".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "/scroll".with(t.text),
+                        "scrollable conversation view".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "/snip <N-M>".with(t.text),
+                        "remove messages from history".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "/fork".with(t.text),
+                        "branch conversation".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "/rewind".with(t.text),
+                        "undo last turn".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "/features".with(t.text),
+                        "show feature flags".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
+                        "/doctor".with(t.text),
+                        "check environment health".with(t.muted),
+                    );
+                    println!();
                     continue;
                 }
 
