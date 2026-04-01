@@ -139,6 +139,30 @@ pub fn run_setup() -> Option<SetupResult> {
             preview: None,
         },
         SelectOption {
+            label: "Groq".into(),
+            description: "Llama, Mixtral (fast inference)".into(),
+            value: "groq".into(),
+            preview: None,
+        },
+        SelectOption {
+            label: "Mistral".into(),
+            description: "Mistral Large, Codestral".into(),
+            value: "mistral".into(),
+            preview: None,
+        },
+        SelectOption {
+            label: "Together".into(),
+            description: "Llama, Qwen, 100+ open models".into(),
+            value: "together".into(),
+            preview: None,
+        },
+        SelectOption {
+            label: "Ollama (local)".into(),
+            description: "Run models locally, no API key needed".into(),
+            value: "ollama".into(),
+            preview: None,
+        },
+        SelectOption {
             label: "Other".into(),
             description: "(OpenAI-compatible endpoint)".into(),
             value: "custom".into(),
@@ -163,38 +187,165 @@ pub fn run_setup() -> Option<SetupResult> {
             "https://api.deepseek.com/v1",
             "deepseek-chat",
         ),
+        "groq" => (
+            "GROQ_API_KEY",
+            "https://api.groq.com/openai/v1",
+            "llama-3.3-70b-versatile",
+        ),
+        "mistral" => (
+            "MISTRAL_API_KEY",
+            "https://api.mistral.ai/v1",
+            "mistral-large-latest",
+        ),
+        "together" => (
+            "TOGETHER_API_KEY",
+            "https://api.together.xyz/v1",
+            "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        ),
+        "ollama" => ("", "http://localhost:11434/v1", "qwen3:latest"),
         "custom" => ("AGENT_CODE_API_KEY", "", ""),
         _ => ("OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-5.4"),
     };
     println!();
 
-    // Check for existing key in environment.
-    let existing_key = std::env::var(env_var)
-        .ok()
-        .or_else(|| std::env::var("AGENT_CODE_API_KEY").ok());
-
-    let api_key = if let Some(key) = existing_key {
-        let masked = if key.len() > 8 {
-            format!("{}...{}", &key[..4], &key[key.len() - 4..])
-        } else {
-            "****".to_string()
-        };
-        println!("    {} found ({masked})\n", env_var.green());
-        key
-    } else {
-        eprint!("  Paste your API key (or Enter to set {env_var} later): ");
-        let _ = std::io::stderr().flush();
-        let mut input = String::new();
-        let _ = std::io::stdin().read_line(&mut input);
-        let key = input.trim().to_string();
-        if key.is_empty() {
-            println!(
-                "    {}",
-                format!("Set {env_var} before running agent.").yellow()
-            );
-        }
+    // Handle API key based on provider.
+    let api_key = if provider_choice == "ollama" {
+        // Ollama: no key needed, check if running.
         println!();
-        key
+        println!("    {} No API key needed for local Ollama.", "✓".green());
+        // Check if Ollama is running.
+        match std::process::Command::new("curl")
+            .args([
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "http://localhost:11434/api/tags",
+            ])
+            .output()
+        {
+            Ok(out) if String::from_utf8_lossy(&out.stdout).trim() == "200" => {
+                println!("    {} Ollama is running at localhost:11434", "✓".green());
+            }
+            _ => {
+                println!(
+                    "    {} Ollama not detected. Start it with: {}",
+                    "!".yellow(),
+                    "ollama serve".bold()
+                );
+            }
+        }
+
+        // Let user pick a model.
+        println!();
+        println!("  {} Ollama model:\n", "  ".dark_cyan().bold());
+        let ollama_model = select(&[
+            SelectOption {
+                label: "qwen3:latest".into(),
+                description: "8B, tool use, recommended".into(),
+                value: "qwen3:latest".into(),
+                preview: None,
+            },
+            SelectOption {
+                label: "mistral:latest".into(),
+                description: "7B, tool use".into(),
+                value: "mistral:latest".into(),
+                preview: None,
+            },
+            SelectOption {
+                label: "mistral-nemo:latest".into(),
+                description: "12B, tool use".into(),
+                value: "mistral-nemo:latest".into(),
+                preview: None,
+            },
+            SelectOption {
+                label: "llama4:latest".into(),
+                description: "109B, tool use".into(),
+                value: "llama4:latest".into(),
+                preview: None,
+            },
+            SelectOption {
+                label: "Other".into(),
+                description: "(type model name)".into(),
+                value: "_other_".into(),
+                preview: None,
+            },
+        ]);
+
+        // Override model if user picked from list.
+        let ollama_model_name = if ollama_model != "_other_" {
+            ollama_model
+        } else {
+            eprint!("  Model name (e.g. qwen3:latest): ");
+            let _ = std::io::stderr().flush();
+            let mut m = String::new();
+            let _ = std::io::stdin().read_line(&mut m);
+            let m = m.trim().to_string();
+            if m.is_empty() {
+                "qwen3:latest".to_string()
+            } else {
+                m
+            }
+        };
+
+        println!();
+        println!("  {} Permission mode:\n", "3.".dark_cyan().bold());
+        let pm = select(&[
+            SelectOption {
+                label: "Ask before changes".into(),
+                description: "(recommended)".into(),
+                value: "ask".into(),
+                preview: None,
+            },
+            SelectOption {
+                label: "Trust fully".into(),
+                description: "everything runs without asking".into(),
+                value: "allow".into(),
+                preview: None,
+            },
+        ]);
+        println!();
+
+        let result = SetupResult {
+            api_key: "ollama".to_string(),
+            provider: "ollama".to_string(),
+            base_url: Some(default_url.to_string()),
+            model: Some(ollama_model_name),
+            theme: theme.clone(),
+            permission_mode: pm,
+        };
+        write_config(&result);
+        return Some(result);
+    } else {
+        // Cloud provider: check for existing key.
+        let existing_key = std::env::var(env_var)
+            .ok()
+            .or_else(|| std::env::var("AGENT_CODE_API_KEY").ok());
+
+        if let Some(key) = existing_key {
+            let masked = if key.len() > 8 {
+                format!("{}...{}", &key[..4], &key[key.len() - 4..])
+            } else {
+                "****".to_string()
+            };
+            println!("    {} found ({masked})\n", env_var.green());
+            key
+        } else {
+            eprint!("  Paste your API key (or Enter to set {env_var} later): ");
+            let _ = std::io::stderr().flush();
+            let mut input = String::new();
+            let _ = std::io::stdin().read_line(&mut input);
+            let key = input.trim().to_string();
+            if key.is_empty() {
+                println!(
+                    "    {}",
+                    format!("Set {env_var} before running agent.").yellow()
+                );
+            }
+            println!();
+            key
+        }
     };
 
     // Custom provider: ask for URL and model.
@@ -272,30 +423,16 @@ pub fn run_setup() -> Option<SetupResult> {
     println!("    {} No telemetry is collected", "•".dark_grey());
     println!();
 
-    // Write config.
-    let config = format!(
-        r#"[api]
-base_url = "{base_url}"
-model = "{model}"
+    let result = SetupResult {
+        api_key,
+        provider: provider_choice,
+        base_url: Some(base_url),
+        model: Some(model),
+        theme,
+        permission_mode,
+    };
+    write_config(&result);
 
-[permissions]
-default_mode = "{permission_mode}"
-
-[ui]
-theme = "{theme}"
-"#
-    );
-
-    let config_dir = dirs::config_dir()?.join("agent-code");
-    let _ = std::fs::create_dir_all(&config_dir);
-    let config_path = config_dir.join("config.toml");
-    let _ = std::fs::write(&config_path, &config);
-
-    println!(
-        "{}",
-        format!("  Config saved to {}", config_path.display()).dark_grey()
-    );
-    println!();
     println!(
         "  {} Type {} to start.",
         "Ready!".green().bold(),
@@ -303,13 +440,47 @@ theme = "{theme}"
     );
     println!();
 
-    Some(SetupResult {
-        api_key,
-        provider: provider_choice,
-    })
+    Some(result)
+}
+
+/// Write config file from setup result.
+pub fn write_config(result: &SetupResult) {
+    let base_url = result
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.openai.com/v1");
+    let model = result.model.as_deref().unwrap_or("gpt-5.4");
+    let config = format!(
+        r#"[api]
+base_url = "{base_url}"
+model = "{model}"
+
+[permissions]
+default_mode = "{}"
+
+[ui]
+theme = "{}"
+"#,
+        result.permission_mode, result.theme,
+    );
+
+    if let Some(config_dir) = dirs::config_dir().map(|d| d.join("agent-code")) {
+        let _ = std::fs::create_dir_all(&config_dir);
+        let config_path = config_dir.join("config.toml");
+        let _ = std::fs::write(&config_path, &config);
+        println!(
+            "{}",
+            format!("  Config saved to {}", config_path.display()).dark_grey()
+        );
+    }
+    println!();
 }
 
 pub struct SetupResult {
     pub api_key: String,
     pub provider: String,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub theme: String,
+    pub permission_mode: String,
 }
