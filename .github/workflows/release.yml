@@ -42,7 +42,7 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.artifact }}.tar.gz rc
+          tar czf ../../../${{ matrix.artifact }}.tar.gz agent
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
