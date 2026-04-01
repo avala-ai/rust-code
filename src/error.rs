@@ -32,7 +32,7 @@ pub enum Error {
 #[derive(Debug, Error)]
 pub enum LlmError {
     #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(String),
 
     #[error("API error (status {status}): {body}")]
     Api { status: u16, body: String },

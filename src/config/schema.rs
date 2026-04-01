@@ -18,7 +18,7 @@ pub struct Config {
     pub mcp_servers: std::collections::HashMap<String, McpServerEntry>,
     /// Lifecycle hooks.
     #[serde(default)]
-    pub hooks: Vec<crate::hooks::HookDefinition>,
+    pub hooks: Vec<HookDefinition>,
     /// Security and enterprise settings.
     #[serde(default)]
     pub security: SecurityConfig,
@@ -272,4 +272,38 @@ impl Default for FeaturesConfig {
             reactive_compact: true,
         }
     }
+}
+
+// ---- Hook types (defined here so config has no runtime dependencies) ----
+
+/// Hook event types that can trigger user-defined actions.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEvent {
+    SessionStart,
+    SessionStop,
+    PreToolUse,
+    PostToolUse,
+    UserPromptSubmit,
+}
+
+/// A configured hook action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum HookAction {
+    /// Run a shell command.
+    #[serde(rename = "shell")]
+    Shell { command: String },
+    /// Make an HTTP request.
+    #[serde(rename = "http")]
+    Http { url: String, method: Option<String> },
+}
+
+/// A hook definition binding an event to an action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookDefinition {
+    pub event: HookEvent,
+    pub action: HookAction,
+    /// Optional tool name filter (for PreToolUse/PostToolUse).
+    pub tool_name: Option<String>,
 }

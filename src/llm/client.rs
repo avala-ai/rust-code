@@ -262,7 +262,8 @@ impl LlmClient {
             .headers(headers)
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {

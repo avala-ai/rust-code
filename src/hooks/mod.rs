@@ -12,39 +12,9 @@
 //! Hooks can be shell commands, HTTP endpoints, or prompt templates,
 //! configured in the settings file.
 
-use serde::{Deserialize, Serialize};
-
-/// Hook event types that can trigger user-defined actions.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HookEvent {
-    SessionStart,
-    SessionStop,
-    PreToolUse,
-    PostToolUse,
-    UserPromptSubmit,
-}
-
-/// A configured hook action.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum HookAction {
-    /// Run a shell command.
-    #[serde(rename = "shell")]
-    Shell { command: String },
-    /// Make an HTTP request.
-    #[serde(rename = "http")]
-    Http { url: String, method: Option<String> },
-}
-
-/// A hook definition binding an event to an action.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HookDefinition {
-    pub event: HookEvent,
-    pub action: HookAction,
-    /// Optional tool name filter (for PreToolUse/PostToolUse).
-    pub tool_name: Option<String>,
-}
+// Hook types are defined in config::schema to avoid circular dependencies.
+// Re-export them here for convenience.
+pub use crate::config::{HookAction, HookDefinition, HookEvent};
 
 /// Hook registry that stores and dispatches hooks.
 pub struct HookRegistry {
