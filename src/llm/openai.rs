@@ -294,8 +294,7 @@ impl Provider for OpenAiProvider {
                             // Emit any remaining tool call before Done.
                             if !current_tool_id.is_empty() {
                                 let input: serde_json::Value =
-                                    serde_json::from_str(&current_tool_args)
-                                        .unwrap_or_default();
+                                    serde_json::from_str(&current_tool_args).unwrap_or_default();
                                 let _ = tx
                                     .send(StreamEvent::ContentBlockComplete(
                                         ContentBlock::ToolUse {
@@ -313,9 +312,7 @@ impl Provider for OpenAiProvider {
                             let _ = tx
                                 .send(StreamEvent::Done {
                                     usage: usage.clone(),
-                                    stop_reason: stop_reason
-                                        .clone()
-                                        .or(Some(StopReason::EndTurn)),
+                                    stop_reason: stop_reason.clone().or(Some(StopReason::EndTurn)),
                                 })
                                 .await;
                             return;
