@@ -152,23 +152,11 @@ async fn main() -> anyhow::Result<()> {
             run_setup_wizard();
             config = Config::load()?;
         } else {
-            // Config exists but no key in env. Tell user which var to set.
-            let hint = match config.api.base_url.as_str() {
-                u if u.contains("anthropic") => "ANTHROPIC_API_KEY",
-                u if u.contains("openai") => "OPENAI_API_KEY",
-                u if u.contains("x.ai") => "XAI_API_KEY",
-                u if u.contains("googleapis") => "GOOGLE_API_KEY",
-                u if u.contains("deepseek") => "DEEPSEEK_API_KEY",
-                u if u.contains("groq") => "GROQ_API_KEY",
-                u if u.contains("mistral") => "MISTRAL_API_KEY",
-                u if u.contains("together") => "TOGETHER_API_KEY",
-                _ => "AGENT_CODE_API_KEY",
-            };
-            eprintln!(
-                "No API key found. Set it with:\n\n  export {hint}=\"your-key\"\n\n\
-                 Or run: agent --api-key your-key\n\
-                 Or delete ~/.config/agent-code/config.toml to re-run setup.\n"
-            );
+            // Config exists but no key in env. Re-run setup wizard
+            // so user can paste their key interactively.
+            eprintln!("No API key found. Starting setup...\n");
+            run_setup_wizard();
+            config = Config::load()?;
         }
     }
 

@@ -90,7 +90,7 @@ main() {
     if command -v "$BINARY" &>/dev/null; then
         success "agent-code ${version} installed to ${INSTALL_DIR}/${BINARY}"
         echo ""
-        echo "  ${BOLD}${BINARY} --version${RESET}"
+        echo -e "  ${BOLD}${BINARY} --version${RESET}"
         "$BINARY" --version 2>/dev/null || true
         echo ""
         echo "  Get started:"
