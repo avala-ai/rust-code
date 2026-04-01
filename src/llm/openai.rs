@@ -161,12 +161,24 @@ impl OpenAiProvider {
             })
             .collect();
 
+        // Newer models (o1, o3, gpt-5.x) use max_completion_tokens.
+        let model_lower = request.model.to_lowercase();
+        let uses_new_token_param = model_lower.starts_with("o1")
+            || model_lower.starts_with("o3")
+            || model_lower.contains("gpt-5")
+            || model_lower.contains("gpt-4.1");
+
         let mut body = serde_json::json!({
             "model": request.model,
             "messages": final_messages,
-            "max_tokens": request.max_tokens,
             "stream": true,
         });
+
+        if uses_new_token_param {
+            body["max_completion_tokens"] = serde_json::json!(request.max_tokens);
+        } else {
+            body["max_tokens"] = serde_json::json!(request.max_tokens);
+        }
 
         if !tools.is_empty() {
             body["tools"] = serde_json::Value::Array(tools);

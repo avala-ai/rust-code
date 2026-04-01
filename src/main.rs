@@ -83,6 +83,15 @@ struct Cli {
     max_turns: Option<usize>,
 }
 
+fn run_setup_wizard() {
+    if let Some(result) = ui::setup::run_setup()
+        && !result.api_key.is_empty()
+    {
+        // SAFETY: single-threaded, before async runtime work.
+        unsafe { std::env::set_var("AGENT_CODE_API_KEY", &result.api_key) };
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -100,14 +109,9 @@ async fn main() -> anyhow::Result<()> {
         std::env::set_current_dir(cwd)?;
     }
 
-    // Run first-time setup wizard if no config exists.
-    if cli.prompt.is_none()
-        && ui::setup::needs_setup()
-        && let Some(result) = ui::setup::run_setup()
-        && !result.api_key.is_empty()
-    {
-        // SAFETY: single-threaded at this point, before tokio runtime starts.
-        unsafe { std::env::set_var("AGENT_CODE_API_KEY", &result.api_key) };
+    // Run setup wizard on first launch (no config file).
+    if cli.prompt.is_none() && ui::setup::needs_setup() {
+        run_setup_wizard();
     }
 
     // Detect session environment.
@@ -144,6 +148,13 @@ async fn main() -> anyhow::Result<()> {
             "accept_edits" => crate::config::PermissionMode::AcceptEdits,
             _ => crate::config::PermissionMode::Ask,
         };
+    }
+
+    // If no API key found and interactive, run setup wizard.
+    if config.api.api_key.is_none() && cli.prompt.is_none() && cli.api_key.is_none() {
+        println!("No API key found. Let's set one up.\n");
+        run_setup_wizard();
+        config = Config::load()?;
     }
 
     let api_key = config.api.api_key.as_deref().ok_or_else(|| {

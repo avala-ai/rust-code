@@ -90,9 +90,8 @@ impl Default for ApiConfig {
             "https://api.mistral.ai/v1".to_string()
         } else if std::env::var("TOGETHER_API_KEY").is_ok() {
             "https://api.together.xyz/v1".to_string()
-        } else if std::env::var("OPENAI_API_KEY").is_ok() {
-            "https://api.openai.com/v1".to_string()
         } else {
+            // Default to OpenAI (default model is gpt-5.4).
             "https://api.openai.com/v1".to_string()
         };
 
