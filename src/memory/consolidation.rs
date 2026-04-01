@@ -194,10 +194,7 @@ pub async fn run_consolidation(
         }
 
         if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-            let action = entry
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let action = entry.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
             match action {
                 "delete" => {
@@ -227,10 +224,7 @@ pub async fn run_consolidation(
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     let mem_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("user");
-                    let content = entry
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
                     if !content.is_empty() {
                         let memory_type = match mem_type {

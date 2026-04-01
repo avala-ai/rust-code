@@ -130,10 +130,7 @@ impl Tool for GrepTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let show_line_numbers = input
-            .get("-n")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        let show_line_numbers = input.get("-n").and_then(|v| v.as_bool()).unwrap_or(true);
 
         let after_context = input.get("-A").and_then(|v| v.as_u64());
         let before_context = input.get("-B").and_then(|v| v.as_u64());
@@ -162,10 +159,7 @@ impl Tool for GrepTool {
             .map(|v| v as usize)
             .unwrap_or(250);
 
-        let offset = input
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+        let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         // Build ripgrep command.
         let mut cmd = Command::new("rg");

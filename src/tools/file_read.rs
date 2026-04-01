@@ -171,10 +171,7 @@ async fn read_pdf(file_path: &str, pages: Option<&str>) -> Result<ToolResult, To
     if let Some(page_spec) = pages {
         // Parse page spec like "1-5", "3", "10-20".
         let (first, last) = if let Some((start, end)) = page_spec.split_once('-') {
-            (
-                start.trim().to_string(),
-                end.trim().to_string(),
-            )
+            (start.trim().to_string(), end.trim().to_string())
         } else {
             let page = page_spec.trim().to_string();
             (page.clone(), page)
