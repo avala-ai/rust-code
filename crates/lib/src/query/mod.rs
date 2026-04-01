@@ -207,7 +207,7 @@ impl QueryEngine {
 
             debug!("Agent turn {}/{}", turn + 1, max_turns);
 
-            let model = self.state.config.api.model.clone();
+            let mut model = self.state.config.api.model.clone();
 
             // Step 1: Auto-compact if context is too large.
             if compact::should_auto_compact(self.state.history(), &model, &compact_tracking) {
@@ -291,12 +291,20 @@ impl QueryEngine {
             // Use core schemas (deferred tools loaded on demand via ToolSearch).
             let tool_schemas = self.tools.core_schemas();
 
+            // Escalate max_tokens after a max_output recovery (8k → 64k).
+            let base_tokens = self.state.config.api.max_output_tokens.unwrap_or(16384);
+            let effective_tokens = if max_output_recovery_count > 0 {
+                base_tokens.max(65536) // Escalate to at least 64k after first recovery
+            } else {
+                base_tokens
+            };
+
             let request = ProviderRequest {
                 messages: self.state.history().to_vec(),
                 system_prompt: system_prompt.clone(),
                 tools: tool_schemas.clone(),
                 model: model.clone(),
-                max_tokens: self.state.config.api.max_output_tokens.unwrap_or(16384),
+                max_tokens: effective_tokens,
                 temperature: None,
                 enable_caching: true,
                 tool_choice: Default::default(),
@@ -329,8 +337,10 @@ impl QueryEngine {
                             continue;
                         }
                         crate::llm::retry::RetryAction::FallbackModel => {
-                            sink.on_warning("Falling back to smaller model");
-                            // TODO: switch model and retry
+                            // Switch to a smaller/cheaper model for this turn.
+                            let fallback = get_fallback_model(&model);
+                            sink.on_warning(&format!("Falling back from {model} to {fallback}"));
+                            model = fallback;
                             continue;
                         }
                         crate::llm::retry::RetryAction::Abort(reason) => {
@@ -617,6 +627,25 @@ impl QueryEngine {
     /// Get a cloneable cancel token for use in background tasks.
     pub fn cancel_token(&self) -> tokio_util::sync::CancellationToken {
         self.cancel.clone()
+    }
+}
+
+/// Get a fallback model (smaller/cheaper) for retry on overload.
+fn get_fallback_model(current: &str) -> String {
+    let lower = current.to_lowercase();
+    if lower.contains("opus") {
+        // Opus → Sonnet
+        current.replace("opus", "sonnet")
+    } else if (lower.contains("gpt-5.4") || lower.contains("gpt-4.1"))
+        && !lower.contains("mini")
+        && !lower.contains("nano")
+    {
+        format!("{current}-mini")
+    } else if lower.contains("large") {
+        current.replace("large", "small")
+    } else {
+        // Already a small model, keep it.
+        current.to_string()
     }
 }
 

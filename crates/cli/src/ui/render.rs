@@ -18,6 +18,7 @@ pub fn render_markdown(text: &str) -> String {
     let mut in_code_block = false;
     let mut code_lang = String::new();
     let mut code_buffer = String::new();
+    let mut table_buffer: Vec<String> = Vec::new();
 
     for line in text.lines() {
         if line.starts_with("```") {
@@ -39,11 +40,24 @@ pub fn render_markdown(text: &str) -> String {
         if in_code_block {
             code_buffer.push_str(line);
             code_buffer.push('\n');
+        } else if is_table_line(line) {
+            // Accumulate table lines for batch rendering.
+            table_buffer.push(line.to_string());
         } else {
+            // Flush any accumulated table before non-table content.
+            if !table_buffer.is_empty() {
+                output.push_str(&render_table(&table_buffer));
+                table_buffer.clear();
+            }
             // Render inline markdown elements.
             output.push_str(&render_inline(line));
             output.push('\n');
         }
+    }
+
+    // Flush any trailing table.
+    if !table_buffer.is_empty() {
+        output.push_str(&render_table(&table_buffer));
     }
 
     // Handle unclosed code block.
@@ -180,6 +194,116 @@ fn color_to_ansi(color: crossterm::style::Color) -> String {
     }
 }
 
+/// Detect whether a line looks like a markdown table row (`| col | col |`).
+fn is_table_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1
+}
+
+/// Returns true if this table row is a separator line like `|---|---|`.
+fn is_separator_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed
+        .trim_start_matches('|')
+        .trim_end_matches('|')
+        .chars()
+        .all(|c| c == '-' || c == ':' || c == '|' || c == ' ')
+}
+
+/// Parse a table row into cells (splitting on `|` and trimming).
+fn parse_table_row(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    // Strip leading and trailing pipes, then split on `|`.
+    let inner = trimmed
+        .strip_prefix('|')
+        .unwrap_or(trimmed)
+        .strip_suffix('|')
+        .unwrap_or(trimmed);
+    inner.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+/// Render accumulated markdown table lines using box-drawing characters.
+fn render_table(lines: &[String]) -> String {
+    // Parse all rows, skipping separator rows.
+    let rows: Vec<Vec<String>> = lines
+        .iter()
+        .filter(|l| !is_separator_row(l))
+        .map(|l| parse_table_row(l))
+        .collect();
+
+    if rows.is_empty() {
+        return String::new();
+    }
+
+    // Determine the number of columns and max width per column.
+    let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut col_widths = vec![0usize; num_cols];
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < num_cols {
+                col_widths[i] = col_widths[i].max(cell.len());
+            }
+        }
+    }
+    // Ensure at least width 1 per column.
+    for w in &mut col_widths {
+        if *w == 0 {
+            *w = 1;
+        }
+    }
+
+    let mut out = String::new();
+
+    // Top border: ┌───┬───┐
+    out.push('┌');
+    for (i, &w) in col_widths.iter().enumerate() {
+        for _ in 0..w + 2 {
+            out.push('─');
+        }
+        out.push(if i + 1 < num_cols { '┬' } else { '┐' });
+    }
+    out.push('\n');
+
+    for (row_idx, row) in rows.iter().enumerate() {
+        // Data row: │ val │ val │
+        out.push('│');
+        for (i, w) in col_widths.iter().enumerate() {
+            let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
+            out.push(' ');
+            out.push_str(cell);
+            for _ in 0..*w - cell.len() {
+                out.push(' ');
+            }
+            out.push_str(" │");
+        }
+        out.push('\n');
+
+        // After the header row (row 0), draw a separator: ├───┼───┤
+        if row_idx == 0 && rows.len() > 1 {
+            out.push('├');
+            for (i, &w) in col_widths.iter().enumerate() {
+                for _ in 0..w + 2 {
+                    out.push('─');
+                }
+                out.push(if i + 1 < num_cols { '┼' } else { '┤' });
+            }
+            out.push('\n');
+        }
+    }
+
+    // Bottom border: └───┴───┘
+    out.push('└');
+    for (i, &w) in col_widths.iter().enumerate() {
+        for _ in 0..w + 2 {
+            out.push('─');
+        }
+        out.push(if i + 1 < num_cols { '┴' } else { '┘' });
+    }
+    out.push('\n');
+
+    out
+}
+
 fn find_closing(chars: &[char], start: usize, marker: char) -> Option<usize> {
     (start..chars.len()).find(|&i| chars[i] == marker)
 }
@@ -210,5 +334,40 @@ mod tests {
     fn test_highlight_code_doesnt_panic() {
         let result = highlight_code("fn main() {}\n", "rust");
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_is_table_line() {
+        assert!(is_table_line("| a | b |"));
+        assert!(is_table_line("| --- | --- |"));
+        assert!(!is_table_line("not a table"));
+        assert!(!is_table_line("|"));
+        assert!(!is_table_line("| no closing pipe"));
+    }
+
+    #[test]
+    fn test_render_table_basic() {
+        let lines = vec![
+            "| Name | Age |".to_string(),
+            "| --- | --- |".to_string(),
+            "| Alice | 30 |".to_string(),
+            "| Bob | 25 |".to_string(),
+        ];
+        let result = render_table(&lines);
+        assert!(result.contains('┌'));
+        assert!(result.contains('┘'));
+        assert!(result.contains("Alice"));
+        assert!(result.contains("Bob"));
+        // Header separator present.
+        assert!(result.contains('┼'));
+    }
+
+    #[test]
+    fn test_render_markdown_with_table() {
+        let md = "# Title\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nDone.";
+        let result = render_markdown(md);
+        assert!(result.contains("Title"));
+        assert!(result.contains('┌'));
+        assert!(result.contains("Done."));
     }
 }

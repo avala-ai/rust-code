@@ -87,6 +87,14 @@ impl FileCache {
         }
     }
 
+    /// Return the mtime recorded when a file was last read into the cache.
+    ///
+    /// Returns `None` if the file is not cached.
+    pub fn last_read_mtime(&self, path: &Path) -> Option<SystemTime> {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.entries.get(&canonical).map(|e| e.modified)
+    }
+
     /// Clear the entire cache.
     pub fn clear(&mut self) {
         self.entries.clear();

@@ -159,6 +159,22 @@ impl Tool for FileReadTool {
             output = "(empty file)".to_string();
         }
 
+        // Token-based size limit: estimate ~4 bytes per token, cap at 100K tokens.
+        const MAX_TOKENS: usize = 100_000;
+        const BYTES_PER_TOKEN: usize = 4;
+        let max_bytes = MAX_TOKENS * BYTES_PER_TOKEN;
+        if output.len() > max_bytes {
+            output.truncate(max_bytes);
+            // Avoid splitting a multi-byte character.
+            while !output.is_char_boundary(output.len()) {
+                output.pop();
+            }
+            output.push_str(&format!(
+                "\n\n(File content truncated: exceeded ~{MAX_TOKENS} token estimate. \
+                 Use offset/limit to read specific sections.)"
+            ));
+        }
+
         Ok(ToolResult::success(output))
     }
 }

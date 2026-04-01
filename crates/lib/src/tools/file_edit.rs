@@ -3,15 +3,88 @@
 //! Performs exact string replacement within a file. The `old_string`
 //! must match uniquely (unless `replace_all` is set) to prevent
 //! ambiguous edits.
+//!
+//! Before writing, the tool checks whether the file's modification time
+//! has changed since it was last read (via the session file cache). If
+//! the file is stale the edit is rejected so the model re-reads first.
+//!
+//! After a successful edit the tool returns a unified diff of the
+//! changes so the model (and user) can see exactly what happened.
 
 use async_trait::async_trait;
 use serde_json::json;
-use std::path::PathBuf;
+use similar::TextDiff;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use super::{Tool, ToolContext, ToolResult};
 use crate::error::ToolError;
 
 pub struct FileEditTool;
+
+/// Check whether the file on disk was modified after the cache recorded it.
+///
+/// Returns `Ok(())` when:
+///   - the cache holds an entry and the on-disk mtime still matches, or
+///   - there is no cache / no entry (we cannot prove staleness).
+///
+/// Returns an error message when the mtimes diverge.
+async fn check_staleness(path: &Path, ctx: &ToolContext) -> Result<(), String> {
+    let cache = match ctx.file_cache.as_ref() {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    let cached_mtime: SystemTime = {
+        let guard = cache.lock().await;
+        match guard.last_read_mtime(path) {
+            Some(t) => t,
+            None => return Ok(()), // never read through cache — nothing to compare
+        }
+    };
+
+    let disk_mtime = tokio::fs::metadata(path)
+        .await
+        .ok()
+        .and_then(|m| m.modified().ok());
+
+    if let Some(disk) = disk_mtime
+        && disk != cached_mtime
+    {
+        return Err(format!(
+            "File was modified since last read. \
+             Please re-read {} before editing.",
+            path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Produce a compact unified diff between `old` and `new` text.
+///
+/// The output uses `---`/`+++` headers with the file path and includes
+/// only the changed hunks with a few lines of context.
+fn unified_diff(file_path: &str, old: &str, new: &str) -> String {
+    let diff = TextDiff::from_lines(old, new);
+    let mut out = String::new();
+
+    // Header
+    out.push_str(&format!("--- {file_path}\n"));
+    out.push_str(&format!("+++ {file_path}\n"));
+
+    for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
+        out.push_str(&format!("{hunk}"));
+    }
+
+    // If the diff is empty (shouldn't happen because we already verified
+    // old_string != new_string), fall back to a note.
+    if out.lines().count() <= 2 {
+        out.push_str("(no visible diff)\n");
+    }
+
+    out
+}
 
 #[async_trait]
 impl Tool for FileEditTool {
@@ -64,7 +137,7 @@ impl Tool for FileEditTool {
     async fn call(
         &self,
         input: serde_json::Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let file_path = input
             .get("file_path")
@@ -92,6 +165,8 @@ impl Tool for FileEditTool {
             ));
         }
 
+        let path = Path::new(file_path);
+
         // Check file size before reading (reject files > 1MB).
         const MAX_EDIT_SIZE: u64 = 1_048_576;
         if let Ok(meta) = tokio::fs::metadata(file_path).await
@@ -103,6 +178,12 @@ impl Tool for FileEditTool {
                 meta.len(),
                 MAX_EDIT_SIZE
             )));
+        }
+
+        // Staleness check: reject if the file changed since the model last
+        // read it, so the model works with up-to-date content.
+        if let Err(msg) = check_staleness(path, ctx).await {
+            return Err(ToolError::ExecutionFailed(msg));
         }
 
         let content = tokio::fs::read_to_string(file_path)
@@ -135,9 +216,17 @@ impl Tool for FileEditTool {
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write {file_path}: {e}")))?;
 
+        // Invalidate the cache entry so the next read picks up our write.
+        if let Some(cache) = ctx.file_cache.as_ref() {
+            let mut guard = cache.lock().await;
+            guard.invalidate(path);
+        }
+
+        // Build a unified diff so the model/user sees exactly what changed.
         let replaced = if replace_all { occurrences } else { 1 };
+        let diff = unified_diff(file_path, &content, &new_content);
         Ok(ToolResult::success(format!(
-            "Replaced {replaced} occurrence(s) in {file_path}"
+            "Replaced {replaced} occurrence(s) in {file_path}\n\n{diff}"
         )))
     }
 }

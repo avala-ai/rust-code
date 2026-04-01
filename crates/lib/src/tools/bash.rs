@@ -123,6 +123,10 @@ impl Tool for BashTool {
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Run the command in the background and return immediately"
+                },
+                "dangerouslyDisableSandbox": {
+                    "type": "boolean",
+                    "description": "Disable safety checks for this command. Use only when explicitly asked."
                 }
             }
         })
@@ -142,6 +146,15 @@ impl Tool for BashTool {
 
     fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
         let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Skip all safety checks if dangerouslyDisableSandbox is set.
+        if input
+            .get("dangerouslyDisableSandbox")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
 
         // Check for destructive commands.
         let cmd_lower = command.to_lowercase();
