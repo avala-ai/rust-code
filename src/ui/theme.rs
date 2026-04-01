@@ -42,9 +42,9 @@ impl Theme {
     pub fn midnight() -> Self {
         Self {
             accent: Color::Rgb {
-                r: 0,
-                g: 180,
-                b: 216,
+                r: 164,
+                g: 34,
+                b: 225,
             },
             error: Color::Rgb {
                 r: 255,
@@ -142,9 +142,9 @@ impl Theme {
     pub fn daybreak() -> Self {
         Self {
             accent: Color::Rgb {
-                r: 30,
-                g: 100,
-                b: 200,
+                r: 130,
+                g: 20,
+                b: 180,
             },
             error: Color::Rgb {
                 r: 171,
@@ -242,9 +242,9 @@ impl Theme {
     pub fn midnight_muted() -> Self {
         let mut t = Self::midnight();
         t.accent = Color::Rgb {
-            r: 100,
-            g: 160,
-            b: 180,
+            r: 140,
+            g: 60,
+            b: 190,
         };
         t.error = Color::Rgb {
             r: 200,
@@ -273,9 +273,9 @@ impl Theme {
     pub fn daybreak_muted() -> Self {
         let mut t = Self::daybreak();
         t.accent = Color::Rgb {
-            r: 60,
-            g: 110,
-            b: 160,
+            r: 110,
+            g: 30,
+            b: 150,
         };
         t.error = Color::Rgb {
             r: 150,
@@ -303,7 +303,7 @@ impl Theme {
     /// Terminal — uses standard 16 ANSI colors only.
     pub fn terminal() -> Self {
         Self {
-            accent: Color::DarkCyan,
+            accent: Color::Magenta,
             error: Color::Red,
             warning: Color::Yellow,
             success: Color::Green,
