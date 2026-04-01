@@ -206,22 +206,39 @@ async fn execute_single_tool(
             };
         }
         PermissionDecision::Ask(prompt) => {
-            // Prompt the user for permission.
+            // Prompt the user for permission with detailed TUI modal.
             let description = format!("{}: {}", call.name, prompt);
-            if !crate::ui::prompt::ask_permission(&call.name, &description) {
-                if let Some(ref tracker) = ctx.denial_tracker {
-                    tracker
-                        .lock()
-                        .await
-                        .record(&call.name, &call.id, "user denied", &call.input);
+            let input_preview = serde_json::to_string_pretty(&call.input).ok();
+            let response = crate::ui::prompt::ask_permission_detailed(
+                &call.name,
+                &description,
+                input_preview.as_deref(),
+            );
+
+            match response {
+                crate::ui::prompt::PermissionResponse::AllowOnce => {
+                    // Continue to execution.
                 }
-                return ToolCallResult {
-                    tool_use_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    result: ToolResult::error("Permission denied by user".to_string()),
-                };
+                crate::ui::prompt::PermissionResponse::AllowSession => {
+                    // TODO: Record session-level allow for this tool.
+                    // For now, just continue.
+                }
+                crate::ui::prompt::PermissionResponse::Deny => {
+                    if let Some(ref tracker) = ctx.denial_tracker {
+                        tracker.lock().await.record(
+                            &call.name,
+                            &call.id,
+                            "user denied",
+                            &call.input,
+                        );
+                    }
+                    return ToolCallResult {
+                        tool_use_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        result: ToolResult::error("Permission denied by user".to_string()),
+                    };
+                }
             }
-            // User approved — continue to execution.
         }
     }
 

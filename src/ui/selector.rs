@@ -72,7 +72,12 @@ pub fn select(options: &[SelectOption]) -> String {
 
     clear_all(options.len(), has_preview);
     let chosen = &options[selected];
-    println!("    {} {}\r", "→".dark_cyan(), chosen.label.clone().bold());
+    let t = super::theme::current();
+    println!(
+        "    {} {}\r",
+        "→".with(t.accent),
+        chosen.label.clone().bold()
+    );
 
     options[selected].value.clone()
 }
@@ -87,13 +92,14 @@ fn render_all(options: &[SelectOption], selected: usize, has_preview: bool) {
     // Render options.
     for (i, opt) in options.iter().enumerate() {
         let letter = (b'A' + i as u8) as char;
+        let t = super::theme::current();
         if i == selected {
             write!(
                 out,
                 "  {} {} {}\r\n",
-                format!("❯ {letter})").dark_cyan().bold(),
-                opt.label.clone().white().bold(),
-                opt.description.clone().dark_grey(),
+                format!("❯ {letter})").with(t.accent).bold(),
+                opt.label.clone().with(t.text).bold(),
+                opt.description.clone().with(t.muted),
             )
             .ok();
         } else {
@@ -102,7 +108,7 @@ fn render_all(options: &[SelectOption], selected: usize, has_preview: bool) {
                 "    {}) {} {}\r\n",
                 letter,
                 opt.label,
-                opt.description.clone().dark_grey(),
+                opt.description.clone().with(t.muted),
             )
             .ok();
         }
