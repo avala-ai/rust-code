@@ -92,6 +92,8 @@ struct TerminalSink {
     indicator: Arc<Mutex<Option<ActivityIndicator>>>,
     /// Whether verbose mode is on (shows usage stats inline).
     verbose: bool,
+    /// Accumulated turn state for the summary panel.
+    turn_state: super::tui::SharedTurnState,
 }
 
 impl TerminalSink {
@@ -99,10 +101,9 @@ impl TerminalSink {
         Self {
             mid_line: Arc::new(Mutex::new(false)),
             response_buffer: Arc::new(Mutex::new(String::new())),
-            // Don't start indicator here — it would overwrite the input prompt.
-            // It gets started when the API call begins (via start_indicator).
             indicator: Arc::new(Mutex::new(None)),
             verbose,
+            turn_state: super::tui::new_turn_state(),
         }
     }
 
@@ -157,25 +158,38 @@ impl StreamSink for TerminalSink {
         self.stop_indicator();
         self.ensure_newline();
         let detail = summarize_tool_input(tool_name, input);
+
+        // Track in turn state.
+        self.turn_state
+            .lock()
+            .unwrap()
+            .add_tool_start(tool_name, &detail);
+
+        // Render inline tool header.
         super::tui::render_tool_block(tool_name, &detail, None, false);
     }
 
     fn on_tool_result(&self, _tool_name: &str, result: &ToolResult) {
-        // Re-render the tool block with result (overwrites the start block).
-        // For now, just append the result line.
+        // Track in turn state.
+        self.turn_state
+            .lock()
+            .unwrap()
+            .complete_last_tool(&result.content, result.is_error);
+
+        // Render inline result line.
         let t = super::theme::current();
         if result.is_error {
             let first_line = result.content.lines().next().unwrap_or("");
-            eprintln!("  {} {}", "✗".with(t.error), first_line.with(t.error),);
+            eprintln!("  {} {}", "✗".with(t.error), first_line.with(t.error));
         } else {
-            let preview = result
+            let preview: String = result
                 .content
                 .lines()
                 .next()
                 .unwrap_or("(ok)")
                 .chars()
                 .take(80)
-                .collect::<String>();
+                .collect();
             let line_count = result.content.lines().count();
             let suffix = if line_count > 1 {
                 format!(" (+{} lines)", line_count - 1)
@@ -188,29 +202,31 @@ impl StreamSink for TerminalSink {
                 "  {} {}{}",
                 "✓".with(t.success),
                 preview.with(t.muted),
-                suffix,
+                suffix
             );
         }
-        // Restart indicator — LLM will be called again with tool results.
         self.restart_indicator();
     }
 
     fn on_thinking(&self, text: &str) {
         self.stop_indicator();
+        self.turn_state.lock().unwrap().thinking_chars = text.len();
         super::tui::render_thinking_block(text);
     }
 
     fn on_turn_complete(&self, turn: usize) {
         self.stop_indicator();
         self.ensure_newline();
-        if self.verbose {
-            let t = super::theme::current();
-            eprintln!(
-                "  {} {}",
-                "·".with(t.muted),
-                format!("turn {turn} complete").with(t.muted),
-            );
+
+        // Render the turn summary panel if there were tool calls.
+        let state = self.turn_state.lock().unwrap();
+        if !state.tools.is_empty() {
+            super::tui::render_turn_summary(&state, turn);
         }
+        drop(state);
+
+        // Clear turn state for next turn.
+        self.turn_state.lock().unwrap().clear();
     }
 
     fn on_error(&self, error: &str) {
@@ -224,21 +240,13 @@ impl StreamSink for TerminalSink {
     }
 
     fn on_usage(&self, usage: &Usage) {
-        if self.verbose && usage.total() > 0 {
-            let t = super::theme::current();
-            let mut parts = vec![format!("{}in", usage.input_tokens)];
-            parts.push(format!("{}out", usage.output_tokens));
-            if usage.cache_read_input_tokens > 0 {
-                parts.push(format!("{}cache↓", usage.cache_read_input_tokens));
-            }
-            if usage.cache_creation_input_tokens > 0 {
-                parts.push(format!("{}cache↑", usage.cache_creation_input_tokens));
-            }
-            eprintln!(
-                "  {} {}",
-                "⟡".with(t.muted),
-                parts.join(" · ").with(t.muted),
-            );
+        // Track in turn state for the summary panel.
+        {
+            let mut state = self.turn_state.lock().unwrap();
+            state.tokens_in = usage.input_tokens;
+            state.tokens_out = usage.output_tokens;
+            state.cache_read = usage.cache_read_input_tokens;
+            state.cache_write = usage.cache_creation_input_tokens;
         }
     }
 
