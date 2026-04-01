@@ -266,6 +266,7 @@ impl Provider for OpenAiProvider {
             let mut current_tool_name = String::new();
             let mut current_tool_args = String::new();
             let mut usage = Usage::default();
+            let mut stop_reason: Option<StopReason> = None;
 
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = match chunk_result {
@@ -290,10 +291,31 @@ impl Provider for OpenAiProvider {
                         };
 
                         if data == "[DONE]" {
+                            // Emit any remaining tool call before Done.
+                            if !current_tool_id.is_empty() {
+                                let input: serde_json::Value =
+                                    serde_json::from_str(&current_tool_args)
+                                        .unwrap_or_default();
+                                let _ = tx
+                                    .send(StreamEvent::ContentBlockComplete(
+                                        ContentBlock::ToolUse {
+                                            id: current_tool_id.clone(),
+                                            name: current_tool_name.clone(),
+                                            input,
+                                        },
+                                    ))
+                                    .await;
+                                current_tool_id.clear();
+                                current_tool_name.clear();
+                                current_tool_args.clear();
+                            }
+
                             let _ = tx
                                 .send(StreamEvent::Done {
                                     usage: usage.clone(),
-                                    stop_reason: Some(StopReason::EndTurn),
+                                    stop_reason: stop_reason
+                                        .clone()
+                                        .or(Some(StopReason::EndTurn)),
                                 })
                                 .await;
                             return;
@@ -331,7 +353,30 @@ impl Provider for OpenAiProvider {
                         if let Some(content) = delta.get("content").and_then(|c| c.as_str())
                             && !content.is_empty()
                         {
+                            debug!("OpenAI text delta: {}", &content[..content.len().min(80)]);
                             let _ = tx.send(StreamEvent::TextDelta(content.to_string())).await;
+                        }
+
+                        // Check for finish_reason on the choice level.
+                        if let Some(finish) = parsed
+                            .get("choices")
+                            .and_then(|c| c.get(0))
+                            .and_then(|c| c.get("finish_reason"))
+                            .and_then(|f| f.as_str())
+                        {
+                            debug!("OpenAI finish_reason: {finish}");
+                            match finish {
+                                "stop" => {
+                                    stop_reason = Some(StopReason::EndTurn);
+                                }
+                                "tool_calls" => {
+                                    stop_reason = Some(StopReason::ToolUse);
+                                }
+                                "length" => {
+                                    stop_reason = Some(StopReason::MaxTokens);
+                                }
+                                _ => {}
+                            }
                         }
 
                         // Tool calls.
