@@ -28,7 +28,25 @@ $ agent
 - **Private.** Runs locally. No telemetry. Your code never leaves your machine except for the LLM API call.
 - **Extensible.** Connect external tools via MCP servers, write custom skills as markdown files, build plugins as TOML packages.
 - **Safe.** Every tool call goes through a permission system. Plan mode locks the agent to read-only. Configurable rules per tool and pattern.
-- **Provider-agnostic.** Works with any API that speaks the Messages protocol. Swap models with `--model` or `/model`.
+- **Provider-agnostic.** Works with 9 providers out of the box. Swap models with `--model` or `/model`.
+
+## Supported Models
+
+agent-code works with any LLM provider. Set one environment variable and go:
+
+| Provider | Env Variable | Models |
+|----------|-------------|--------|
+| **Anthropic** | `ANTHROPIC_API_KEY` | Claude Opus, Sonnet, Haiku |
+| **OpenAI** | `OPENAI_API_KEY` | GPT-4o, GPT-4, o1, o3 |
+| **xAI** | `XAI_API_KEY` | Grok-3, Grok-3-mini, Grok-2 |
+| **Google** | `GOOGLE_API_KEY` | Gemini 2.5 Flash, Gemini 2.5 Pro |
+| **DeepSeek** | `DEEPSEEK_API_KEY` | DeepSeek-V3, DeepSeek-Chat |
+| **Groq** | `GROQ_API_KEY` | Llama 3.3 70B, Mixtral |
+| **Mistral** | `MISTRAL_API_KEY` | Mistral Large, Codestral |
+| **Together** | `TOGETHER_API_KEY` | Llama 3, Qwen, and 100+ open models |
+| **Ollama** | (local) | Any model via `--api-base-url http://localhost:11434/v1` |
+
+Plus any OpenAI-compatible endpoint via `--api-base-url`.
 
 ## Install
 
