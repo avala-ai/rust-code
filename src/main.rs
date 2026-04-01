@@ -109,8 +109,8 @@ async fn main() -> anyhow::Result<()> {
         std::env::set_current_dir(cwd)?;
     }
 
-    // Run setup wizard on first launch (no config file).
-    if cli.prompt.is_none() && ui::setup::needs_setup() {
+    // Run setup wizard on first launch (no config file). Skip for non-interactive modes.
+    if cli.prompt.is_none() && !cli.dump_system_prompt && ui::setup::needs_setup() {
         run_setup_wizard();
     }
 
@@ -151,7 +151,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // If no API key found and interactive, run setup wizard.
-    if config.api.api_key.is_none() && cli.prompt.is_none() && cli.api_key.is_none() {
+    if config.api.api_key.is_none()
+        && cli.prompt.is_none()
+        && cli.api_key.is_none()
+        && !cli.dump_system_prompt
+    {
         println!("No API key found. Let's set one up.\n");
         run_setup_wizard();
         config = Config::load()?;
