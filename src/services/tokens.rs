@@ -179,4 +179,61 @@ mod tests {
     fn test_empty_messages() {
         assert_eq!(estimate_context_tokens(&[]), 0);
     }
+
+    #[test]
+    fn test_estimate_block_tokens_text() {
+        let block = ContentBlock::Text {
+            text: "a".repeat(400),
+        };
+        assert_eq!(estimate_block_tokens(&block), 100);
+    }
+
+    #[test]
+    fn test_estimate_block_tokens_image() {
+        let block = ContentBlock::Image {
+            media_type: "image/png".into(),
+            data: "base64data".into(),
+        };
+        assert_eq!(estimate_block_tokens(&block), IMAGE_TOKEN_ESTIMATE);
+    }
+
+    #[test]
+    fn test_estimate_block_tokens_tool_use() {
+        let block = ContentBlock::ToolUse {
+            id: "call_1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "ls"}),
+        };
+        let tokens = estimate_block_tokens(&block);
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_estimate_message_tokens() {
+        let msg = crate::llm::message::user_message("hello world");
+        let tokens = estimate_message_tokens(&msg);
+        // 11 chars / 4 = ~3, + 4 overhead = ~7
+        assert!(tokens >= 5);
+    }
+
+    #[test]
+    fn test_context_window_for_model() {
+        assert_eq!(context_window_for_model("claude-opus-4"), 200_000);
+        assert_eq!(context_window_for_model("claude-sonnet-4"), 200_000);
+        assert_eq!(context_window_for_model("gpt-4"), 128_000);
+        assert_eq!(context_window_for_model("claude-sonnet-1m"), 1_000_000);
+    }
+
+    #[test]
+    fn test_max_output_tokens() {
+        assert_eq!(max_output_tokens_for_model("claude-opus"), 16_384);
+        assert_eq!(max_output_tokens_for_model("claude-haiku"), 8_192);
+    }
+
+    #[test]
+    fn test_max_thinking_tokens() {
+        assert_eq!(max_thinking_tokens_for_model("claude-opus"), 32_000);
+        assert_eq!(max_thinking_tokens_for_model("claude-sonnet"), 16_000);
+        assert_eq!(max_thinking_tokens_for_model("claude-haiku"), 8_000);
+    }
 }

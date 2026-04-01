@@ -206,4 +206,114 @@ mod tests {
         merge_consecutive_user_messages(&mut messages);
         assert_eq!(messages.len(), 2); // Two user messages merged into one.
     }
+
+    #[test]
+    fn test_strip_empty_blocks() {
+        let mut messages = vec![Message::User(UserMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: String::new(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "".into(), // empty — should be removed
+                },
+                ContentBlock::Text {
+                    text: "keep me".into(),
+                },
+            ],
+            is_meta: false,
+            is_compact_summary: false,
+        })];
+        strip_empty_blocks(&mut messages);
+        if let Message::User(u) = &messages[0] {
+            assert_eq!(u.content.len(), 1);
+            assert_eq!(u.content[0].as_text(), Some("keep me"));
+        }
+    }
+
+    #[test]
+    fn test_validate_alternation_valid() {
+        let messages = vec![
+            user_message("hello"),
+            Message::Assistant(AssistantMessage {
+                uuid: Uuid::new_v4(),
+                timestamp: String::new(),
+                content: vec![ContentBlock::Text { text: "hi".into() }],
+                model: None,
+                usage: None,
+                stop_reason: None,
+                request_id: None,
+            }),
+        ];
+        assert!(validate_alternation(&messages).is_ok());
+    }
+
+    #[test]
+    fn test_validate_alternation_invalid() {
+        let messages = vec![
+            user_message("hello"),
+            user_message("world"), // Two users in a row.
+        ];
+        assert!(validate_alternation(&messages).is_err());
+    }
+
+    #[test]
+    fn test_remove_empty_messages() {
+        let mut messages = vec![
+            user_message("keep"),
+            Message::User(UserMessage {
+                uuid: Uuid::new_v4(),
+                timestamp: String::new(),
+                content: vec![], // empty — should be removed
+                is_meta: false,
+                is_compact_summary: false,
+            }),
+            user_message("also keep"),
+        ];
+        remove_empty_messages(&mut messages);
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn test_cap_document_blocks() {
+        let mut messages = vec![Message::User(UserMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: String::new(),
+            content: vec![ContentBlock::Document {
+                media_type: "application/pdf".into(),
+                data: "x".repeat(1000),
+                title: Some("big.pdf".into()),
+            }],
+            is_meta: false,
+            is_compact_summary: false,
+        })];
+        // Cap at 500 bytes — should replace with text.
+        cap_document_blocks(&mut messages, 500);
+        if let Message::User(u) = &messages[0] {
+            assert!(matches!(&u.content[0], ContentBlock::Text { .. }));
+            if let ContentBlock::Text { text } = &u.content[0] {
+                assert!(text.contains("big.pdf"));
+                assert!(text.contains("too large"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_cap_document_blocks_within_limit() {
+        let mut messages = vec![Message::User(UserMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: String::new(),
+            content: vec![ContentBlock::Document {
+                media_type: "application/pdf".into(),
+                data: "small".into(),
+                title: Some("small.pdf".into()),
+            }],
+            is_meta: false,
+            is_compact_summary: false,
+        })];
+        // Cap at 500 bytes — should keep as-is.
+        cap_document_blocks(&mut messages, 500);
+        if let Message::User(u) = &messages[0] {
+            assert!(matches!(&u.content[0], ContentBlock::Document { .. }));
+        }
+    }
 }

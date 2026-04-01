@@ -147,3 +147,111 @@ pub fn rebuild_index(memory_dir: &Path) -> Result<(), String> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_meta() -> MemoryMeta {
+        MemoryMeta {
+            name: "Test Memory".to_string(),
+            description: "A test memory file".to_string(),
+            memory_type: Some(MemoryType::User),
+        }
+    }
+
+    #[test]
+    fn test_write_memory_creates_file_and_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = test_meta();
+        let path = write_memory(dir.path(), "test.md", &meta, "Hello world").unwrap();
+
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("name: Test Memory"));
+        assert!(content.contains("type: user"));
+        assert!(content.contains("Hello world"));
+
+        // Index should exist and contain a pointer.
+        let index = std::fs::read_to_string(dir.path().join("MEMORY.md")).unwrap();
+        assert!(index.contains("[Test Memory](test.md)"));
+    }
+
+    #[test]
+    fn test_write_memory_updates_existing_index_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = test_meta();
+        write_memory(dir.path(), "test.md", &meta, "version 1").unwrap();
+
+        let meta2 = MemoryMeta {
+            name: "Updated".to_string(),
+            description: "Updated description".to_string(),
+            memory_type: Some(MemoryType::Feedback),
+        };
+        write_memory(dir.path(), "test.md", &meta2, "version 2").unwrap();
+
+        let index = std::fs::read_to_string(dir.path().join("MEMORY.md")).unwrap();
+        // Should have only one entry for test.md (replaced, not duplicated).
+        assert_eq!(index.matches("test.md").count(), 1);
+        assert!(index.contains("[Updated](test.md)"));
+    }
+
+    #[test]
+    fn test_delete_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = test_meta();
+        write_memory(dir.path(), "test.md", &meta, "content").unwrap();
+
+        delete_memory(dir.path(), "test.md").unwrap();
+
+        assert!(!dir.path().join("test.md").exists());
+        let index = std::fs::read_to_string(dir.path().join("MEMORY.md")).unwrap();
+        assert!(!index.contains("test.md"));
+    }
+
+    #[test]
+    fn test_delete_nonexistent_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        // Should not error even if file doesn't exist.
+        assert!(delete_memory(dir.path(), "nope.md").is_ok());
+    }
+
+    #[test]
+    fn test_rebuild_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = test_meta();
+        write_memory(dir.path(), "one.md", &meta, "first").unwrap();
+
+        let meta2 = MemoryMeta {
+            name: "Second".to_string(),
+            description: "Second file".to_string(),
+            memory_type: Some(MemoryType::Project),
+        };
+        write_memory(dir.path(), "two.md", &meta2, "second").unwrap();
+
+        // Corrupt the index.
+        std::fs::write(dir.path().join("MEMORY.md"), "garbage").unwrap();
+
+        // Rebuild should restore it.
+        rebuild_index(dir.path()).unwrap();
+        let index = std::fs::read_to_string(dir.path().join("MEMORY.md")).unwrap();
+        assert!(index.contains("one.md"));
+        assert!(index.contains("two.md"));
+    }
+
+    #[test]
+    fn test_index_line_length_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = MemoryMeta {
+            name: "A".repeat(200),
+            description: "B".repeat(200),
+            memory_type: Some(MemoryType::User),
+        };
+        write_memory(dir.path(), "long.md", &meta, "content").unwrap();
+
+        let index = std::fs::read_to_string(dir.path().join("MEMORY.md")).unwrap();
+        for line in index.lines() {
+            assert!(line.len() <= MAX_INDEX_LINE_CHARS + 3); // +3 for "..."
+        }
+    }
+}

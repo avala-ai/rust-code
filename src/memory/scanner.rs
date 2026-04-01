@@ -175,3 +175,127 @@ pub fn select_relevant(
 
     scored.iter().map(|(h, _)| h.path.clone()).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_memory_file(dir: &std::path::Path, name: &str, frontmatter: &str, body: &str) {
+        let content = format!("---\n{frontmatter}\n---\n\n{body}");
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+
+    #[test]
+    fn test_scan_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let headers = scan_memory_files(dir.path());
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn test_scan_finds_md_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write_memory_file(
+            dir.path(),
+            "prefs.md",
+            "name: Preferences\ndescription: User prefs\ntype: user",
+            "I prefer Rust",
+        );
+        write_memory_file(
+            dir.path(),
+            "project.md",
+            "name: Project\ndescription: Project info\ntype: project",
+            "Working on agent-code",
+        );
+        // Non-md file should be ignored.
+        std::fs::write(dir.path().join("notes.txt"), "not a memory").unwrap();
+        // MEMORY.md should be ignored.
+        std::fs::write(dir.path().join("MEMORY.md"), "index").unwrap();
+
+        let headers = scan_memory_files(dir.path());
+        assert_eq!(headers.len(), 2);
+    }
+
+    #[test]
+    fn test_scan_parses_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        write_memory_file(
+            dir.path(),
+            "test.md",
+            "name: My Memory\ndescription: test description\ntype: feedback",
+            "content here",
+        );
+
+        let headers = scan_memory_files(dir.path());
+        assert_eq!(headers.len(), 1);
+        let meta = headers[0].meta.as_ref().unwrap();
+        assert_eq!(meta.name, "My Memory");
+        assert_eq!(meta.description, "test description");
+        assert!(matches!(
+            meta.memory_type,
+            Some(super::super::types::MemoryType::Feedback)
+        ));
+    }
+
+    #[test]
+    fn test_select_relevant_by_keyword() {
+        let dir = tempfile::tempdir().unwrap();
+        write_memory_file(
+            dir.path(),
+            "rust.md",
+            "name: Rust Prefs\ndescription: rust programming preferences\ntype: user",
+            "I like Rust",
+        );
+        write_memory_file(
+            dir.path(),
+            "python.md",
+            "name: Python Prefs\ndescription: python programming preferences\ntype: user",
+            "I like Python",
+        );
+
+        let headers = scan_memory_files(dir.path());
+        let surfaced = std::collections::HashSet::new();
+
+        // Search for "rust" should find rust.md.
+        let results = select_relevant(&headers, "tell me about rust programming", &surfaced);
+        assert!(!results.is_empty());
+        assert!(results.iter().any(|p| p.to_str().unwrap().contains("rust")));
+    }
+
+    #[test]
+    fn test_select_relevant_skips_surfaced() {
+        let dir = tempfile::tempdir().unwrap();
+        write_memory_file(
+            dir.path(),
+            "rust.md",
+            "name: Rust\ndescription: rust preferences\ntype: user",
+            "content",
+        );
+
+        let headers = scan_memory_files(dir.path());
+        let mut surfaced = std::collections::HashSet::new();
+        surfaced.insert(dir.path().join("rust.md"));
+
+        // Already surfaced — should not be returned.
+        let results = select_relevant(&headers, "rust programming", &surfaced);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_select_relevant_max_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            write_memory_file(
+                dir.path(),
+                &format!("topic{i}.md"),
+                &format!("name: Topic {i}\ndescription: matching keyword stuff\ntype: user"),
+                "content about keyword",
+            );
+        }
+
+        let headers = scan_memory_files(dir.path());
+        let surfaced = std::collections::HashSet::new();
+        let results = select_relevant(&headers, "keyword matching stuff topic", &surfaced);
+        assert!(results.len() <= MAX_RELEVANT_PER_TURN);
+    }
+}

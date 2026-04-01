@@ -201,4 +201,41 @@ mod tests {
         let cost = calculate_cost("gpt-4.1-mini", 1_000_000, 0, 0, 0);
         assert!((cost - 0.40).abs() < 0.01);
     }
+
+    #[test]
+    fn test_opus_pricing() {
+        let cost = calculate_cost("claude-opus-4", 1_000_000, 0, 0, 0);
+        assert!((cost - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_haiku_pricing() {
+        let cost = calculate_cost("claude-haiku-4", 0, 1_000_000, 0, 0);
+        assert!((cost - 1.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cache_pricing() {
+        // Sonnet: cache read = $0.3/M, cache write = $3.75/M
+        let cost = calculate_cost("claude-sonnet-4", 0, 0, 1_000_000, 1_000_000);
+        assert!((cost - (0.3 + 3.75)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_deepseek_pricing() {
+        let cost = calculate_cost("deepseek-v3", 1_000_000, 0, 0, 0);
+        assert!((cost - 0.27).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_grok_pricing() {
+        let cost = calculate_cost("grok-3", 1_000_000, 0, 0, 0);
+        assert!((cost - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_zero_tokens() {
+        let cost = calculate_cost("claude-sonnet-4", 0, 0, 0, 0);
+        assert_eq!(cost, 0.0);
+    }
 }

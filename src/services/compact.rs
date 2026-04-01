@@ -413,4 +413,111 @@ mod tests {
     fn test_parse_prompt_too_long_no_match() {
         assert_eq!(parse_prompt_too_long_gap("some other error"), None);
     }
+
+    #[test]
+    fn test_effective_context_window() {
+        // Sonnet: 200K context - 16K output = 184K (capped at 20K → 180K)
+        let eff = effective_context_window("claude-sonnet");
+        assert!(eff > 100_000);
+        assert!(eff < 200_000);
+    }
+
+    #[test]
+    fn test_token_warning_state_empty() {
+        let state = token_warning_state(&[], "claude-sonnet");
+        assert_eq!(state.percent_left, 100);
+        assert!(!state.is_above_warning);
+        assert!(!state.is_blocking);
+    }
+
+    #[test]
+    fn test_should_auto_compact_empty() {
+        let tracking = CompactTracking::default();
+        assert!(!should_auto_compact(&[], "claude-sonnet", &tracking));
+    }
+
+    #[test]
+    fn test_should_auto_compact_circuit_breaker() {
+        let tracking = CompactTracking {
+            consecutive_failures: 5,
+            was_compacted: false,
+        };
+        // Even with huge message list, circuit breaker should prevent compaction.
+        assert!(!should_auto_compact(&[], "claude-sonnet", &tracking));
+    }
+
+    #[test]
+    fn test_microcompact_empty() {
+        let mut messages = vec![];
+        let freed = microcompact(&mut messages, 2);
+        assert_eq!(freed, 0);
+    }
+
+    #[test]
+    fn test_microcompact_keeps_recent() {
+        use crate::llm::message::*;
+        // Create a tool result message.
+        let mut messages = vec![
+            Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: String::new(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "FileRead".into(),
+                    input: serde_json::json!({}),
+                }],
+                model: None,
+                usage: None,
+                stop_reason: None,
+                request_id: None,
+            }),
+            Message::User(UserMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: String::new(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "file content here".repeat(100),
+                    is_error: false,
+                    extra_content: vec![],
+                }],
+                is_meta: true,
+                is_compact_summary: false,
+            }),
+        ];
+        // keep_recent=5 means this single result should be kept.
+        let freed = microcompact(&mut messages, 5);
+        assert_eq!(freed, 0);
+    }
+
+    #[test]
+    fn test_compact_boundary_message() {
+        let msg = compact_boundary_message("test summary");
+        if let Message::System(s) = msg {
+            assert_eq!(
+                s.subtype,
+                crate::llm::message::SystemMessageType::CompactBoundary
+            );
+        } else {
+            panic!("Expected system message");
+        }
+    }
+
+    #[test]
+    fn test_max_output_recovery_message() {
+        let msg = max_output_recovery_message();
+        match msg {
+            Message::User(u) => {
+                assert!(!u.content.is_empty());
+            }
+            _ => panic!("Expected user message"),
+        }
+    }
+
+    #[test]
+    fn test_build_compact_summary_prompt() {
+        use crate::llm::message::*;
+        let messages = vec![user_message("hello"), user_message("world")];
+        let prompt = build_compact_summary_prompt(&messages);
+        assert!(prompt.contains("Summarize"));
+    }
 }

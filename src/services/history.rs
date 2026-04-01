@@ -157,4 +157,74 @@ mod tests {
         })];
         assert_eq!(tool_use_count(&msgs), 1);
     }
+
+    #[test]
+    fn test_extract_text() {
+        let msgs = vec![user_message("hello world"), assistant_msg("response here")];
+        let text = extract_text(&msgs);
+        assert!(text.contains("hello world"));
+        assert!(text.contains("response here"));
+    }
+
+    #[test]
+    fn test_last_user_message_index() {
+        let msgs = vec![
+            user_message("first"),
+            assistant_msg("reply"),
+            user_message("second"),
+        ];
+        assert_eq!(last_user_message_index(&msgs), Some(2));
+    }
+
+    #[test]
+    fn test_last_assistant_index() {
+        let msgs = vec![
+            user_message("first"),
+            assistant_msg("reply"),
+            user_message("second"),
+        ];
+        assert_eq!(last_assistant_index(&msgs), Some(1));
+    }
+
+    #[test]
+    fn test_tools_used() {
+        let msgs = vec![Message::Assistant(AssistantMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: String::new(),
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "1".into(),
+                    name: "Bash".into(),
+                    input: serde_json::json!({}),
+                },
+                ContentBlock::ToolUse {
+                    id: "2".into(),
+                    name: "FileRead".into(),
+                    input: serde_json::json!({}),
+                },
+                ContentBlock::ToolUse {
+                    id: "3".into(),
+                    name: "Bash".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            model: None,
+            usage: None,
+            stop_reason: None,
+            request_id: None,
+        })];
+        let used = tools_used(&msgs);
+        assert!(used.contains(&"Bash".to_string()));
+        assert!(used.contains(&"FileRead".to_string()));
+        assert_eq!(used.len(), 2); // Deduplicated.
+    }
+
+    #[test]
+    fn test_empty_messages() {
+        assert_eq!(message_counts(&[]), (0, 0, 0));
+        assert_eq!(tool_use_count(&[]), 0);
+        assert!(extract_text(&[]).is_empty());
+        assert_eq!(last_user_message_index(&[]), None);
+        assert_eq!(last_assistant_index(&[]), None);
+    }
 }

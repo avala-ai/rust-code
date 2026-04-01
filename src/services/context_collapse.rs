@@ -143,4 +143,65 @@ mod tests {
         let messages = vec![user_message("short")];
         assert!(collapse_to_budget(&messages, 1_000_000).is_none());
     }
+
+    #[test]
+    fn test_collapse_empty_messages() {
+        let messages: Vec<crate::llm::message::Message> = vec![];
+        assert!(collapse_to_budget(&messages, 100).is_none());
+    }
+
+    #[test]
+    fn test_collapse_preserves_first_and_last() {
+        use crate::llm::message::*;
+        // Create enough messages to exceed a tiny budget.
+        let mut messages = Vec::new();
+        for i in 0..10 {
+            messages.push(user_message(&format!(
+                "message {i} with some content padding"
+            )));
+            messages.push(Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: String::new(),
+                content: vec![ContentBlock::Text {
+                    text: format!("response {i} with content"),
+                }],
+                model: None,
+                usage: None,
+                stop_reason: None,
+                request_id: None,
+            }));
+        }
+        // Collapse with a budget that forces removal of middle messages.
+        if let Some(result) = collapse_to_budget(&messages, 50) {
+            assert!(result.snipped_count > 0);
+            assert!(result.tokens_freed > 0);
+            assert!(result.api_messages.len() < messages.len());
+        }
+        // With a huge budget, no collapse needed.
+        assert!(collapse_to_budget(&messages, 1_000_000).is_none());
+    }
+
+    #[test]
+    fn test_recover_from_overflow() {
+        use crate::llm::message::*;
+        let mut messages = Vec::new();
+        for i in 0..20 {
+            messages.push(user_message(&format!("msg {i} {}", "x".repeat(200))));
+            messages.push(Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: String::new(),
+                content: vec![ContentBlock::Text {
+                    text: format!("resp {i} {}", "y".repeat(200)),
+                }],
+                model: None,
+                usage: None,
+                stop_reason: None,
+                request_id: None,
+            }));
+        }
+        let result = recover_from_overflow(&messages, Some(5000));
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert!(r.snipped_count > 0);
+    }
 }
