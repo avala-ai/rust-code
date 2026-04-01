@@ -222,10 +222,35 @@ impl Tool for GrepTool {
         cmd.arg(pattern).arg(&search_path);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to run rg: {e}")))?;
+        let output = match cmd.output().await {
+            Ok(out) => out,
+            Err(_) => {
+                // Fallback to grep if rg is not installed.
+                let mut fallback = Command::new("grep");
+                fallback.arg("-r").arg("--color=never");
+                if show_line_numbers && output_mode == "content" {
+                    fallback.arg("-n");
+                }
+                if case_insensitive {
+                    fallback.arg("-i");
+                }
+                if output_mode == "files_with_matches" {
+                    fallback.arg("-l");
+                } else if output_mode == "count" {
+                    fallback.arg("-c");
+                }
+                if let Some(glob_pat) = glob_filter {
+                    fallback.arg("--include").arg(glob_pat);
+                }
+                fallback.arg(pattern).arg(&search_path);
+                fallback.stdout(Stdio::piped()).stderr(Stdio::piped());
+                fallback.output().await.map_err(|e| {
+                    ToolError::ExecutionFailed(format!(
+                        "Neither rg nor grep available: {e}. Install ripgrep: brew install ripgrep"
+                    ))
+                })?
+            }
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
 

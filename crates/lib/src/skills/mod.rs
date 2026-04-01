@@ -88,8 +88,106 @@ impl SkillRegistry {
             registry.load_from_dir(&dir);
         }
 
+        // Load bundled skills (shipped with the binary).
+        registry.load_bundled();
+
         debug!("Loaded {} skills", registry.skills.len());
         registry
+    }
+
+    /// Load built-in skills that ship with agent-code.
+    fn load_bundled(&mut self) {
+        let bundled = [
+            (
+                "commit",
+                "Create a well-crafted git commit",
+                true,
+                "Review the current git diff carefully. Create a commit with a clear, \
+                 concise message that explains WHY the change was made, not just WHAT changed. \
+                 Follow the repository's existing commit style. Stage specific files \
+                 (don't use git add -A). Never commit .env or credentials.",
+            ),
+            (
+                "review",
+                "Review code changes for bugs and issues",
+                true,
+                "Review the current git diff against the base branch. Look for: bugs, \
+                 security issues (injection, XSS, OWASP top 10), race conditions, \
+                 error handling gaps, performance problems (N+1 queries, missing indexes), \
+                 and code quality issues. Report findings with file:line references.",
+            ),
+            (
+                "test",
+                "Run tests and fix failures",
+                true,
+                "Run the project's test suite. If any tests fail, read the failing test \
+                 and the source code it tests. Identify the root cause. Fix the issue. \
+                 Run the tests again to verify the fix. Repeat until all tests pass.",
+            ),
+            (
+                "explain",
+                "Explain how a piece of code works",
+                true,
+                "Read the file or function the user is asking about. Explain what it does, \
+                 how it works, and why it's designed that way. Use clear language. \
+                 Reference specific line numbers. If there are non-obvious design decisions, \
+                 explain the tradeoffs.",
+            ),
+            (
+                "debug",
+                "Debug an error or unexpected behavior",
+                true,
+                "Investigate the error systematically. Read the error message and stack trace. \
+                 Find the relevant source code. Identify the root cause (don't guess). \
+                 Propose a fix with explanation. Apply the fix and verify it works.",
+            ),
+            (
+                "pr",
+                "Create a pull request",
+                true,
+                "Check git status and diff against the base branch. Analyze ALL commits \
+                 on this branch. Draft a PR title (under 70 chars) and body with a summary \
+                 section (bullet points) and a test plan. Push to remote and create the PR \
+                 using gh pr create. Return the PR URL.",
+            ),
+            (
+                "refactor",
+                "Refactor code for better quality",
+                true,
+                "Read the code the user wants refactored. Identify specific improvements: \
+                 extract functions, reduce duplication, simplify conditionals, improve naming, \
+                 add missing error handling. Make changes incrementally. Run tests after \
+                 each change to verify nothing broke.",
+            ),
+            (
+                "init",
+                "Initialize project configuration",
+                true,
+                "Create an AGENTS.md file in the project root with project context: \
+                 tech stack, architecture overview, coding conventions, test commands, \
+                 and important file locations. This helps the agent understand the project \
+                 in future sessions.",
+            ),
+        ];
+
+        for (name, description, user_invocable, body) in bundled {
+            // Don't override user-defined skills with the same name.
+            if self.skills.iter().any(|s| s.name == name) {
+                continue;
+            }
+            self.skills.push(Skill {
+                name: name.to_string(),
+                metadata: SkillMetadata {
+                    description: Some(description.to_string()),
+                    when_to_use: None,
+                    user_invocable,
+                    disable_non_interactive: false,
+                    paths: None,
+                },
+                body: body.to_string(),
+                source: std::path::PathBuf::new(),
+            });
+        }
     }
 
     /// Load skills from a single directory.
