@@ -532,8 +532,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 
                 rl.add_history_entry(input)?;
 
-                // Re-echo user input with styled background for visual separation.
-                // Uses ANSI background color to distinguish user turns from agent output.
+                // Re-echo user input with styled background, overwriting rustyline's echo.
                 if !input.starts_with('/') && input != "?" && !input.starts_with('!') {
                     let t = super::theme::current();
                     let bg = if t.is_dark {
@@ -541,7 +540,11 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                     } else {
                         "\x1b[48;2;235;235;240m" // light: subtle grey bg
                     };
-                    // Print each line of the input with background color.
+                    // Move cursor up to overwrite rustyline's echo line.
+                    let line_count = input.lines().count().max(1);
+                    eprint!("\x1b[{line_count}A\x1b[2K");
+                    let _ = std::io::stderr().flush();
+                    // Print styled version.
                     for line in input.lines() {
                         let pad = crossterm::terminal::size()
                             .map(|(w, _)| w as usize)

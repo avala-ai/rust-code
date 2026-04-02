@@ -183,7 +183,9 @@ async fn main() -> anyhow::Result<()> {
     {
         config.api.base_url = default_url.to_string();
     }
-    let llm: Arc<dyn agent_code_lib::llm::provider::Provider> = match provider_kind.wire_format() {
+    let mut llm: Arc<dyn agent_code_lib::llm::provider::Provider> = match provider_kind
+        .wire_format()
+    {
         WireFormat::Anthropic => Arc::new(agent_code_lib::llm::anthropic::AnthropicProvider::new(
             &config.api.base_url,
             api_key,
@@ -198,6 +200,62 @@ async fn main() -> anyhow::Result<()> {
         provider_kind,
         config.api.base_url
     );
+
+    // Validate API key with a quick curl check (skip for local/Ollama).
+    if !config.api.base_url.contains("localhost")
+        && !config.api.base_url.contains("127.0.0.1")
+        && cli.prompt.is_none()
+        && !cli.dump_system_prompt
+    {
+        let check_url = format!("{}/models", config.api.base_url);
+        let key_invalid = std::process::Command::new("curl")
+            .args([
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "--max-time",
+                "5",
+                "-H",
+                &format!("Authorization: Bearer {api_key}"),
+                "-H",
+                &format!("x-api-key: {api_key}"),
+                &check_url,
+            ])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .is_some_and(|code| code.trim() == "401" || code.trim() == "403");
+
+        if key_invalid {
+            eprintln!(
+                "\nAPI key rejected by {}. Let's update it.\n",
+                config.api.base_url
+            );
+            run_setup_wizard();
+            config = Config::load()?;
+            let api_key_new = config
+                .api
+                .api_key
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("API key required after setup."))?;
+            llm = match provider_kind.wire_format() {
+                WireFormat::Anthropic => {
+                    Arc::new(agent_code_lib::llm::anthropic::AnthropicProvider::new(
+                        &config.api.base_url,
+                        api_key_new,
+                    ))
+                }
+                WireFormat::OpenAiCompatible => {
+                    Arc::new(agent_code_lib::llm::openai::OpenAiProvider::new(
+                        &config.api.base_url,
+                        api_key_new,
+                    ))
+                }
+            };
+        }
+    }
 
     let mut tool_registry = ToolRegistry::default_tools();
     let permission_checker = PermissionChecker::from_config(&config.permissions);
