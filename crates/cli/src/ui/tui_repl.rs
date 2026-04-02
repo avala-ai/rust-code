@@ -34,6 +34,18 @@ pub async fn run_tui_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     let theme_name = super::theme::resolve_theme(&engine.state().config.ui.theme);
     super::theme::init(&theme_name);
 
+    // Install panic hook to restore terminal on crash.
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            io::stdout(),
+            terminal::LeaveAlternateScreen,
+            crossterm::cursor::Show,
+        );
+        default_panic(info);
+    }));
+
     // Set up ratatui terminal.
     terminal::enable_raw_mode()?;
     crossterm::execute!(
@@ -66,7 +78,12 @@ pub async fn run_tui_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                         terminal::disable_raw_mode()?;
 
                         // Process input in normal terminal.
-                        app.run_input(&input, engine, &session_id).await;
+                        let should_exit = app.run_input(&input, engine, &session_id).await;
+
+                        if should_exit {
+                            // Don't re-enter alt screen — just break.
+                            break;
+                        }
 
                         // Re-enter alternate screen.
                         terminal::enable_raw_mode()?;
@@ -186,6 +203,15 @@ impl App {
         s
     }
 
+    /// Convert character index to byte index in self.input.
+    fn char_to_byte(&self, char_idx: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(char_idx)
+            .map(|(i, _)| i)
+            .unwrap_or(self.input.len())
+    }
+
     fn on_key(&mut self, key: crossterm::event::KeyEvent) -> Action {
         match (key.code, key.modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -205,13 +231,15 @@ impl App {
                 self.ctrl_c = false;
                 if self.cursor > 0 {
                     self.cursor -= 1;
-                    self.input.remove(self.cursor);
+                    let byte_idx = self.char_to_byte(self.cursor);
+                    self.input.remove(byte_idx);
                 }
                 Action::None
             }
             (KeyCode::Delete, _) => {
-                if self.cursor < self.input.len() {
-                    self.input.remove(self.cursor);
+                if self.cursor < self.input.chars().count() {
+                    let byte_idx = self.char_to_byte(self.cursor);
+                    self.input.remove(byte_idx);
                 }
                 Action::None
             }
@@ -220,7 +248,7 @@ impl App {
                 Action::None
             }
             (KeyCode::Right, _) => {
-                if self.cursor < self.input.len() {
+                if self.cursor < self.input.chars().count() {
                     self.cursor += 1;
                 }
                 Action::None
@@ -230,7 +258,7 @@ impl App {
                 Action::None
             }
             (KeyCode::End, _) | (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
-                self.cursor = self.input.len();
+                self.cursor = self.input.chars().count();
                 Action::None
             }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
@@ -275,7 +303,8 @@ impl App {
             }
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 self.ctrl_c = false;
-                self.input.insert(self.cursor, c);
+                let byte_idx = self.char_to_byte(self.cursor);
+                self.input.insert(byte_idx, c);
                 self.cursor += 1;
                 Action::None
             }
@@ -284,7 +313,8 @@ impl App {
     }
 
     /// Process input in normal terminal mode (alt screen OFF).
-    async fn run_input(&mut self, input: &str, engine: &mut QueryEngine, session_id: &str) {
+    /// Returns true if exit was requested.
+    async fn run_input(&mut self, input: &str, engine: &mut QueryEngine, session_id: &str) -> bool {
         let input = input.trim();
 
         // Echo user input.
@@ -304,7 +334,7 @@ impl App {
             println!("  PgUp/PgDn    scroll content");
             println!();
             self.content.push("  (shortcuts shown)".into());
-            return;
+            return false;
         }
 
         // ! bash.
@@ -332,7 +362,7 @@ impl App {
             }
             self.content
                 .push(format!("  ! {}", input.strip_prefix('!').unwrap_or("")));
-            return;
+            return false;
         }
 
         // / commands.
@@ -342,14 +372,14 @@ impl App {
                     self.content.push(format!("  {}", input));
                 }
                 crate::commands::CommandResult::Exit => {
-                    self.content.push("  (exit requested)".into());
+                    return true;
                 }
                 crate::commands::CommandResult::Passthrough(text)
                 | crate::commands::CommandResult::Prompt(text) => {
                     self.run_turn(&text, engine, session_id).await;
                 }
             }
-            return;
+            return false;
         }
 
         // @ file expansion.
@@ -360,10 +390,13 @@ impl App {
         };
 
         self.run_turn(&expanded, engine, session_id).await;
+        false
     }
 
     async fn run_turn(&mut self, input: &str, engine: &mut QueryEngine, session_id: &str) {
-        let sink = PrintSink;
+        let sink = PrintSink {
+            cleared: std::sync::atomic::AtomicBool::new(false),
+        };
         print!("\x1b[90mworking...\x1b[0m");
         let _ = io::Write::flush(&mut io::stdout());
 
@@ -465,16 +498,30 @@ impl App {
 
 // ---- Simple print sink (used during normal-screen agent turns) ----
 
-struct PrintSink;
+struct PrintSink {
+    cleared: std::sync::atomic::AtomicBool,
+}
 
 impl StreamSink for PrintSink {
     fn on_text(&self, text: &str) {
-        print!("\r\x1b[2K{text}");
+        if !self
+            .cleared
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            print!("\r\x1b[2K"); // Clear "working..." only once.
+        }
+        print!("{text}");
         let _ = io::Write::flush(&mut io::stdout());
     }
     fn on_tool_start(&self, name: &str, input: &serde_json::Value) {
+        if !self
+            .cleared
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            print!("\r\x1b[2K");
+        }
         let detail = super::repl::summarize_tool_input(name, input);
-        println!("\r\x1b[2K  \x1b[36m{name}\x1b[0m  \x1b[90m{detail}\x1b[0m");
+        println!("  \x1b[36m{name}\x1b[0m  \x1b[90m{detail}\x1b[0m");
     }
     fn on_tool_result(&self, _name: &str, result: &ToolResult) {
         let (icon, color) = if result.is_error {
