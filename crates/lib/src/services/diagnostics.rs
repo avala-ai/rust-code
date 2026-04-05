@@ -174,53 +174,106 @@ pub async fn run_all(cwd: &Path, config: &crate::config::Config) -> Vec<Check> {
         ));
     }
 
-    // 7. API connectivity test.
+    // 7. Provider detection and health check.
+    let provider_kind =
+        crate::llm::provider::detect_provider(&config.api.model, &config.api.base_url);
+    checks.push(Check::pass(
+        "provider:detected",
+        &format!("Provider: {provider_kind:?}"),
+    ));
+
+    if let Some(expected_env) = match provider_kind {
+        crate::llm::provider::ProviderKind::AzureOpenAi => Some("AZURE_OPENAI_API_KEY"),
+        crate::llm::provider::ProviderKind::Bedrock => Some("AWS_REGION"),
+        crate::llm::provider::ProviderKind::Vertex => Some("GOOGLE_CLOUD_PROJECT"),
+        _ => None,
+    } {
+        if std::env::var(expected_env).is_ok() {
+            checks.push(Check::pass(
+                "provider:env",
+                &format!("{expected_env} is set"),
+            ));
+        } else {
+            checks.push(Check::warn(
+                "provider:env",
+                &format!("{expected_env} not set (may be needed for {provider_kind:?})"),
+            ));
+        }
+    }
+
+    // 8. API connectivity test (provider-aware auth).
     if config.api.api_key.is_some() {
+        let api_key = config.api.api_key.as_deref().unwrap_or("");
         let url = format!("{}/models", config.api.base_url);
-        match reqwest::Client::new()
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(5))
-            .header(
-                "Authorization",
-                format!("Bearer {}", config.api.api_key.as_deref().unwrap_or("")),
-            )
-            .header("x-api-key", config.api.api_key.as_deref().unwrap_or(""))
-            .send()
-            .await
-        {
+
+        let client = reqwest::Client::new();
+        let mut request = client.get(&url).timeout(std::time::Duration::from_secs(5));
+
+        // Use provider-specific auth headers.
+        match provider_kind {
+            crate::llm::provider::ProviderKind::AzureOpenAi => {
+                request = request.header("api-key", api_key);
+            }
+            crate::llm::provider::ProviderKind::Anthropic
+            | crate::llm::provider::ProviderKind::Bedrock
+            | crate::llm::provider::ProviderKind::Vertex => {
+                request = request
+                    .header("x-api-key", api_key)
+                    .header("anthropic-version", "2023-06-01");
+            }
+            _ => {
+                request = request.header("Authorization", format!("Bearer {api_key}"));
+            }
+        }
+
+        match request.send().await {
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() || status.as_u16() == 200 {
                     checks.push(Check::pass(
                         "api:connectivity",
-                        &format!("API reachable ({})", config.api.base_url),
+                        &format!(
+                            "API reachable ({:?} at {})",
+                            provider_kind, config.api.base_url
+                        ),
                     ));
                 } else if status.as_u16() == 401 || status.as_u16() == 403 {
                     checks.push(Check::fail(
                         "api:connectivity",
-                        &format!("API key rejected (HTTP {})", status.as_u16()),
+                        &format!(
+                            "API key rejected by {:?} (HTTP {})",
+                            provider_kind,
+                            status.as_u16()
+                        ),
                     ));
                 } else {
                     checks.push(Check::warn(
                         "api:connectivity",
-                        &format!("API responded with HTTP {}", status.as_u16()),
+                        &format!(
+                            "{:?} responded with HTTP {}",
+                            provider_kind,
+                            status.as_u16()
+                        ),
                     ));
                 }
             }
             Err(e) => {
                 let msg = if e.is_timeout() {
-                    "API unreachable (timeout after 5s)".to_string()
+                    format!("{:?} unreachable (timeout after 5s)", provider_kind)
                 } else if e.is_connect() {
-                    format!("Cannot connect to {}", config.api.base_url)
+                    format!(
+                        "Cannot connect to {:?} at {}",
+                        provider_kind, config.api.base_url
+                    )
                 } else {
-                    format!("API error: {e}")
+                    format!("{:?} error: {e}", provider_kind)
                 };
                 checks.push(Check::fail("api:connectivity", &msg));
             }
         }
     }
 
-    // 8. MCP server health check.
+    // 9. MCP server health check.
     for (name, entry) in &config.mcp_servers {
         if let Some(ref cmd) = entry.command {
             // Check if the command binary exists.
@@ -266,7 +319,7 @@ pub async fn run_all(cwd: &Path, config: &crate::config::Config) -> Vec<Check> {
         }
     }
 
-    // 9. Disk space (warn if < 1GB free).
+    // 10. Disk space (warn if < 1GB free).
     // Simple check via df.
     if let Ok(output) = tokio::process::Command::new("df")
         .args(["-BG", "."])
@@ -374,6 +427,39 @@ mod tests {
         let api_check = checks.iter().find(|c| c.name == "config:api_key");
         assert!(api_check.is_some());
         assert_eq!(api_check.unwrap().status, CheckStatus::Pass);
+    }
+
+    #[tokio::test]
+    async fn test_run_all_includes_provider_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.api.base_url = "https://api.openai.com/v1".to_string();
+        config.api.model = "gpt-5.4".to_string();
+
+        let checks = run_all(dir.path(), &config).await;
+
+        let provider_check = checks.iter().find(|c| c.name == "provider:detected");
+        assert!(provider_check.is_some());
+        assert_eq!(provider_check.unwrap().status, CheckStatus::Pass);
+        assert!(provider_check.unwrap().detail.contains("OpenAi"));
+    }
+
+    #[tokio::test]
+    async fn test_run_all_azure_provider_env_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.api.base_url =
+            "https://myresource.openai.azure.com/openai/deployments/gpt-4".to_string();
+
+        let checks = run_all(dir.path(), &config).await;
+
+        let provider_check = checks.iter().find(|c| c.name == "provider:detected");
+        assert!(provider_check.is_some());
+        assert!(provider_check.unwrap().detail.contains("AzureOpenAi"));
+
+        // Should have a provider:env check for AZURE_OPENAI_API_KEY.
+        let env_check = checks.iter().find(|c| c.name == "provider:env");
+        assert!(env_check.is_some());
     }
 
     #[tokio::test]
