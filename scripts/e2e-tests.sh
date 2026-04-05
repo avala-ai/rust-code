@@ -7,18 +7,18 @@
 # Requirements:
 #   - AGENT_BINARY env var (path to compiled agent binary)
 #   - AGENT_CODE_API_KEY env var (for LLM-backed tests)
-#   - AGENT_CODE_MODEL env var (defaults to gpt-4.1-mini)
+#   - AGENT_CODE_MODEL env var (defaults to gpt-5-nano)
 #   - ripgrep (rg) installed
 #   - jq installed
 #
-# Estimated API cost per run: ~$0.03 with gpt-4.1-mini.
+# Estimated API cost per run: ~$0.03 with gpt-5-nano.
 
 set -uo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────
 
 AGENT="${AGENT_BINARY:-./target/release/agent}"
-MODEL="${AGENT_CODE_MODEL:-openai/gpt-4.1-mini}"
+MODEL="${AGENT_CODE_MODEL:-openai/gpt-5-nano}"
 SERVE_PORT=14096
 SERVE_URL="http://127.0.0.1:${SERVE_PORT}"
 API_TIMEOUT=120

@@ -33,4 +33,4 @@ jobs:
           AGENT_BINARY: target/release/agent
           AGENT_CODE_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           AGENT_CODE_API_BASE_URL: https://openrouter.ai/api/v1
-          AGENT_CODE_MODEL: openai/gpt-4.1-mini
+          AGENT_CODE_MODEL: openai/gpt-5-nano
