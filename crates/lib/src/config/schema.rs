@@ -43,6 +43,9 @@ pub struct SecurityConfig {
     /// Restrict which environment variables the agent can read.
     #[serde(default)]
     pub env_allowlist: Vec<String>,
+    /// Disable inline shell execution within skill templates.
+    #[serde(default)]
+    pub disable_skill_shell_execution: bool,
 }
 
 /// Entry for a configured MCP server.

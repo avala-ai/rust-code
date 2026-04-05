@@ -57,6 +57,50 @@ impl Skill {
         }
         body
     }
+
+    /// Expand the skill body, stripping fenced shell blocks if disabled.
+    ///
+    /// When `disable_shell` is true, any fenced code block with a shell
+    /// language tag (```sh, ```bash, ```shell, ```zsh) is replaced with
+    /// a notice that shell execution is disabled.
+    pub fn expand_safe(&self, args: Option<&str>, disable_shell: bool) -> String {
+        let body = self.expand(args);
+        if !disable_shell {
+            return body;
+        }
+        strip_shell_blocks(&body)
+    }
+}
+
+/// Remove fenced shell code blocks from text.
+fn strip_shell_blocks(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut lines = text.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        if is_shell_fence(line) {
+            // Skip until closing fence.
+            result.push_str("[Shell execution disabled by security policy]\n");
+            for inner in lines.by_ref() {
+                if inner.trim_start().starts_with("```") {
+                    break;
+                }
+            }
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    result
+}
+
+fn is_shell_fence(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("```sh")
+        || trimmed.starts_with("```bash")
+        || trimmed.starts_with("```shell")
+        || trimmed.starts_with("```zsh")
 }
 
 /// Skill registry holding all loaded skills.
@@ -424,5 +468,49 @@ mod tests {
             source: PathBuf::from("test.md"),
         };
         assert_eq!(skill.expand(Some("main.rs")), "Review main.rs carefully.");
+    }
+
+    #[test]
+    fn test_expand_safe_allows_shell_by_default() {
+        let skill = Skill {
+            name: "deploy".into(),
+            metadata: SkillMetadata::default(),
+            body: "Run:\n```bash\ncargo build\n```\nDone.".into(),
+            source: PathBuf::from("deploy.md"),
+        };
+        let result = skill.expand_safe(None, false);
+        assert!(result.contains("cargo build"));
+    }
+
+    #[test]
+    fn test_expand_safe_strips_shell_when_disabled() {
+        let skill = Skill {
+            name: "deploy".into(),
+            metadata: SkillMetadata::default(),
+            body: "Run:\n```bash\ncargo build\n```\nDone.".into(),
+            source: PathBuf::from("deploy.md"),
+        };
+        let result = skill.expand_safe(None, true);
+        assert!(!result.contains("cargo build"));
+        assert!(result.contains("Shell execution disabled"));
+        assert!(result.contains("Done."));
+    }
+
+    #[test]
+    fn test_strip_shell_blocks_multiple_langs() {
+        let text = "a\n```sh\nls\n```\nb\n```zsh\necho hi\n```\nc\n";
+        let result = strip_shell_blocks(text);
+        assert!(!result.contains("ls"));
+        assert!(!result.contains("echo hi"));
+        assert!(result.contains("a\n"));
+        assert!(result.contains("b\n"));
+        assert!(result.contains("c\n"));
+    }
+
+    #[test]
+    fn test_strip_shell_blocks_preserves_non_shell() {
+        let text = "```rust\nfn main() {}\n```\n";
+        let result = strip_shell_blocks(text);
+        assert!(result.contains("fn main()"));
     }
 }
