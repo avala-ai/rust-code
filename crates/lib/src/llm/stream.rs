@@ -43,7 +43,7 @@ pub enum StreamEvent {
     Error(String),
 }
 
-/// Raw SSE data payload (deserialized from each `data:` line).
+/// Raw SSE data payload (deserialized from each `data:` line in the Anthropic stream).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum RawSseEvent {
@@ -78,6 +78,7 @@ pub enum RawSseEvent {
     Error { error: ErrorPayload },
 }
 
+/// Payload from the `message_start` SSE event (model, initial usage).
 #[derive(Debug, Deserialize)]
 pub struct MessageStartPayload {
     pub id: Option<String>,
@@ -85,11 +86,13 @@ pub struct MessageStartPayload {
     pub usage: Option<Usage>,
 }
 
+/// Payload from the `message_delta` SSE event (stop reason, final usage).
 #[derive(Debug, Deserialize)]
 pub struct MessageDeltaPayload {
     pub stop_reason: Option<StopReason>,
 }
 
+/// Payload from an `error` SSE event.
 #[derive(Debug, Deserialize)]
 pub struct ErrorPayload {
     #[serde(rename = "type")]
@@ -97,6 +100,7 @@ pub struct ErrorPayload {
     pub message: Option<String>,
 }
 
+/// Raw content block from `content_block_start` (text, tool_use, or thinking).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum RawContentBlock {
@@ -117,6 +121,7 @@ pub enum RawContentBlock {
     },
 }
 
+/// Raw delta from `content_block_delta` (text, JSON input, thinking, signature).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 #[allow(clippy::enum_variant_names)]

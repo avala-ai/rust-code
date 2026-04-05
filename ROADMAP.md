@@ -85,7 +85,7 @@ Good documentation is the highest-leverage improvement. Every other phase benefi
 ### 1.9 Rustdoc for Library Crate — Done
 
 - [x] Top-level rustdoc with module table, quick example, custom Tool example
-- [ ] Add `///` doc comments to ~30 key public structs and functions
+- [x] Add `///` doc comments to all key public structs, enums, and traits
 - [ ] Publish rustdoc via CI (GitHub Pages or docs.rs)
 
 ---

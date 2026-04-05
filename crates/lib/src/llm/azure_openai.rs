@@ -17,6 +17,7 @@ use super::message::{ContentBlock, Message, StopReason, Usage};
 use super::provider::{Provider, ProviderError, ProviderRequest};
 use super::stream::StreamEvent;
 
+/// Azure OpenAI provider with `api-key` header auth and AD token support.
 pub struct AzureOpenAiProvider {
     http: reqwest::Client,
     base_url: String,
