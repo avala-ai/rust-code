@@ -31,8 +31,8 @@ impl AzureOpenAiProvider {
             .build()
             .expect("failed to build HTTP client");
 
-        let api_version = std::env::var("AZURE_OPENAI_API_VERSION")
-            .unwrap_or_else(|_| "2024-10-21".to_string());
+        let api_version =
+            std::env::var("AZURE_OPENAI_API_VERSION").unwrap_or_else(|_| "2024-10-21".to_string());
 
         Self {
             http,
@@ -110,36 +110,35 @@ impl AzureOpenAiProvider {
         // Handle tool results (OpenAI uses role: "tool").
         let mut final_messages = Vec::new();
         for msg in messages {
-            if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
-                if let Some(content) = msg.get("content")
-                    && let Some(arr) = content.as_array()
-                {
-                    let mut tool_results = Vec::new();
-                    let mut other_content = Vec::new();
+            if msg.get("role").and_then(|r| r.as_str()) == Some("user")
+                && let Some(content) = msg.get("content")
+                && let Some(arr) = content.as_array()
+            {
+                let mut tool_results = Vec::new();
+                let mut other_content = Vec::new();
 
-                    for block in arr {
-                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-                            tool_results.push(serde_json::json!({
+                for block in arr {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                        tool_results.push(serde_json::json!({
                                 "role": "tool",
                                 "tool_call_id": block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or(""),
                                 "content": block.get("content").and_then(|v| v.as_str()).unwrap_or(""),
                             }));
-                        } else {
-                            other_content.push(block.clone());
-                        }
+                    } else {
+                        other_content.push(block.clone());
                     }
+                }
 
-                    if !tool_results.is_empty() {
-                        for tr in tool_results {
-                            final_messages.push(tr);
-                        }
-                        if !other_content.is_empty() {
-                            let mut m = msg.clone();
-                            m["content"] = serde_json::Value::Array(other_content);
-                            final_messages.push(m);
-                        }
-                        continue;
+                if !tool_results.is_empty() {
+                    for tr in tool_results {
+                        final_messages.push(tr);
                     }
+                    if !other_content.is_empty() {
+                        let mut m = msg.clone();
+                        m["content"] = serde_json::Value::Array(other_content);
+                        final_messages.push(m);
+                    }
+                    continue;
                 }
             }
             final_messages.push(msg);

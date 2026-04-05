@@ -320,7 +320,10 @@ mod tests {
     #[test]
     fn test_detect_from_url_azure_openai() {
         assert!(matches!(
-            detect_provider("any", "https://myresource.openai.azure.com/openai/deployments/gpt-4"),
+            detect_provider(
+                "any",
+                "https://myresource.openai.azure.com/openai/deployments/gpt-4"
+            ),
             ProviderKind::AzureOpenAi
         ));
     }
@@ -329,7 +332,10 @@ mod tests {
     fn test_detect_azure_before_generic_openai() {
         // Azure URL contains "openai" but should match Azure, not generic OpenAI.
         assert!(matches!(
-            detect_provider("gpt-4", "https://myresource.openai.azure.com/openai/deployments/gpt-4"),
+            detect_provider(
+                "gpt-4",
+                "https://myresource.openai.azure.com/openai/deployments/gpt-4"
+            ),
             ProviderKind::AzureOpenAi
         ));
     }

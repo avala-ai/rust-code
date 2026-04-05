@@ -137,7 +137,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Run setup wizard on first launch (no config file). Skip for non-interactive modes.
-    if cli.prompt.is_none() && !cli.dump_system_prompt && !cli.serve && !cli.acp && ui::setup::needs_setup() {
+    if cli.prompt.is_none()
+        && !cli.dump_system_prompt
+        && !cli.serve
+        && !cli.acp
+        && ui::setup::needs_setup()
+    {
         run_setup_wizard();
     }
 
@@ -236,12 +241,9 @@ async fn main() -> anyhow::Result<()> {
                     api_key,
                 ))
             }
-            WireFormat::OpenAiCompatible => {
-                Arc::new(agent_code_lib::llm::openai::OpenAiProvider::new(
-                    &config.api.base_url,
-                    api_key,
-                ))
-            }
+            WireFormat::OpenAiCompatible => Arc::new(
+                agent_code_lib::llm::openai::OpenAiProvider::new(&config.api.base_url, api_key),
+            ),
         },
     };
     tracing::info!(

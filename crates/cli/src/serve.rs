@@ -74,7 +74,10 @@ pub enum SseEvent {
 
     /// Token usage update.
     #[serde(rename = "usage")]
-    Usage { input_tokens: u64, output_tokens: u64 },
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
 
     /// An error occurred.
     #[serde(rename = "error")]
@@ -192,7 +195,9 @@ impl StreamSink for SseBroadcastSink {
         if let Ok(mut t) = self.text.lock() {
             t.push_str(text);
         }
-        self.send(SseEvent::TextDelta { text: text.to_string() });
+        self.send(SseEvent::TextDelta {
+            text: text.to_string(),
+        });
     }
 
     fn on_tool_start(&self, name: &str, _input: &serde_json::Value) {
@@ -201,7 +206,9 @@ impl StreamSink for SseBroadcastSink {
         {
             tools.push(name.to_string());
         }
-        self.send(SseEvent::ToolStart { name: name.to_string() });
+        self.send(SseEvent::ToolStart {
+            name: name.to_string(),
+        });
     }
 
     fn on_tool_result(&self, name: &str, result: &agent_code_lib::tools::ToolResult) {
@@ -212,7 +219,9 @@ impl StreamSink for SseBroadcastSink {
     }
 
     fn on_thinking(&self, text: &str) {
-        self.send(SseEvent::Thinking { text: text.to_string() });
+        self.send(SseEvent::Thinking {
+            text: text.to_string(),
+        });
     }
 
     fn on_turn_complete(&self, turn: usize) {
@@ -223,7 +232,9 @@ impl StreamSink for SseBroadcastSink {
         if let Ok(mut t) = self.text.lock() {
             t.push_str(&format!("\n[Error: {error}]"));
         }
-        self.send(SseEvent::Error { message: error.to_string() });
+        self.send(SseEvent::Error {
+            message: error.to_string(),
+        });
     }
 
     fn on_usage(&self, usage: &agent_code_lib::llm::message::Usage) {
@@ -238,7 +249,9 @@ impl StreamSink for SseBroadcastSink {
     }
 
     fn on_warning(&self, msg: &str) {
-        self.send(SseEvent::Warning { message: msg.to_string() });
+        self.send(SseEvent::Warning {
+            message: msg.to_string(),
+        });
     }
 }
 

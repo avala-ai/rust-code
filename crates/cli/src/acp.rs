@@ -351,11 +351,7 @@ pub async fn run_acp(engine: QueryEngine) -> anyhow::Result<()> {
                     }
                 }
                 Err(e) => {
-                    let err = JsonRpcResponse::error(
-                        None,
-                        -32700,
-                        format!("Parse error: {e}"),
-                    );
+                    let err = JsonRpcResponse::error(None, -32700, format!("Parse error: {e}"));
                     let msg = serde_json::to_string(&err).unwrap_or_default();
                     write_to_stdout(&msg);
                 }
@@ -376,22 +372,15 @@ pub async fn run_acp(engine: QueryEngine) -> anyhow::Result<()> {
     while let Some(req) = req_rx.recv().await {
         let response = match req.method.as_str() {
             "initialize" => handle_initialize(req.id),
-            "message" => {
-                handle_message(req.id, &req.params, &engine, &notify_tx).await
-            }
+            "message" => handle_message(req.id, &req.params, &engine, &notify_tx).await,
             "status" => handle_status(req.id, &engine).await,
             "cancel" => handle_cancel(req.id, &engine).await,
             "shutdown" => {
-                let resp =
-                    JsonRpcResponse::success(req.id, serde_json::json!({ "ok": true }));
+                let resp = JsonRpcResponse::success(req.id, serde_json::json!({ "ok": true }));
                 write_response(&resp);
                 break;
             }
-            other => JsonRpcResponse::error(
-                req.id,
-                -32601,
-                format!("Method not found: {other}"),
-            ),
+            other => JsonRpcResponse::error(req.id, -32601, format!("Method not found: {other}")),
         };
         write_response(&response);
     }
