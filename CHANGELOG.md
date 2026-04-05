@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+*No changes yet.*
+
+## [0.11.0] - 2026-04-05
+
 ### Added
 
-- **Plugin executable support**: plugins can ship executables in `bin/` that are registered as callable tools
+- **OpenRouter provider**: access any model through a single API key (`OPENROUTER_API_KEY`)
+- **npm wrapper package**: `npm install -g agent-code` downloads the correct prebuilt binary
+- **Plugin executable support**: plugins can ship executables in `bin/` registered as callable tools
 - **Self-update check**: background check on startup + `/update` command, throttled to 24h
 - **Rustdoc**: top-level library documentation with module table, examples, and custom Tool guide
 - **4 tutorials**: first project, custom skills, MCP integration, multi-provider setup
@@ -70,6 +76,7 @@ Initial public release.
 - **Cross-platform support**: Linux (x86_64, aarch64) and macOS (x86_64, Apple Silicon)
 - **Installation methods**: cargo install, Homebrew tap, curl script, prebuilt binaries
 
-[Unreleased]: https://github.com/avala-ai/agent-code/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/avala-ai/agent-code/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/avala-ai/agent-code/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/avala-ai/agent-code/compare/v0.9.7...v0.10.0
 [0.9.7]: https://github.com/avala-ai/agent-code/releases/tag/v0.9.7
