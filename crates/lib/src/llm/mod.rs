@@ -10,6 +10,7 @@
 //! - `stream` — SSE parser that yields `StreamEvent` values
 
 pub mod anthropic;
+pub mod azure_openai;
 pub mod client;
 pub mod message;
 pub mod normalize;

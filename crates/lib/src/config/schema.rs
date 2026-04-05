@@ -104,6 +104,7 @@ impl Default for ApiConfig {
         let api_key = std::env::var("AGENT_CODE_API_KEY")
             .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
+            .or_else(|_| std::env::var("AZURE_OPENAI_API_KEY"))
             .or_else(|_| std::env::var("XAI_API_KEY"))
             .or_else(|_| std::env::var("GOOGLE_API_KEY"))
             .or_else(|_| std::env::var("DEEPSEEK_API_KEY"))
@@ -121,6 +122,8 @@ impl Default for ApiConfig {
         let use_bedrock = std::env::var("AGENT_CODE_USE_BEDROCK").is_ok()
             || std::env::var("AWS_REGION").is_ok() && api_key.is_some();
         let use_vertex = std::env::var("AGENT_CODE_USE_VERTEX").is_ok();
+        let use_azure = std::env::var("AZURE_OPENAI_ENDPOINT").is_ok()
+            || std::env::var("AZURE_OPENAI_API_KEY").is_ok();
 
         let has_generic = std::env::var("AGENT_CODE_API_KEY").is_ok();
         let base_url = if use_bedrock {
@@ -135,6 +138,12 @@ impl Default for ApiConfig {
             format!(
                 "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models"
             )
+        } else if use_azure {
+            // Azure OpenAI — URL from AZURE_OPENAI_ENDPOINT or placeholder.
+            std::env::var("AZURE_OPENAI_ENDPOINT").unwrap_or_else(|_| {
+                "https://YOUR_RESOURCE.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT"
+                    .to_string()
+            })
         } else if has_generic {
             // Generic key — default to OpenAI (default model is gpt-5.4).
             "https://api.openai.com/v1".to_string()

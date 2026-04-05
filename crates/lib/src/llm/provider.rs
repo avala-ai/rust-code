@@ -99,6 +99,12 @@ pub fn detect_provider(model: &str, base_url: &str) -> ProviderKind {
     if url_lower.contains("anthropic.com") {
         return ProviderKind::Anthropic;
     }
+    // Azure OpenAI — must be checked before generic openai.com.
+    if url_lower.contains("openai.azure.com")
+        || url_lower.contains("azure.com") && url_lower.contains("openai")
+    {
+        return ProviderKind::AzureOpenAi;
+    }
     if url_lower.contains("openai.com") {
         return ProviderKind::OpenAi;
     }
@@ -197,6 +203,7 @@ pub enum ProviderKind {
     Bedrock,
     Vertex,
     OpenAi,
+    AzureOpenAi,
     Xai,
     Google,
     DeepSeek,
@@ -216,6 +223,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic | Self::Bedrock | Self::Vertex => WireFormat::Anthropic,
             Self::OpenAi
+            | Self::AzureOpenAi
             | Self::Xai
             | Self::Google
             | Self::DeepSeek
@@ -248,7 +256,7 @@ impl ProviderKind {
             Self::Cohere => Some("https://api.cohere.com/v2"),
             Self::Perplexity => Some("https://api.perplexity.ai"),
             // These require user-supplied URLs.
-            Self::Bedrock | Self::Vertex | Self::OpenAiCompatible => None,
+            Self::Bedrock | Self::Vertex | Self::AzureOpenAi | Self::OpenAiCompatible => None,
         }
     }
 
@@ -257,6 +265,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic | Self::Bedrock | Self::Vertex => "ANTHROPIC_API_KEY",
             Self::OpenAi => "OPENAI_API_KEY",
+            Self::AzureOpenAi => "AZURE_OPENAI_API_KEY",
             Self::Xai => "XAI_API_KEY",
             Self::Google => "GOOGLE_API_KEY",
             Self::DeepSeek => "DEEPSEEK_API_KEY",
@@ -305,6 +314,29 @@ mod tests {
         assert!(matches!(
             detect_provider("any", "https://us-central1-aiplatform.googleapis.com/v1"),
             ProviderKind::Vertex
+        ));
+    }
+
+    #[test]
+    fn test_detect_from_url_azure_openai() {
+        assert!(matches!(
+            detect_provider(
+                "any",
+                "https://myresource.openai.azure.com/openai/deployments/gpt-4"
+            ),
+            ProviderKind::AzureOpenAi
+        ));
+    }
+
+    #[test]
+    fn test_detect_azure_before_generic_openai() {
+        // Azure URL contains "openai" but should match Azure, not generic OpenAI.
+        assert!(matches!(
+            detect_provider(
+                "gpt-4",
+                "https://myresource.openai.azure.com/openai/deployments/gpt-4"
+            ),
+            ProviderKind::AzureOpenAi
         ));
     }
 
