@@ -34,7 +34,7 @@ impl Config {
     fn load_inner() -> Result<Config, ConfigError> {
         let mut config = Config::default();
 
-        // Layer 1: User-level config.
+        // Layer 1: User-level config (lowest priority file).
         if let Some(path) = user_config_path()
             && path.exists()
         {
@@ -44,7 +44,7 @@ impl Config {
             config.merge(user_config);
         }
 
-        // Layer 2: Project-level config (walk up from cwd).
+        // Layer 2: Project-level config (overrides user config).
         if let Some(path) = find_project_config() {
             let content = std::fs::read_to_string(&path)
                 .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?;
@@ -52,7 +52,24 @@ impl Config {
             config.merge(project_config);
         }
 
-        // Layer 3: Environment variables (applied in CLI parsing).
+        // Layer 3: Environment variables override file-based config.
+        // API key from env always wins over config files, because users
+        // expect `OPENAI_API_KEY=x agent` to use key x, even if a
+        // stale key exists in config.toml.
+        let env_api_key = resolve_api_key_from_env();
+        if env_api_key.is_some() {
+            config.api.api_key = env_api_key;
+        }
+
+        // Base URL from env overrides file config.
+        if let Ok(url) = std::env::var("AGENT_CODE_API_BASE_URL") {
+            config.api.base_url = url;
+        }
+
+        // Model from env overrides file config.
+        if let Ok(model) = std::env::var("AGENT_CODE_MODEL") {
+            config.api.model = model;
+        }
 
         Ok(config)
     }
@@ -83,6 +100,25 @@ impl Config {
             self.mcp_servers.insert(name, entry);
         }
     }
+}
+
+/// Resolve API key from environment variables.
+///
+/// Checks each provider's env var in priority order. Returns the first
+/// one found, or None if no API key is set in the environment.
+fn resolve_api_key_from_env() -> Option<String> {
+    std::env::var("AGENT_CODE_API_KEY")
+        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .or_else(|_| std::env::var("XAI_API_KEY"))
+        .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+        .or_else(|_| std::env::var("DEEPSEEK_API_KEY"))
+        .or_else(|_| std::env::var("GROQ_API_KEY"))
+        .or_else(|_| std::env::var("MISTRAL_API_KEY"))
+        .or_else(|_| std::env::var("ZHIPU_API_KEY"))
+        .or_else(|_| std::env::var("TOGETHER_API_KEY"))
+        .or_else(|_| std::env::var("OPENROUTER_API_KEY"))
+        .ok()
 }
 
 /// Returns the user-level config file path.
