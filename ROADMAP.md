@@ -10,15 +10,17 @@ Status key: **Planned** | **In Progress** | **Done**
 
 | Area | Status |
 |------|--------|
-| Rust workspace (lib + cli) | 24K+ LOC, 95+ source files |
+| Rust workspace (lib + cli) | 25K+ LOC, 100+ source files |
 | Built-in tools | 32 (file ops, search, shell, web, LSP, MCP, agents, tasks) |
 | Slash commands | 43 (session, context, git, agent control, config, diagnostics, history, sharing, update) |
 | Bundled skills | 12 (commit, review, test, explain, debug, pr, refactor, init, security-review, advisor, bughunter, plan) |
-| LLM providers | 12 (Anthropic, OpenAI, xAI, Google, DeepSeek, Groq, Mistral, Together, Zhipu, Ollama, Bedrock, Vertex) |
-| Tests | 220+ (unit + integration + smoke) |
+| LLM providers | 13 (Anthropic, OpenAI, xAI, Google, DeepSeek, Groq, Mistral, Together, Zhipu, Ollama, Bedrock, Vertex, OpenRouter) |
+| Tests | 232+ (unit + integration + smoke + benchmarks) |
 | Platforms | Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64, Docker |
-| Install methods | cargo, homebrew (custom tap), curl script, prebuilt binaries, Docker |
-| Docs | 22 pages (Mintlify + mdBook), troubleshooting guide, FAQ |
+| Install methods | cargo, homebrew (custom tap), curl script, prebuilt binaries, Docker, npm |
+| Docs | 30+ pages (Mintlify + mdBook), tutorials, architecture, FAQ, security |
+| Server mode | Headless HTTP API (`agent --serve`) |
+| Multi-agent | Coordinator with spawn, run_team, messaging |
 
 ---
 
@@ -40,37 +42,37 @@ Good documentation is the highest-leverage improvement. Every other phase benefi
 - [x] Cover: API connection failures, permission denials, MCP server crashes, context window exceeded, tool execution errors, installation problems
 - [x] Each issue: symptoms, cause, fix
 
-### 1.3 Tutorials (4 pages)
+### 1.3 Tutorials (4 pages) — Done
 
-- [ ] **First Project** — setting up agent-code on an existing codebase
-- [ ] **Custom Skills** — writing, testing, and sharing a custom skill
-- [ ] **MCP Integration** — connecting and using MCP servers
-- [ ] **Multi-Provider** — switching between LLM providers, configuring fallbacks
-- [ ] Add Tutorials navigation group to `docs/mint.json`
+- [x] **First Project** — setting up agent-code on an existing codebase
+- [x] **Custom Skills** — writing, testing, and sharing a custom skill
+- [x] **MCP Integration** — connecting and using MCP servers
+- [x] **Multi-Provider** — switching between LLM providers, configuring fallbacks
+- [x] Tutorials navigation group added to `docs/mint.json`
 
 ### 1.4 FAQ — Done
 
 - [x] Create `docs/faq.mdx` with 18 questions
 - [x] Categories: general, installation, usage, cost, security, extensibility
 
-### 1.5 Security Documentation
+### 1.5 Security Documentation — Done
 
-- [ ] Expand `SECURITY.md` beyond the current template
-- [ ] Create `docs/security.mdx` covering: permission model deep-dive, sandbox architecture, MCP trust boundaries, `--dangerously-skip-permissions` implications, enterprise security configuration
-- [ ] Document the destructive command detection system in the Bash tool
+- [x] Expanded `SECURITY.md` with protected dirs, skill safety, enterprise config, bypass prevention
+- [x] Created `docs/security.mdx` with full security model reference
+- [x] Documented destructive command detection in Bash tool
 
-### 1.6 Architecture Deep-Dives (4 pages)
+### 1.6 Architecture Deep-Dives (4 pages) — Done
 
-- [ ] **Context Compaction** — microcompact, LLM summary, context collapse strategies and when each fires
-- [ ] **Tool Execution** — permission flow, read-only batching vs serial mutations, streaming executor
-- [ ] **Provider Abstraction** — how `normalize.rs` bridges Anthropic Messages API and OpenAI Chat Completions
-- [ ] **MCP Protocol** — stdio/SSE transports, tool proxying, resource access, error handling
-- [ ] Add Architecture navigation group to `docs/mint.json`
+- [x] **Context Compaction** — microcompact, LLM summary, context collapse
+- [x] **Tool Execution** — permission flow, batching, streaming executor
+- [x] **Provider Abstraction** — Anthropic/OpenAI normalization
+- [x] **MCP Protocol** — stdio/SSE transports, proxying, resources
+- [x] Architecture navigation group added to `docs/mint.json`
 
-### 1.7 Performance Tuning Guide
+### 1.7 Performance Tuning Guide — Done
 
-- [ ] Create `docs/guides/performance.mdx`
-- [ ] Cover: context management, token budget configuration, model selection for speed vs quality, auto-compact thresholds, deferred tool optimization
+- [x] Created `docs/guides/performance.mdx`
+- [x] Covers: model selection, context management, cost control, benchmarking
 
 ### 1.8 README Enhancements — Done
 
@@ -144,16 +146,17 @@ All commands are added to `crates/cli/src/commands/mod.rs`.
 - [x] Cache hit percentage per model
 - [x] Single-model sessions show inline cache hit rate
 
-### 3.4 Headless Mode (Stretch)
+### 3.4 Headless Mode — Partially Done
 
-- [ ] **`agent serve`** — Start agent as a headless HTTP API server
+- [x] **`agent --serve`** — Headless HTTP API server (POST /message, GET /status, /messages, /health)
+- [x] Bridge lock file for IDE discovery
+- [x] Graceful shutdown with Ctrl+C
 - [ ] **`agent attach <session-id>`** — Reconnect to a running headless session
 - [ ] SSE event stream for real-time updates
-- [ ] Enables web UI and IDE integrations without custom bridge code
 
-### 3.5 Self-Management Commands (Stretch)
+### 3.5 Self-Management Commands — Partially Done
 
-- [ ] **`/upgrade`** — Check GitHub releases API, download and replace binary if newer version available
+- [x] **`/update`** — Check GitHub releases API, notify if newer version
 - [ ] **`/uninstall`** — Remove binary, config, and data directories with confirmation
 
 ---
@@ -162,10 +165,10 @@ All commands are added to `crates/cli/src/commands/mod.rs`.
 
 **Priority: Medium** | **Target: v0.12**
 
-### 4.1 New Providers
+### 4.1 New Providers — Partially Done
 
 - [ ] **Azure OpenAI** — separate from generic OpenAI, with Azure-specific auth (AD tokens, managed identity)
-- [ ] **OpenRouter** — single API key for any model, with model routing
+- [x] **OpenRouter** — single API key for any model (`OPENROUTER_API_KEY`)
 - [ ] **Cohere** — Command R+ models
 - [ ] **Perplexity** — search-augmented generation
 - [ ] **GitHub Copilot** — Copilot token-based access for GitHub users
@@ -241,11 +244,12 @@ All commands are added to `crates/cli/src/commands/mod.rs`.
 - [x] `/update` command (alias: `/upgrade`) for manual check
 - [x] Post-session notification if newer version found
 
-### 6.5 npm Wrapper Package (Stretch)
+### 6.5 npm Wrapper Package — Done
 
-- [ ] Create `npm/` directory with `package.json`, `install.js`, `index.js`
-- [ ] `npm install -g agent-code` downloads appropriate prebuilt binary for platform
-- [ ] Depends on: 6.1 (Windows binary needed for cross-platform npm)
+- [x] `npm/` directory with `package.json`, `install.js`
+- [x] `npm install -g @avala-ai/agent-code` downloads prebuilt binary
+- [x] Publish workflow in `release.yml` (publishes on tag push)
+- [x] Published to npm as `@avala-ai/agent-code` (scoped — unscoped name conflicts with `agentcode`)
 
 ### 6.6 Homebrew Core (Stretch)
 
@@ -264,12 +268,13 @@ These are tracked for future exploration. Not committed to a timeline.
 - [ ] Map ACP sessions to internal agent-code sessions
 - [ ] `agent acp` command to start ACP stdio server
 
-### 7.2 Multi-Agent Orchestration
+### 7.2 Multi-Agent Orchestration — Done
 
-- [ ] Implement coordinator runtime in `crates/lib/src/services/coordinator.rs` (type definitions already exist)
-- [ ] `Coordinator::spawn_agent()` for parallel subagent execution
-- [ ] `Coordinator::run_team()` for multi-agent task decomposition with result aggregation
-- [ ] Agent-to-agent messaging via `SendMessage` tool
+- [x] `Coordinator` runtime with `spawn_agent()`, `run_agent()`, `run_team()`
+- [x] Parallel multi-agent execution via `tokio::spawn`
+- [x] `send_message()` for inter-agent messaging (by ID or name)
+- [x] `create_team()` / `list_teams()` for team management
+- [x] Shared `build_agent_command()` helper for subprocess spawning
 
 ### 7.3 Interactive Tutorial System
 
@@ -312,9 +317,9 @@ These are tracked for future exploration. Not committed to a timeline.
 | Tool dispatch overhead | unmeasured | <1ms per tool call |
 | Binary size (release) | ~15MB | <12MB (strip + LTO) |
 | Context compaction latency | unmeasured | <500ms for microcompact |
-| Tests | 225+ | 400+ |
+| Tests | 232+ | 400+ |
 | Test coverage | Codecov active | >70% |
-| Supported platforms | 5 (+ Windows + Docker) | 6 (+ npm wrapper) |
+| Supported platforms | 6 (Linux, macOS, Windows, Docker, npm) | 7 (+ homebrew-core) |
 
 ---
 
@@ -323,10 +328,10 @@ These are tracked for future exploration. Not committed to a timeline.
 Want to help? Pick any unchecked item above and open an issue to discuss the approach before starting. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup.
 
 Priority areas where contributions are most welcome:
-1. **Tutorials** (Phase 1.3) — step-by-step guides for common workflows
-2. **Architecture deep-dives** (Phase 1.6) — explain the internals
-3. **Plugin executables** (Phase 2.3) — extend the tool system
-4. **Benchmarks** (Phase 5.3) — measure what matters
+1. **New providers** (Phase 4.1) — Azure, Cohere, Perplexity, Copilot
+2. **ACP protocol** (Phase 7.1) — IDE integrations via Agent Client Protocol
+3. **SSE event stream** (Phase 3.4) — real-time updates for serve mode
+4. **Rustdoc comments** (Phase 1.9) — `///` docs on key public types
 
 ---
 
