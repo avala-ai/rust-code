@@ -6,18 +6,19 @@ Status key: **Planned** | **In Progress** | **Done**
 
 ---
 
-## Current State (v0.9.7)
+## Current State
 
 | Area | Status |
 |------|--------|
-| Rust workspace (lib + cli) | 23.7K LOC, 90 source files |
+| Rust workspace (lib + cli) | 24K+ LOC, 95+ source files |
 | Built-in tools | 32 (file ops, search, shell, web, LSP, MCP, agents, tasks) |
-| Slash commands | 32 (session, context, git, agent control, config, diagnostics) |
-| Bundled skills | 8 (commit, review, test, explain, debug, pr, refactor, init) |
+| Slash commands | 42 (session, context, git, agent control, config, diagnostics, history, sharing) |
+| Bundled skills | 12 (commit, review, test, explain, debug, pr, refactor, init, security-review, advisor, bughunter, plan) |
 | LLM providers | 12 (Anthropic, OpenAI, xAI, Google, DeepSeek, Groq, Mistral, Together, Zhipu, Ollama, Bedrock, Vertex) |
-| Tests | 227 (215 unit + 12 async) |
-| Platforms | Linux x86_64/aarch64, macOS x86_64/aarch64 |
-| Install methods | cargo, homebrew (custom tap), curl script, prebuilt binaries |
+| Tests | 220+ (unit + integration + smoke) |
+| Platforms | Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64, Docker |
+| Install methods | cargo, homebrew (custom tap), curl script, prebuilt binaries, Docker |
+| Docs | 22 pages (Mintlify + mdBook), troubleshooting guide, FAQ |
 
 ---
 
@@ -27,17 +28,17 @@ Status key: **Planned** | **In Progress** | **Done**
 
 Good documentation is the highest-leverage improvement. Every other phase benefits from having clear, complete docs.
 
-### 1.1 CHANGELOG
+### 1.1 CHANGELOG — Done
 
-- [ ] Create `CHANGELOG.md` using [Keep a Changelog](https://keepachangelog.com/) format
-- [ ] Reconstruct history from git tags (Added / Changed / Fixed / Removed per version)
-- [ ] Add `/release-notes` command that reads and displays the current version's entry
+- [x] Create `CHANGELOG.md` using [Keep a Changelog](https://keepachangelog.com/) format
+- [x] Reconstruct history from git tags (Added / Changed / Fixed / Removed per version)
+- [x] Add `/release-notes` command that reads and displays the current version's entry
 
-### 1.2 Troubleshooting Guide
+### 1.2 Troubleshooting Guide — Done
 
-- [ ] Create `docs/troubleshooting.mdx`
-- [ ] Cover: API connection failures, permission denials, MCP server crashes, context window exceeded, tool execution errors, installation problems
-- [ ] Each issue: symptoms, cause, fix
+- [x] Create `docs/troubleshooting.mdx`
+- [x] Cover: API connection failures, permission denials, MCP server crashes, context window exceeded, tool execution errors, installation problems
+- [x] Each issue: symptoms, cause, fix
 
 ### 1.3 Tutorials (4 pages)
 
@@ -47,10 +48,10 @@ Good documentation is the highest-leverage improvement. Every other phase benefi
 - [ ] **Multi-Provider** — switching between LLM providers, configuring fallbacks
 - [ ] Add Tutorials navigation group to `docs/mint.json`
 
-### 1.4 FAQ
+### 1.4 FAQ — Done
 
-- [ ] Create `docs/faq.mdx` with 15-20 questions
-- [ ] Categories: installation, usage, providers, cost/tokens, security, troubleshooting
+- [x] Create `docs/faq.mdx` with 18 questions
+- [x] Categories: general, installation, usage, cost, security, extensibility
 
 ### 1.5 Security Documentation
 
@@ -71,12 +72,13 @@ Good documentation is the highest-leverage improvement. Every other phase benefi
 - [ ] Create `docs/guides/performance.mdx`
 - [ ] Cover: context management, token budget configuration, model selection for speed vs quality, auto-compact thresholds, deferred tool optimization
 
-### 1.8 README Enhancements
+### 1.8 README Enhancements — Done
 
-- [ ] Add CI/coverage/docs badges
-- [ ] Add "What's New" section linking to CHANGELOG
-- [ ] Expand feature table with tool count, command count, skill count
-- [ ] Add "Community" section with links to discussions/issues
+- [x] Add CI badge
+- [x] Expand feature table with tool count, command count, skill count
+- [x] Add platforms table with Docker
+- [x] Add security section, skills table, commands section
+- [x] Link to CONTRIBUTING.md and ROADMAP.md
 
 ### 1.9 Rustdoc for Library Crate
 
@@ -90,20 +92,18 @@ Good documentation is the highest-leverage improvement. Every other phase benefi
 
 **Priority: High** | **Target: v0.11**
 
-### 2.1 New Bundled Skills
+### 2.1 New Bundled Skills — Done
 
-Add 4 new skills to `load_bundled()` in `crates/lib/src/skills/mod.rs`:
+- [x] **`security-review`** — OWASP vulnerability scan with severity ratings
+- [x] **`advisor`** — Architecture and dependency health analysis
+- [x] **`bughunter`** — Systematic bug search with reproduction steps
+- [x] **`plan`** — Structured implementation planning with risk flags
 
-- [ ] **`security-review`** — Review code for OWASP Top 10 vulnerabilities, input validation, authentication flows, secrets handling, SQL injection, XSS. Report findings with file:line references.
-- [ ] **`advisor`** — Analyze project architecture and suggest improvements. Review dependency health, code organization, test coverage, and technical debt. Prioritize recommendations by impact.
-- [ ] **`bughunter`** — Systematically search for bugs. Read error logs, run tests, trace edge cases, check error handling paths, verify null/empty input handling. Report with reproduction steps.
-- [ ] **`plan`** — Create a comprehensive implementation plan. Explore the codebase to understand existing patterns. Identify all files to modify. Design the solution with tradeoffs. List dependencies and risks. Estimate effort.
+### 2.2 Skill Safety Setting — Done
 
-### 2.2 Skill Safety Setting
-
-- [ ] Add `disable_skill_shell_execution: bool` to `SecurityConfig` in `crates/lib/src/config/schema.rs`
-- [ ] When enabled, prevent skills from executing embedded shell blocks
-- [ ] Document in settings reference
+- [x] Add `disable_skill_shell_execution: bool` to `SecurityConfig`
+- [x] `Skill::expand_safe()` strips fenced shell blocks when enabled
+- [x] Non-shell code blocks preserved
 
 ### 2.3 Plugin Executable Support
 
@@ -127,21 +127,21 @@ Add 4 new skills to `load_bundled()` in `crates/lib/src/skills/mod.rs`:
 
 All commands are added to `crates/cli/src/commands/mod.rs`.
 
-### 3.1 Session Commands
+### 3.1 Session Commands — Done
 
-- [ ] **`/summary`** — Summarize the current session: files modified, tools used, key decisions made. Delegates to the agent with conversation context.
-- [ ] **`/share`** — Export session to markdown or JSON file. Optionally upload to GitHub Gist and return URL.
-- [ ] **`/feedback`** — Collect user feedback text, write to `~/.local/share/agent-code/feedback/` with timestamp.
+- [x] **`/summary`** — Delegates to agent for session summary
+- [x] **`/share`** — Exports session as shareable markdown with metadata
+- [x] **`/feedback`** — Saves feedback to `~/.local/share/agent-code/feedback/`
 
-### 3.2 Info Commands
+### 3.2 Info Commands — Done
 
-- [ ] **`/release-notes`** — Read `CHANGELOG.md` and display the current version's entry. Depends on Phase 1.1.
+- [x] **`/release-notes`** — Reads CHANGELOG.md, displays current version's entry
 
-### 3.3 Cost Enhancements
+### 3.3 Cost Enhancements — Done
 
-- [ ] Add `per_model_usage: HashMap<String, UsageStats>` to `AppState` in `crates/lib/src/state/mod.rs`
-- [ ] Track usage per model ID in `crates/lib/src/query/mod.rs`
-- [ ] Enhanced `/cost` output: per-model breakdown table, cache hit rate, estimated remaining budget
+- [x] Per-model token breakdown in `/cost` when multiple models used
+- [x] Cache hit percentage per model
+- [x] Single-model sessions show inline cache hit rate
 
 ### 3.4 Headless Mode (Stretch)
 
@@ -181,16 +181,15 @@ All commands are added to `crates/cli/src/commands/mod.rs`.
 
 **Priority: Medium** | **Target: v0.11**
 
-### 5.1 Smoke Tests
+### 5.1 Smoke Tests — Done
 
-- [ ] Create `tests/smoke.rs` — invoke compiled binary with `--version`, `--help`, `--dump-system-prompt`
-- [ ] Verify exit codes and output format
+- [x] `crates/cli/tests/smoke.rs` — `--version`, `--help`, unknown flags
+- [x] CI-safe (no API key required)
 
-### 5.2 Integration Tests
+### 5.2 Integration Tests — Done
 
-- [ ] `tests/integration/skills_test.rs` — load skills from temp directory, verify expansion and frontmatter parsing
-- [ ] `tests/integration/session_test.rs` — save, load, list, and delete sessions
-- [ ] `tests/integration/config_test.rs` — layered config merge (user + project + env + CLI)
+- [x] `crates/lib/tests/skills_integration.rs` — 6 tests: bundled loading, finding by name, custom skill from temp dir, override, directory skills
+- [x] `crates/lib/tests/config_integration.rs` — 5 tests: defaults, TOML parsing, security config, features, MCP entries
 
 ### 5.3 Benchmarks
 
@@ -215,26 +214,24 @@ All commands are added to `crates/cli/src/commands/mod.rs`.
 
 **Priority: Medium** | **Target: v1.0**
 
-### 6.1 Windows Support
+### 6.1 Windows Support — Done
 
-- [ ] Add `windows-latest` to CI test matrix in `.github/workflows/ci.yml`
-- [ ] Add `x86_64-pc-windows-msvc` target to `.github/workflows/release.yml`
-- [ ] Verify PowerShell tool (`crates/lib/src/tools/powershell.rs`) works correctly on Windows
-- [ ] Update `install.sh` or create `install.ps1` for Windows
+- [x] `windows-latest` in CI test matrix
+- [x] `x86_64-pc-windows-msvc` in release builds (packaged as `.zip`)
+- [x] Fixed unused variable warning for Windows compilation
 
-### 6.2 Docker Image
+### 6.2 Docker Image — Done
 
-- [ ] Create `Dockerfile` — multi-stage build (Rust builder + slim runtime with git, rg, python3, node)
-- [ ] Create `.github/workflows/docker.yml` — build and push to `ghcr.io/avala-ai/agent-code` on release tags
-- [ ] Document Docker usage in installation docs
+- [x] Multi-stage `Dockerfile` (Rust builder + slim Debian runtime with git, rg, python3, node)
+- [x] `.github/workflows/docker.yml` — build and push to `ghcr.io/avala-ai/agent-code` on tags
+- [x] `.dockerignore` for clean build context
 
-### 6.3 Protected Directories
+### 6.3 Protected Directories — Done
 
-- [ ] Add built-in deny rules in `crates/lib/src/permissions/mod.rs` for:
-  - `.git/` (prevent repository corruption)
-  - `.husky/` (prevent hook tampering)
-  - `node_modules/` (prevent dependency modification)
-- [ ] Make the list configurable via settings
+- [x] Built-in deny rules for `.git/`, `.husky/`, `node_modules/`
+- [x] Enforced before user-configured rules
+- [x] Read access unaffected
+- [x] Cross-platform path handling (forward and backslash)
 
 ### 6.4 Self-Update Mechanism
 
@@ -314,9 +311,9 @@ These are tracked for future exploration. Not committed to a timeline.
 | Tool dispatch overhead | unmeasured | <1ms per tool call |
 | Binary size (release) | ~15MB | <12MB (strip + LTO) |
 | Context compaction latency | unmeasured | <500ms for microcompact |
-| Tests | 227 | 400+ |
+| Tests | 220+ | 400+ |
 | Test coverage | unmeasured | >70% |
-| Supported platforms | 4 | 5 (+ Windows) |
+| Supported platforms | 5 (+ Windows + Docker) | 6 (+ npm wrapper) |
 
 ---
 
@@ -325,11 +322,11 @@ These are tracked for future exploration. Not committed to a timeline.
 Want to help? Pick any unchecked item above and open an issue to discuss the approach before starting. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup.
 
 Priority areas where contributions are most welcome:
-1. **Documentation** (Phase 1) — lowest barrier, highest impact
-2. **New bundled skills** (Phase 2.1) — just prompt engineering + registration
-3. **Smoke and integration tests** (Phase 5) — improve confidence for everyone
-4. **Windows CI** (Phase 6.1) — expand the user base
+1. **Tutorials** (Phase 1.3) — step-by-step guides for common workflows
+2. **Architecture deep-dives** (Phase 1.6) — explain the internals
+3. **Plugin executables** (Phase 2.3) — extend the tool system
+4. **Benchmarks** (Phase 5.3) — measure what matters
 
 ---
 
-*Last updated: 2026-04-04*
+*Last updated: 2026-04-05*

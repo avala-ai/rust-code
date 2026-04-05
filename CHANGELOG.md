@@ -9,10 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **4 new bundled skills**: `/security-review` (OWASP vulnerability scan), `/advisor` (architecture analysis), `/bughunter` (systematic bug search), `/plan` (implementation planning)
-- **4 new commands**: `/release-notes` (show current version notes from CHANGELOG), `/summary` (session summary), `/feedback` (submit feedback), `/share` (export session as shareable markdown)
+- **4 new bundled skills**: `/security-review` (OWASP vulnerability scan), `/advisor` (architecture analysis), `/bughunter` (systematic bug search), `/plan` (implementation planning) — total now 12
+- **4 new commands**: `/release-notes` (show current version notes from CHANGELOG), `/summary` (session summary), `/feedback` (submit feedback), `/share` (export session as shareable markdown) — total now 42
+- **Per-model cost breakdown** in `/cost` command with cache hit rate percentages
+- **`disable_skill_shell_execution`** security setting — strips shell blocks from skill templates when enabled
 - **Protected directories**: writes to `.git/`, `.husky/`, and `node_modules/` are blocked regardless of permission settings
 - **Windows support**: CI tests and release builds for `x86_64-pc-windows-msvc`, packaged as `.zip`
+- **Docker image**: multi-stage Dockerfile with GHCR publish workflow on release tags
+- **Troubleshooting guide**: 7 categories covering API, permissions, context, tools, MCP, installation, sessions
+- **FAQ page**: 18 questions across 6 categories (general, install, usage, cost, security, extensibility)
+- **Integration tests**: 11 new tests for skills and config systems (total now 220+)
 - **Smoke tests**: end-to-end binary invocation tests (`--version`, `--help`, unknown flags)
 - `CHANGELOG.md` with full release history
 - `ROADMAP.md` with phased v1.0 improvement plan

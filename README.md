@@ -139,6 +139,7 @@ Protected directories (`.git/`, `.husky/`, `node_modules/`) are blocked from wri
 | Linux | x86_64, aarch64 | curl, cargo, homebrew, prebuilt binary |
 | macOS | x86_64, Apple Silicon | curl, cargo, homebrew, prebuilt binary |
 | Windows | x86_64 | cargo, prebuilt binary (.zip) |
+| Docker | any | `docker run ghcr.io/avala-ai/agent-code` |
 
 ## Contributing
 
@@ -146,7 +147,7 @@ Protected directories (`.git/`, `.husky/`, `node_modules/`) are blocked from wri
 git clone https://github.com/avala-ai/agent-code.git
 cd agent-code
 cargo build
-cargo test    # 190+ tests
+cargo test    # 220+ tests
 cargo clippy  # zero warnings
 ```
 
