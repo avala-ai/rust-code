@@ -15,6 +15,7 @@ use super::message::{messages_to_api_params, messages_to_api_params_cached};
 use super::provider::{Provider, ProviderError, ProviderRequest};
 use super::stream::{RawSseEvent, StreamEvent, StreamParser};
 
+/// Anthropic Messages API provider (Claude models, Bedrock, Vertex).
 pub struct AnthropicProvider {
     http: reqwest::Client,
     base_url: String,

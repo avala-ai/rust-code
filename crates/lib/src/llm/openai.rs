@@ -14,6 +14,7 @@ use super::message::{ContentBlock, Message, StopReason, Usage};
 use super::provider::{Provider, ProviderError, ProviderRequest};
 use super::stream::StreamEvent;
 
+/// OpenAI Chat Completions provider (GPT, Groq, Together, DeepSeek, etc.).
 pub struct OpenAiProvider {
     http: reqwest::Client,
     base_url: String,
