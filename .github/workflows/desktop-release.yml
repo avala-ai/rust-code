@@ -1,0 +1,144 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., desktop-v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-agent:
+    name: Build agent binary (${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-apple-darwin
+          - arch: aarch64
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build agent binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/agent
+
+  build-desktop:
+    name: Build desktop app (macOS universal)
+    runs-on: macos-latest
+    needs: build-agent
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Download agent binaries
+        uses: actions/download-artifact@v7
+        with:
+          path: /tmp/agent-binaries
+
+      - name: Create universal agent binary
+        run: |
+          mkdir -p desktop/macos/Runner/Resources
+          lipo -create \
+            /tmp/agent-binaries/agent-x86_64/agent \
+            /tmp/agent-binaries/agent-aarch64/agent \
+            -output desktop/macos/Runner/Resources/agent
+          chmod +x desktop/macos/Runner/Resources/agent
+          file desktop/macos/Runner/Resources/agent
+
+      - name: Generate macOS runner (if not committed)
+        working-directory: desktop
+        run: |
+          if [ ! -d macos ]; then
+            flutter create --platforms=macos --project-name=agent_code_desktop .
+          fi
+
+      - name: Get dependencies
+        working-directory: desktop
+        run: flutter pub get
+
+      - name: Run Dart tests (shared package)
+        working-directory: packages/agent_code_client
+        run: dart pub get && dart test
+
+      - name: Analyze
+        working-directory: desktop
+        run: flutter analyze --no-fatal-infos || true
+
+      - name: Build macOS app
+        working-directory: desktop
+        run: flutter build macos --release
+
+      - name: Create DMG
+        run: |
+          APP_PATH="desktop/build/macos/Build/Products/Release/agent_code_desktop.app"
+          DMG_NAME="AgentCode-${{ inputs.version }}-macos-universal.dmg"
+
+          # Create a temporary DMG directory
+          mkdir -p /tmp/dmg-contents
+          cp -R "$APP_PATH" /tmp/dmg-contents/
+          ln -s /Applications /tmp/dmg-contents/Applications
+
+          # Create DMG
+          hdiutil create -volname "Agent Code" \
+            -srcfolder /tmp/dmg-contents \
+            -ov -format UDZO \
+            "$DMG_NAME"
+
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-dmg
+          path: ${{ env.DMG_NAME }}
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-desktop
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download DMG
+        uses: actions/download-artifact@v7
+        with:
+          name: desktop-dmg
+          path: /tmp/release
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DMG=$(ls /tmp/release/*.dmg)
+          gh release create "${{ inputs.version }}" \
+            --title "Desktop ${{ inputs.version }}" \
+            --notes "macOS desktop client for Agent Code.
+
+          ## Install
+          1. Download the DMG
+          2. Open it and drag Agent Code to Applications
+          3. Right-click > Open on first launch (unsigned build)
+
+          ## Requirements
+          - macOS 12.0 (Monterey) or later
+          - The \`agent\` binary is bundled inside the app" \
+            --prerelease \
+            "$DMG"
