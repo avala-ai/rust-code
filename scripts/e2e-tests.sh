@@ -566,7 +566,7 @@ else
     if ! start_serve; then
         fail "D10: Coding task" "serve restart failed"
     else
-        local d10_passed=false
+        d10_passed=false
         for d10_attempt in 1 2; do
             rm -f "${WORKDIR}/test_math.sh" 2>/dev/null
             api_post "/message" "{\"content\":\"Use FileWrite to create ${WORKDIR}/test_math.sh with this content: #!/bin/bash\nresult=\\\$(( 6 * 7 ))\nif [ \\\$result -eq 42 ]; then echo MATH_PASS; else echo MATH_FAIL; fi\nThen use Bash to run: chmod +x ${WORKDIR}/test_math.sh && ${WORKDIR}/test_math.sh\"}"
