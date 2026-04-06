@@ -6,6 +6,10 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/json_rpc.dart';
 import '../models/status_response.dart';
 
+/// Heartbeat interval. The client sends a ping notification every 5 seconds
+/// so the agent can detect dead clients during permission prompts.
+const _heartbeatInterval = Duration(seconds: 5);
+
 /// WebSocket client that speaks JSON-RPC 2.0 with an agent process.
 ///
 /// Handles bidirectional communication:
@@ -24,6 +28,7 @@ import '../models/status_response.dart';
 class WsClient {
   WebSocketChannel? _channel;
   StreamSubscription? _subscription;
+  Timer? _heartbeat;
 
   final Map<dynamic, Completer<JsonRpcResponse>> _pending = {};
   int _nextId = 1;
@@ -64,10 +69,21 @@ class WsClient {
         _handleDisconnect();
       },
     );
+
+    // Start heartbeat so the agent can detect dead clients.
+    _heartbeat?.cancel();
+    _heartbeat = Timer.periodic(_heartbeatInterval, (_) {
+      if (_channel != null) {
+        final ping = JsonRpcNotification(method: 'heartbeat');
+        _channel!.sink.add(ping.toJson());
+      }
+    });
   }
 
   /// Disconnect from the agent.
   Future<void> disconnect() async {
+    _heartbeat?.cancel();
+    _heartbeat = null;
     await _subscription?.cancel();
     _subscription = null;
     await _channel?.sink.close();

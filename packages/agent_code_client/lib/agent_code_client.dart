@@ -11,3 +11,4 @@ export 'models/status_response.dart';
 export 'services/agent_manager.dart';
 export 'services/ws_client.dart';
 export 'services/config_service.dart';
+export 'services/update_checker.dart';
