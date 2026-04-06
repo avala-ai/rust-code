@@ -199,8 +199,8 @@ sticky_retry ──[turn boundary]──▶ healthy (reset for next turn)
 **Composite Routing Strategy:**
 
 Evaluate strategies in priority order; first match wins:
-1. **FallbackStrategy** — check availability state; if unhealthy, select next model in chain
-2. **OverrideStrategy** — honor user `/model` override regardless of routing
+1. **OverrideStrategy** — honor user `/model` override regardless of routing (always wins)
+2. **FallbackStrategy** — check availability state; if unhealthy, select next model in chain
 3. **CostStrategy** — route to cheaper model when task is simple (e.g., file listing vs. architecture refactor)
 4. **DefaultStrategy** — use configured model
 
@@ -434,7 +434,8 @@ FileRead = { sandbox = false } # Skip sandbox for reads (performance)
 - [ ] Add `crates/lib/src/sandbox/windows.rs` — Windows Low Integrity via `icacls` + restricted token
 - [ ] Add `crates/lib/src/sandbox/policy.rs` — `SandboxPolicy` struct parsed from config TOML
 - [ ] Add `SandboxConfig` section to `ConfigSchema` with `enabled`, `strategy`, `allowed_write_paths`, `forbidden_paths`, `secret_patterns`
-- [ ] Wire into `tools/executor.rs` — wrap tool subprocess commands through sandbox before execution
+- [ ] Wire into process-creation sites: `bash.rs` (Command::new), `agent.rs` (build_agent_command), `powershell.rs` — NOT executor.rs (which calls trait methods, not subprocesses)
+- [ ] Create `SandboxedCommand` wrapper that intercepts `std::process::Command` construction and prepends sandbox args (bwrap/sandbox-exec)
 - [ ] Per-tool override: `sandbox.tools.<ToolName>` config for network/sandbox toggles
 - [ ] Auto-detect platform and select strategy in `SandboxStrategy::detect()`
 - [ ] Secret masking: scan project + allowed paths for files matching `secret_patterns`, mask them
@@ -656,11 +657,16 @@ Save compression records to `~/.cache/agent-code/sessions/<id>/compression_state
 - [ ] Add `CompressionLevel` enum: `Full`, `Partial`, `Summary`, `Excluded`
 - [ ] Implement content hashing (12-byte SHA256 slice) for change detection
 - [ ] Implement protected file mechanism: lock recent 2-turn file reads
-- [ ] Add `SecretMasker` that applies regex patterns before LLM summarization
+- [ ] Add `SecretMasker` module with shared regex patterns (reusable across all write boundaries)
+- [ ] Apply `SecretMasker` at ALL persistence points, not just compression:
+  - Before LLM summarization (compression path)
+  - In `session.rs` when serializing session JSON to disk
+  - In `output_store.rs` when writing large tool results to disk
+  - In `/share` command when exporting transcripts
 - [ ] Add compression state serialization to session persistence
 - [ ] Wire into existing auto-compact: after summarization, update file records
 - [ ] Add `/compression` slash command showing file compression states
-- [ ] Tests: verify secrets are redacted in summaries, verify hash change detection, verify protected files resist compression
+- [ ] Tests: verify secrets are redacted in summaries, session files, disk outputs, and exports
 
 ### 7.7 Non-Interactive Structured Output
 
