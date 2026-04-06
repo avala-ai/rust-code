@@ -85,6 +85,81 @@ jobs:
       - run: sleep 30  # Wait for crates.io to index the lib crate
       - run: cargo publish -p agent-code --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+  update-homebrew:
+    name: Update Homebrew tap
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Download release artifacts
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BASE="https://github.com/avala-ai/agent-code/releases/download/v${VERSION}"
+          for ARTIFACT in agent-macos-aarch64 agent-macos-x86_64 agent-linux-aarch64 agent-linux-x86_64; do
+            curl -fSL -o "${ARTIFACT}.tar.gz" "${BASE}/${ARTIFACT}.tar.gz"
+          done
+      - name: Compute checksums
+        id: sha
+        run: |
+          echo "macos_arm64=$(sha256sum agent-macos-aarch64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "macos_x86_64=$(sha256sum agent-macos-x86_64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(sha256sum agent-linux-aarch64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux_x86_64=$(sha256sum agent-linux-x86_64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Generate formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cat > agent-code.rb <<FORMULA
+          class AgentCode < Formula
+            desc "AI-powered coding agent for the terminal, written in pure Rust"
+            homepage "https://github.com/avala-ai/agent-code"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/avala-ai/agent-code/releases/download/v${VERSION}/agent-macos-aarch64.tar.gz"
+                sha256 "${{ steps.sha.outputs.macos_arm64 }}"
+              else
+                url "https://github.com/avala-ai/agent-code/releases/download/v${VERSION}/agent-macos-x86_64.tar.gz"
+                sha256 "${{ steps.sha.outputs.macos_x86_64 }}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/avala-ai/agent-code/releases/download/v${VERSION}/agent-linux-aarch64.tar.gz"
+                sha256 "${{ steps.sha.outputs.linux_arm64 }}"
+              else
+                url "https://github.com/avala-ai/agent-code/releases/download/v${VERSION}/agent-linux-x86_64.tar.gz"
+                sha256 "${{ steps.sha.outputs.linux_x86_64 }}"
+              end
+            end
+
+            def install
+              bin.install "agent"
+            end
+
+            test do
+              assert_match "agent ${VERSION}", shell_output("#{bin}/agent --version")
+            end
+          end
+          FORMULA
+          sed -i 's/^          //' agent-code.rb
+      - name: Push to homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CONTENT=$(base64 -w0 agent-code.rb)
+          SHA=$(gh api repos/avala-ai/homebrew-tap/contents/Formula/agent-code.rb --jq '.sha')
+          gh api -X PUT repos/avala-ai/homebrew-tap/contents/Formula/agent-code.rb \
+            -f message="Update agent-code to v${VERSION}" \
+            -f content="${CONTENT}" \
+            -f sha="${SHA}" \
+            -f branch="main"
+
   publish-npm:
     name: Publish to npm
     needs: build
