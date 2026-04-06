@@ -286,6 +286,9 @@ pub struct FeaturesConfig {
     pub context_collapse: bool,
     /// Reactive auto-compaction when token budget is tight.
     pub reactive_compact: bool,
+    /// Enable prompt caching (system prompt + tools + conversation prefix).
+    /// Reduces cost by up to 90% for long sessions with supporting providers.
+    pub prompt_caching: bool,
 }
 
 impl Default for FeaturesConfig {
@@ -303,6 +306,7 @@ impl Default for FeaturesConfig {
             extract_memories: true,
             context_collapse: true,
             reactive_compact: true,
+            prompt_caching: true,
         }
     }
 }
