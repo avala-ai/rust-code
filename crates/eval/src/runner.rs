@@ -105,7 +105,7 @@ pub async fn run_evals(
 pub fn list_evals() {
     let evals = registry::all_evals();
     println!("{} evals registered:\n", evals.len());
-    println!("{:<40} {:<16} {}", "NAME", "POLICY", "MAX TURNS");
+    println!("{:<40} {:<16} MAX TURNS", "NAME", "POLICY");
     println!("{}", "─".repeat(70));
     for eval in &evals {
         println!(
