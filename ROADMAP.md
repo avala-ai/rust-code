@@ -294,17 +294,23 @@ These are tracked for future exploration. Not committed to a timeline.
 - [ ] Remote trigger via webhook (`agent trigger --listen :8080`)
 - [ ] Background daemon for scheduled runs
 
-### 7.6 Desktop Client — In Progress
+### 7.6 Cross-Platform Client — In Progress
 
 - [x] Headless API server mode (`agent serve`) as the foundation
 - [x] WebSocket endpoint with JSON-RPC 2.0 and per-launch auth token
-- [x] Flutter macOS desktop client with BLoC state management
+- [x] Flutter client app (`client/`) with BLoC state management
 - [x] Shared Dart client library (`packages/agent_code_client/`) for cross-platform reuse
 - [x] Bidirectional permission prompting via JSON-RPC (no side-channel)
-- [x] CI workflow for macOS universal build + DMG (`desktop-release.yml`)
+- [x] macOS runner with sandbox disabled for subprocess spawning
+- [x] Linux runner (GTK3)
+- [x] Web WASM build (connects to existing agent, no process spawning)
+- [x] CI workflows: `client-ci.yml` (PR tests), `client-release.yml` (macOS DMG + Linux + Web)
+- [x] E2E test suite: spawns real agent binary, tests full Dart→Rust→LLM pipeline
+- [x] Auto-update checker (GitHub Releases API)
+- [x] WebSocket heartbeat for dead client detection
 - [ ] macOS code signing and notarization
-- [ ] Auto-update via GitHub Releases API
 - [ ] iOS and Android builds (Flutter cross-platform)
+- [ ] Windows build
 
 ### 7.7 GitHub Integration
 
