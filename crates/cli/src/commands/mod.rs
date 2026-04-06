@@ -1663,12 +1663,13 @@ fn execute_powerup(args: Option<&str>) -> CommandResult {
             println!("Tutorial progress reset.");
             return CommandResult::Handled;
         }
-        if let Ok(num) = arg.parse::<usize>() {
-            if num >= 1 && num <= LESSONS.len() {
-                let lesson = &LESSONS[num - 1];
-                save_progress(lesson.id);
-                return CommandResult::Prompt(lesson.prompt.to_string());
-            }
+        if let Ok(num) = arg.parse::<usize>()
+            && num >= 1
+            && num <= LESSONS.len()
+        {
+            let lesson = &LESSONS[num - 1];
+            save_progress(lesson.id);
+            return CommandResult::Prompt(lesson.prompt.to_string());
         }
         println!("Usage: /powerup [1-5 | reset]");
         return CommandResult::Handled;
@@ -1679,10 +1680,7 @@ fn execute_powerup(args: Option<&str>) -> CommandResult {
     let done = completed.len().min(total);
 
     println!();
-    println!(
-        "  {} Interactive Tutorials ({done}/{total} completed)",
-        "⚡"
-    );
+    println!("  ⚡ Interactive Tutorials ({done}/{total} completed)");
     println!();
 
     let options: Vec<crate::ui::selector::SelectOption> = LESSONS
