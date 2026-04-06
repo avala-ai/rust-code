@@ -634,7 +634,9 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                                             Ok(line) => {
                                                 println!("{line}");
                                                 if !truncated {
-                                                    if captured.len() + line.len() + 1 > MAX_CAPTURE_BYTES {
+                                                    if captured.len() + line.len() + 1
+                                                        > MAX_CAPTURE_BYTES
+                                                    {
                                                         truncated = true;
                                                     } else {
                                                         captured.push_str(&line);
@@ -653,7 +655,9 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                                             Ok(line) => {
                                                 eprintln!("{line}");
                                                 if !truncated {
-                                                    if captured.len() + line.len() + 1 > MAX_CAPTURE_BYTES {
+                                                    if captured.len() + line.len() + 1
+                                                        > MAX_CAPTURE_BYTES
+                                                    {
                                                         truncated = true;
                                                     } else {
                                                         captured.push_str(&line);
@@ -675,24 +679,23 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                                     } else {
                                         ""
                                     };
-                                    let context_text = format!(
-                                        "[Shell output from: {cmd}]\n{captured}{suffix}"
-                                    );
-                                    engine.state_mut().push_message(
-                                        agent_code_lib::llm::message::Message::User(
-                                            agent_code_lib::llm::message::UserMessage {
-                                                uuid: uuid::Uuid::new_v4(),
-                                                timestamp: chrono::Utc::now().to_rfc3339(),
-                                                content: vec![
-                                                    agent_code_lib::llm::message::ContentBlock::Text {
-                                                        text: context_text,
-                                                    },
-                                                ],
-                                                is_meta: true,
-                                                is_compact_summary: false,
-                                            },
-                                        ),
-                                    );
+                                    let context_text =
+                                        format!("[Shell output from: {cmd}]\n{captured}{suffix}");
+                                    engine
+                                        .state_mut()
+                                        .push_message(agent_code_lib::llm::message::Message::User(
+                                        agent_code_lib::llm::message::UserMessage {
+                                            uuid: uuid::Uuid::new_v4(),
+                                            timestamp: chrono::Utc::now().to_rfc3339(),
+                                            content: vec![
+                                                agent_code_lib::llm::message::ContentBlock::Text {
+                                                    text: context_text,
+                                                },
+                                            ],
+                                            is_meta: true,
+                                            is_compact_summary: false,
+                                        },
+                                    ));
                                 }
                             }
                             Err(e) => eprintln!("bash error: {e}"),
