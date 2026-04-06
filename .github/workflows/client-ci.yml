@@ -34,6 +34,25 @@ jobs:
         working-directory: packages/agent_code_client
         run: dart test --exclude-tags e2e
 
+  integration-test:
+    name: Flutter integration tests (Chrome)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Get dependencies
+        working-directory: client
+        run: flutter pub get
+
+      - name: Run integration tests on Chrome
+        working-directory: client
+        run: flutter test integration_test/app_test.dart -d web-server --timeout 120s
+
   build-check:
     name: Flutter build check
     runs-on: macos-latest
