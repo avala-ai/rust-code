@@ -173,16 +173,22 @@ impl LlmClient {
             );
         }
 
-        // Build tool definitions.
+        // Build tool definitions with cache control on the last tool.
+        let tool_count = request.tools.len();
         let tools_json: Vec<serde_json::Value> = request
             .tools
             .iter()
-            .map(|t| {
-                serde_json::json!({
+            .enumerate()
+            .map(|(i, t)| {
+                let mut tool = serde_json::json!({
                     "name": t.name,
                     "description": t.description,
                     "input_schema": t.input_schema,
-                })
+                });
+                if request.enable_caching && i == tool_count - 1 && tool_count > 0 {
+                    tool["cache_control"] = serde_json::json!({"type": "ephemeral"});
+                }
+                tool
             })
             .collect();
 
