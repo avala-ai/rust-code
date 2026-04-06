@@ -1,0 +1,76 @@
+name: Client Playwright E2E
+
+on:
+  pull_request:
+    paths:
+      - 'client/**'
+      - 'packages/agent_code_client/**'
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - 'packages/agent_code_client/**'
+
+jobs:
+  playwright:
+    name: Playwright web tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build Flutter web (WASM)
+        working-directory: client
+        run: flutter build web --wasm
+
+      - name: Start WASM server
+        working-directory: client/build/web
+        run: |
+          python3 -c "
+          import http.server, socketserver
+          class H(http.server.SimpleHTTPRequestHandler):
+              extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, '.wasm': 'application/wasm'}
+              def end_headers(self):
+                  self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+                  self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+                  super().end_headers()
+          socketserver.TCPServer.allow_reuse_address = True
+          socketserver.TCPServer(('0.0.0.0', 9090), H).serve_forever()
+          " &
+          sleep 2
+          curl -sf http://localhost:9090/ > /dev/null
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright
+        working-directory: client/e2e
+        run: |
+          npm ci
+          npx playwright install chromium --with-deps
+
+      - name: Run Playwright tests
+        working-directory: client/e2e
+        env:
+          SKIP_BUILD: 1
+          WASM_SERVER_URL: http://localhost:9090
+        run: npx playwright test --reporter=github
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: client/e2e/playwright-report/
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: client/e2e/screenshots/
+          retention-days: 7
