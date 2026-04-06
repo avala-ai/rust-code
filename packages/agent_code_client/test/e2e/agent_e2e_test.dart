@@ -29,17 +29,19 @@ void main() {
     WsClient? ws;
 
     setUp(() async {
-      if (!canRun) return;
+      if (!canRun || agentBinary == null || apiKey == null) return;
+      final binary = agentBinary;
+      final key = apiKey;
 
       // Create a temp directory for the agent to work in.
       final workDir = await Directory.systemTemp.createTemp('agent_e2e_');
 
       // Spawn the agent with OpenRouter.
       agentProcess = await Process.start(
-        agentBinary!,
+        binary,
         ['serve', '--port', '0', '-C', workDir.path],
         environment: {
-          'OPENROUTER_API_KEY': apiKey!,
+          'OPENROUTER_API_KEY': key,
           'AGENT_CODE_PROVIDER': 'openrouter',
           'AGENT_CODE_MODEL': 'meta-llama/llama-3.3-70b-instruct',
           ...Platform.environment,
@@ -51,7 +53,7 @@ void main() {
 
       // Connect WebSocket.
       ws = WsClient();
-      await ws.connect(instance!.port, instance!.token);
+      await ws!.connect(instance!.port, instance!.token);
     });
 
     tearDown(() async {
