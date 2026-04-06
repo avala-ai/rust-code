@@ -267,7 +267,7 @@ async fn main() -> anyhow::Result<()> {
         let check_url = format!("{}/models", config.api.base_url);
         let check_key = api_key.to_string();
         Some(tokio::spawn(async move {
-            let result = tokio::process::Command::new("curl")
+            tokio::process::Command::new("curl")
                 .args([
                     "-s",
                     "-o",
@@ -286,8 +286,7 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())
-                .is_some_and(|code| code.trim() == "401" || code.trim() == "403");
-            result
+                .is_some_and(|code| code.trim() == "401" || code.trim() == "403")
         }))
     } else {
         None
@@ -384,20 +383,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Check background API key validation result before entering interactive mode.
-    if let Some(handle) = api_key_check_handle {
-        // Give it a brief window to complete; don't block startup for long.
-        if let Ok(Ok(key_invalid)) =
+    if let Some(handle) = api_key_check_handle
+        && let Ok(Ok(true)) =
             tokio::time::timeout(std::time::Duration::from_millis(500), handle).await
-        {
-            if key_invalid {
-                eprintln!(
-                    "\nWarning: API key may be invalid (rejected by {}). \
-                     Run setup with `agent --api-key <key>` to update.\n",
-                    config.api.base_url
-                );
-            }
-        }
-        // If timeout or JoinError, key check is still running — proceed anyway.
+    {
+        eprintln!(
+            "\nWarning: API key may be invalid (rejected by {}). \
+             Run setup with `agent --api-key <key>` to update.\n",
+            config.api.base_url
+        );
     }
 
     // Install Ctrl+C handler for graceful cancellation.

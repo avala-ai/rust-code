@@ -526,7 +526,10 @@ mod tests {
         cap_document_blocks(&mut messages, 100);
         if let Message::User(u) = &messages[0] {
             if let ContentBlock::Text { text } = &u.content[0] {
-                assert!(text.contains("document"), "should use fallback name 'document'");
+                assert!(
+                    text.contains("document"),
+                    "should use fallback name 'document'"
+                );
                 assert!(text.contains("too large"));
             } else {
                 panic!("Expected text block after capping");

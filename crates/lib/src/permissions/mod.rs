@@ -310,7 +310,10 @@ mod tests {
             PermissionDecision::Deny(_)
         ));
         assert!(matches!(
-            checker.check("FileWrite", &serde_json::json!({"file_path": "src/main.rs"})),
+            checker.check(
+                "FileWrite",
+                &serde_json::json!({"file_path": "src/main.rs"})
+            ),
             PermissionDecision::Deny(_)
         ));
     }
@@ -423,8 +426,7 @@ mod tests {
     #[test]
     fn test_protected_path_windows_backslash() {
         assert!(
-            check_protected_path(&serde_json::json!({"file_path": "repo\\.git\\config"}))
-                .is_some()
+            check_protected_path(&serde_json::json!({"file_path": "repo\\.git\\config"})).is_some()
         );
     }
 

@@ -294,7 +294,11 @@ fn strip_empty_blocks_preserves_tool_use_blocks() {
 
 #[test]
 fn remove_empty_messages_drops_contentless_messages() {
-    let mut messages = vec![user_message("keep"), user_empty(), user_message("also keep")];
+    let mut messages = vec![
+        user_message("keep"),
+        user_empty(),
+        user_message("also keep"),
+    ];
 
     remove_empty_messages(&mut messages);
 
@@ -415,7 +419,6 @@ fn cached_params_marks_second_to_last_non_meta_user_message() {
     // params[0] = user "first", params[1] = assistant "r1",
     // params[2] = user "second" (should be cached), params[3] = assistant "r2",
     // params[4] = user "third"
-    let second_user_content = &params[2]["content"];
     // For a single text block it becomes a string, so cache_control may
     // be added to the last block of an array. If it's a string, the caching
     // logic cannot attach cache_control (single text block -> string format).

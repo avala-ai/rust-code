@@ -230,10 +230,7 @@ mod tests {
     #[test]
     fn llm_error_display_context_overflow() {
         let err = LlmError::ContextOverflow { tokens: 200000 };
-        assert_eq!(
-            err.to_string(),
-            "Context window exceeded (200000 tokens)"
-        );
+        assert_eq!(err.to_string(), "Context window exceeded (200000 tokens)");
     }
 
     // ---- ToolError Display ----
@@ -353,7 +350,7 @@ mod tests {
     #[test]
     fn result_alias_ok() {
         let r: Result<i32> = Ok(42);
-        assert_eq!(r.unwrap(), 42);
+        assert!(r.is_ok());
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Tests detect_provider URL and model name mapping, ProviderKind
 //! wire format, default base URLs, and environment variable names.
 
-use agent_code_lib::llm::provider::{detect_provider, ProviderKind, WireFormat};
+use agent_code_lib::llm::provider::{ProviderKind, WireFormat, detect_provider};
 
 // ---------------------------------------------------------------------------
 // detect_provider: URL-based detection (all providers)
@@ -20,7 +20,10 @@ fn detect_from_url_anthropic() {
 #[test]
 fn detect_from_url_bedrock() {
     assert_eq!(
-        detect_provider("any-model", "https://bedrock-runtime.us-east-1.amazonaws.com"),
+        detect_provider(
+            "any-model",
+            "https://bedrock-runtime.us-east-1.amazonaws.com"
+        ),
         ProviderKind::Bedrock
     );
 }
@@ -180,10 +183,7 @@ fn detect_from_model_claude_variants() {
 
 #[test]
 fn detect_from_model_gpt_variants() {
-    assert_eq!(
-        detect_provider("gpt-4.1-mini", ""),
-        ProviderKind::OpenAi
-    );
+    assert_eq!(detect_provider("gpt-4.1-mini", ""), ProviderKind::OpenAi);
     assert_eq!(detect_provider("gpt-5.4", ""), ProviderKind::OpenAi);
     assert_eq!(detect_provider("o1-preview", ""), ProviderKind::OpenAi);
     assert_eq!(detect_provider("o3-mini", ""), ProviderKind::OpenAi);
@@ -212,10 +212,7 @@ fn detect_from_model_deepseek() {
 
 #[test]
 fn detect_from_model_mistral_and_codestral() {
-    assert_eq!(
-        detect_provider("mistral-large", ""),
-        ProviderKind::Mistral
-    );
+    assert_eq!(detect_provider("mistral-large", ""), ProviderKind::Mistral);
     assert_eq!(
         detect_provider("codestral-latest", ""),
         ProviderKind::Mistral
@@ -229,10 +226,7 @@ fn detect_from_model_glm() {
 
 #[test]
 fn detect_from_model_command() {
-    assert_eq!(
-        detect_provider("command-r-plus", ""),
-        ProviderKind::Cohere
-    );
+    assert_eq!(detect_provider("command-r-plus", ""), ProviderKind::Cohere);
 }
 
 #[test]
@@ -241,10 +235,7 @@ fn detect_from_model_pplx_and_sonar() {
         detect_provider("pplx-70b-online", ""),
         ProviderKind::Perplexity
     );
-    assert_eq!(
-        detect_provider("sonar-pro", ""),
-        ProviderKind::Perplexity
-    );
+    assert_eq!(detect_provider("sonar-pro", ""), ProviderKind::Perplexity);
 }
 
 #[test]

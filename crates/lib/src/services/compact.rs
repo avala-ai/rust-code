@@ -615,7 +615,7 @@ mod tests {
         use crate::llm::message::*;
         // Create 20 messages with text content.
         let messages: Vec<Message> = (0..20)
-            .map(|i| user_message(&format!("message {i}")))
+            .map(|i| user_message(format!("message {i}")))
             .collect();
         let keep = calculate_keep_count(&messages);
         assert!(keep >= 5, "keep_count was {keep}, expected at least 5");

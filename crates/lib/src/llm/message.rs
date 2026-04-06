@@ -870,12 +870,8 @@ mod tests {
                 uuid: Uuid::new_v4(),
                 timestamp: String::new(),
                 content: vec![
-                    ContentBlock::Text {
-                        text: "a".into(),
-                    },
-                    ContentBlock::Text {
-                        text: "b".into(),
-                    },
+                    ContentBlock::Text { text: "a".into() },
+                    ContentBlock::Text { text: "b".into() },
                 ],
                 is_meta: false,
                 is_compact_summary: false,

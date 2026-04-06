@@ -552,7 +552,10 @@ mod tests {
         assert_eq!(ProviderKind::Bedrock.env_var_name(), "ANTHROPIC_API_KEY");
         assert_eq!(ProviderKind::Vertex.env_var_name(), "ANTHROPIC_API_KEY");
         assert_eq!(ProviderKind::OpenAi.env_var_name(), "OPENAI_API_KEY");
-        assert_eq!(ProviderKind::AzureOpenAi.env_var_name(), "AZURE_OPENAI_API_KEY");
+        assert_eq!(
+            ProviderKind::AzureOpenAi.env_var_name(),
+            "AZURE_OPENAI_API_KEY"
+        );
         assert_eq!(ProviderKind::Xai.env_var_name(), "XAI_API_KEY");
         assert_eq!(ProviderKind::Google.env_var_name(), "GOOGLE_API_KEY");
         assert_eq!(ProviderKind::DeepSeek.env_var_name(), "DEEPSEEK_API_KEY");
@@ -560,10 +563,19 @@ mod tests {
         assert_eq!(ProviderKind::Mistral.env_var_name(), "MISTRAL_API_KEY");
         assert_eq!(ProviderKind::Together.env_var_name(), "TOGETHER_API_KEY");
         assert_eq!(ProviderKind::Zhipu.env_var_name(), "ZHIPU_API_KEY");
-        assert_eq!(ProviderKind::OpenRouter.env_var_name(), "OPENROUTER_API_KEY");
+        assert_eq!(
+            ProviderKind::OpenRouter.env_var_name(),
+            "OPENROUTER_API_KEY"
+        );
         assert_eq!(ProviderKind::Cohere.env_var_name(), "COHERE_API_KEY");
-        assert_eq!(ProviderKind::Perplexity.env_var_name(), "PERPLEXITY_API_KEY");
-        assert_eq!(ProviderKind::OpenAiCompatible.env_var_name(), "OPENAI_API_KEY");
+        assert_eq!(
+            ProviderKind::Perplexity.env_var_name(),
+            "PERPLEXITY_API_KEY"
+        );
+        assert_eq!(
+            ProviderKind::OpenAiCompatible.env_var_name(),
+            "OPENAI_API_KEY"
+        );
     }
 
     #[test]
@@ -592,10 +604,7 @@ mod tests {
 
     #[test]
     fn test_detect_from_model_glm4() {
-        assert!(matches!(
-            detect_provider("glm-4", ""),
-            ProviderKind::Zhipu
-        ));
+        assert!(matches!(detect_provider("glm-4", ""), ProviderKind::Zhipu));
     }
 
     #[test]
@@ -627,7 +636,9 @@ mod tests {
         let err = ProviderError::Auth("bad token".into());
         assert_eq!(format!("{err}"), "auth: bad token");
 
-        let err = ProviderError::RateLimited { retry_after_ms: 1000 };
+        let err = ProviderError::RateLimited {
+            retry_after_ms: 1000,
+        };
         assert_eq!(format!("{err}"), "rate limited (retry in 1000ms)");
 
         let err = ProviderError::Overloaded;

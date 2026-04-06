@@ -264,9 +264,7 @@ mod tests {
 
     #[test]
     fn exclusion_rules_contains_code_patterns() {
-        assert!(EXCLUSION_RULES
-            .iter()
-            .any(|r| r.contains("Code patterns")));
+        assert!(EXCLUSION_RULES.iter().any(|r| r.contains("Code patterns")));
     }
 
     #[test]
