@@ -8,6 +8,7 @@ How to cut a new release of agent-code.
 - GitHub secrets configured:
   - `CARGO_REGISTRY_TOKEN` — crates.io publish token
   - `NPM_TOKEN` — npm publish token (Automation type)
+  - `HOMEBREW_TAP_TOKEN` — GitHub PAT with `contents:write` on `avala-ai/homebrew-tap`
 
 ## Steps
 
@@ -82,6 +83,7 @@ The tag triggers these workflows:
 | Workflow | What it does |
 |----------|-------------|
 | **Release** (`release.yml`) | Builds Linux/macOS/Windows binaries, creates GitHub Release, publishes to crates.io |
+| **Release** (`release.yml`) | Updates `avala-ai/homebrew-tap` formula with new version + SHA256 checksums |
 | **Docker** (`docker.yml`) | Builds and pushes `ghcr.io/avala-ai/agent-code:X.Y.Z` + `:latest` |
 | **npm** (`npm.yml`) | Publishes `agent-code` to npm (triggered by the GitHub Release) |
 | **CI** (`ci.yml`) | Standard checks on the main branch push |
@@ -103,6 +105,9 @@ docker pull ghcr.io/avala-ai/agent-code:X.Y.Z
 
 # npm published?
 npm view agent-code version
+
+# Homebrew tap updated?
+gh api repos/avala-ai/homebrew-tap/contents/Formula/agent-code.rb --jq '.content' | base64 -d | grep version
 ```
 
 ## Version numbering
