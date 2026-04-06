@@ -742,7 +742,9 @@ async fn handle_schedule_run(
     // Session ID is a non-secret UUID prefix shown for /resume.
     eprintln!(
         "\nDone: {} turns, ${:.4}, session {}",
-        outcome.turns, outcome.cost_usd, outcome.session_id // codeql[cleartext-logging]: non-secret session ID for /resume
+        outcome.turns,
+        outcome.cost_usd,
+        outcome.session_id // codeql[cleartext-logging]: non-secret session ID for /resume
     );
     Ok(())
 }
