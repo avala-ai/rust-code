@@ -599,24 +599,103 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                     continue;
                 }
 
-                // ! prefix: run shell command directly (bash mode).
+                // ! prefix: run shell command directly with context injection.
+                // Output streams in real-time AND gets injected into conversation
+                // history so the agent can reference it in subsequent turns.
                 if input.starts_with('!') {
                     let cmd = input.strip_prefix('!').unwrap_or("").trim();
                     if !cmd.is_empty() {
-                        let output = std::process::Command::new("bash")
+                        use std::io::{BufRead, BufReader};
+                        use std::process::Stdio;
+
+                        const MAX_CAPTURE_BYTES: usize = 50 * 1024; // 50KB
+
+                        let child = std::process::Command::new("bash")
                             .arg("-c")
                             .arg(cmd)
                             .current_dir(&engine.state().cwd)
-                            .output();
-                        match output {
-                            Ok(out) => {
-                                let stdout = String::from_utf8_lossy(&out.stdout);
-                                let stderr = String::from_utf8_lossy(&out.stderr);
-                                if !stdout.is_empty() {
-                                    print!("{stdout}");
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn();
+
+                        match child {
+                            Ok(mut child) => {
+                                let mut captured = String::new();
+                                let mut truncated = false;
+
+                                // Read stdout and stderr line-by-line, streaming
+                                // to the terminal while capturing for context.
+                                let stdout = child.stdout.take();
+                                let stderr = child.stderr.take();
+
+                                if let Some(stdout) = stdout {
+                                    for line in BufReader::new(stdout).lines() {
+                                        match line {
+                                            Ok(line) => {
+                                                println!("{line}");
+                                                if !truncated {
+                                                    if captured.len() + line.len() + 1
+                                                        > MAX_CAPTURE_BYTES
+                                                    {
+                                                        truncated = true;
+                                                    } else {
+                                                        captured.push_str(&line);
+                                                        captured.push('\n');
+                                                    }
+                                                }
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
                                 }
-                                if !stderr.is_empty() {
-                                    eprint!("{stderr}");
+
+                                if let Some(stderr) = stderr {
+                                    for line in BufReader::new(stderr).lines() {
+                                        match line {
+                                            Ok(line) => {
+                                                eprintln!("{line}");
+                                                if !truncated {
+                                                    if captured.len() + line.len() + 1
+                                                        > MAX_CAPTURE_BYTES
+                                                    {
+                                                        truncated = true;
+                                                    } else {
+                                                        captured.push_str(&line);
+                                                        captured.push('\n');
+                                                    }
+                                                }
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                }
+
+                                let _ = child.wait();
+
+                                // Inject captured output into conversation context.
+                                if !captured.is_empty() {
+                                    let suffix = if truncated {
+                                        "\n[output truncated at 50KB]"
+                                    } else {
+                                        ""
+                                    };
+                                    let context_text =
+                                        format!("[Shell output from: {cmd}]\n{captured}{suffix}");
+                                    engine.state_mut().push_message(
+                                        agent_code_lib::llm::message::Message::User(
+                                            agent_code_lib::llm::message::UserMessage {
+                                                uuid: uuid::Uuid::new_v4(),
+                                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                                content: vec![
+                                                agent_code_lib::llm::message::ContentBlock::Text {
+                                                    text: context_text,
+                                                },
+                                            ],
+                                                is_meta: true,
+                                                is_compact_summary: false,
+                                            },
+                                        ),
+                                    );
                                 }
                             }
                             Err(e) => eprintln!("bash error: {e}"),
