@@ -136,6 +136,10 @@ pub async fn execute_tool_calls(
                                     task_manager: None,
                                     session_allows: None,
                                     permission_prompter: None,
+                                    // Parallel branch only runs read-only, concurrency-safe
+                                    // tools — none of them spawn subprocesses, so the
+                                    // sandbox would be inert here anyway.
+                                    sandbox: None,
                                 },
                                 &perm_checker,
                             )

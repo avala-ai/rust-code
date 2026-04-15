@@ -132,6 +132,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "sandbox",
+        aliases: &[],
+        description: "Show process-level sandbox status and policy",
+        hidden: false,
+    },
+    Command {
         name: "mcp",
         aliases: &[],
         description: "Show connected MCP servers and tools",
@@ -784,6 +790,47 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                 .filter(|c| c.status == agent_code_lib::services::diagnostics::CheckStatus::Fail)
                 .count();
             println!("\n  {pass} passed, {fail} failed, {} total", checks.len());
+            CommandResult::Handled
+        }
+        Some("sandbox") => {
+            let cwd = std::path::PathBuf::from(&engine.state().cwd);
+            let cfg = &engine.state().config.sandbox;
+            let exec = agent_code_lib::sandbox::SandboxExecutor::from_config(cfg, &cwd);
+            let policy = exec.policy();
+
+            println!("Process-level sandbox:");
+            println!(
+                "  status      : {}",
+                if exec.is_active() {
+                    "active"
+                } else if cfg.enabled {
+                    "requested (no working strategy — running unsandboxed)"
+                } else {
+                    "disabled"
+                }
+            );
+            println!("  strategy    : {}", exec.strategy_name());
+            println!("  project_dir : {}", policy.project_dir.display());
+            if !policy.allowed_write_paths.is_empty() {
+                println!("  allowed writes:");
+                for p in &policy.allowed_write_paths {
+                    println!("    - {}", p.display());
+                }
+            }
+            if !policy.forbidden_paths.is_empty() {
+                println!("  forbidden reads:");
+                for p in &policy.forbidden_paths {
+                    println!("    - {}", p.display());
+                }
+            }
+            println!(
+                "  network     : {}",
+                if policy.allow_network {
+                    "allowed"
+                } else {
+                    "denied"
+                }
+            );
             CommandResult::Handled
         }
         Some("mcp") => {

@@ -75,6 +75,11 @@ struct Cli {
     #[arg(long)]
     dangerously_skip_permissions: bool,
 
+    /// Disable process-level sandboxing for this session. Ignored when
+    /// `security.disable_bypass_permissions = true` in config.
+    #[arg(long)]
+    no_sandbox: bool,
+
     /// LLM provider: anthropic, openai, xai (grok), or auto (default).
     #[arg(long, default_value = "auto")]
     provider: String,
@@ -280,6 +285,17 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(ref key) = cli.api_key {
         config.api.api_key = Some(key.clone());
+    }
+
+    // Apply --no-sandbox before permission-mode handling so the bypass
+    // gate applies uniformly.
+    if cli.no_sandbox {
+        if config.security.disable_bypass_permissions {
+            tracing::warn!("--no-sandbox ignored: security.disable_bypass_permissions is set");
+        } else {
+            config.sandbox.enabled = false;
+            tracing::warn!("Process-level sandbox disabled for this session (--no-sandbox)");
+        }
     }
 
     // Apply permission mode from CLI.

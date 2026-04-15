@@ -75,6 +75,7 @@ pub mod llm;
 pub mod memory;
 pub mod permissions;
 pub mod query;
+pub mod sandbox;
 pub mod schedule;
 pub mod services;
 pub mod skills;

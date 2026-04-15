@@ -188,6 +188,13 @@ pub struct ToolContext {
     pub session_allows: Option<Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>>,
     /// Permission prompter for interactive approval.
     pub permission_prompter: Option<Arc<dyn PermissionPrompter>>,
+    /// Process-level sandbox executor.
+    ///
+    /// `None` means sandboxing is unavailable for this context
+    /// (e.g. parallel read-only retry paths); subprocess-spawning tools
+    /// should treat `None` as "pass through unchanged". The main query
+    /// loop populates this from [`crate::config::SandboxConfig`].
+    pub sandbox: Option<Arc<crate::sandbox::SandboxExecutor>>,
 }
 
 /// Result of a tool execution.

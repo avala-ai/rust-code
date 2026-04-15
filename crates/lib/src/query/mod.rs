@@ -493,6 +493,7 @@ impl QueryEngine {
                                                         task_manager: None,
                                                         session_allows: None,
                                                         permission_prompter: None,
+                                                        sandbox: None,
                                                     },
                                                 )
                                                 .await
@@ -672,7 +673,7 @@ impl QueryEngine {
             info!("Executing {} tool call(s)", tool_calls.len());
             let cwd = PathBuf::from(&self.state.cwd);
             let tool_ctx = ToolContext {
-                cwd,
+                cwd: cwd.clone(),
                 cancel: self.cancel.clone(),
                 permission_checker: self.permissions.clone(),
                 verbose: self.config.verbose,
@@ -682,6 +683,9 @@ impl QueryEngine {
                 task_manager: Some(self.state.task_manager.clone()),
                 session_allows: Some(self.session_allows.clone()),
                 permission_prompter: self.permission_prompter.clone(),
+                sandbox: Some(std::sync::Arc::new(
+                    crate::sandbox::SandboxExecutor::from_config(&self.state.config.sandbox, &cwd),
+                )),
             };
 
             // Collect streaming tool results first.

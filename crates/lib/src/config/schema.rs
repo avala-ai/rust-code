@@ -27,6 +27,9 @@ pub struct Config {
     /// Security and enterprise settings.
     #[serde(default)]
     pub security: SecurityConfig,
+    /// Process-level sandbox settings.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
 }
 
 /// Security and enterprise configuration.
@@ -51,6 +54,51 @@ pub struct SecurityConfig {
     /// Disable inline shell execution within skill templates.
     #[serde(default)]
     pub disable_skill_shell_execution: bool,
+}
+
+/// Process-level sandbox configuration.
+///
+/// When `enabled` is true, subprocess-spawning tools (currently the Bash
+/// tool) wrap their child process with an OS-level isolation mechanism:
+/// `sandbox-exec` on macOS, future strategies on Linux/Windows. Defaults
+/// ship the sandbox **disabled** while Linux and Windows strategies land,
+/// so that opt-in users on macOS can exercise the integration without
+/// asymmetric platform security.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxConfig {
+    /// Whether process-level sandboxing is enabled for subprocess tools.
+    pub enabled: bool,
+    /// Strategy selector: `"auto"`, `"seatbelt"`, or `"none"`.
+    ///
+    /// `"auto"` picks the best available strategy for the host OS and
+    /// falls back to `"none"` with a warning when no strategy is available.
+    pub strategy: String,
+    /// Absolute or `~`-prefixed paths that the sandbox may write to in
+    /// addition to the project directory. Relative paths are resolved
+    /// against the project directory.
+    pub allowed_write_paths: Vec<String>,
+    /// Paths the sandbox must never read. Overrides the default
+    /// broad-read allow rule so credentials stay masked.
+    pub forbidden_paths: Vec<String>,
+    /// Whether subprocesses in the sandbox can open network sockets.
+    pub allow_network: bool,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            strategy: "auto".to_string(),
+            allowed_write_paths: vec!["/tmp".to_string(), "~/.cache/agent-code".to_string()],
+            forbidden_paths: vec![
+                "~/.ssh".to_string(),
+                "~/.aws".to_string(),
+                "~/.gnupg".to_string(),
+            ],
+            allow_network: true,
+        }
+    }
 }
 
 /// Entry for a configured MCP server.
