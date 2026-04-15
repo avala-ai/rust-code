@@ -11,6 +11,9 @@ on:
       - 'client/**'
       - 'packages/agent_code_client/**'
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Dart tests

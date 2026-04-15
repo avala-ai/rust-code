@@ -8,6 +8,9 @@ on:
       - 'packages/agent_code_client/**'
       - 'crates/cli/src/serve.rs'
 
+permissions:
+  contents: read
+
 jobs:
   e2e:
     name: E2E tests (agent + WebSocket + LLM)
