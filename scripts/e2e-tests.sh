@@ -1072,15 +1072,23 @@ fi
     # The ! prefix is a REPL-only feature. In serve mode, we simulate
     # the same effect by asking the agent to use the Bash tool, then
     # checking that the output appears in /messages.
+    #
+    # The previous check used `jq -r '.messages[].content'` but message
+    # content is a structured array of content blocks (Text, ToolUse,
+    # ToolResult), so jq didn't descend into tool_result bodies. Small
+    # models like gpt-5-nano also don't always echo file contents
+    # verbatim in their text response. Grep the raw JSON instead —
+    # that catches the marker wherever it lives in the structure.
     echo "SHELL_MARKER_L1" > "${WORKDIR}/shell-test-l1.txt"
     api_post "/message" "{\"content\":\"Read the file ${WORKDIR}/shell-test-l1.txt using FileRead and tell me its contents.\"}"
     if [[ "${HTTP_CODE}" == "200" ]]; then
         api_get "/messages"
-        msg_content=$(echo "${HTTP_BODY}" | jq -r '.messages[].content' 2>/dev/null | tr '\n' ' ')
-        if echo "${msg_content}" | grep -q "SHELL_MARKER_L1"; then
+        # Grep the entire JSON body (text blocks, tool_result blocks,
+        # nested content — whichever the server uses for tool output).
+        if echo "${HTTP_BODY}" | grep -q "SHELL_MARKER_L1"; then
             pass "L1: File content appears in message history"
         else
-            fail "L1: shell output in history" "SHELL_MARKER_L1 not found in messages"
+            fail "L1: shell output in history" "SHELL_MARKER_L1 not found in /messages response"
         fi
     else
         fail "L1: shell output in history" "Message failed: ${HTTP_CODE}"
