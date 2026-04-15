@@ -29,7 +29,7 @@ crossterm = "0.29"
 ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
 termimad = "0.34"
 syntect = "5"
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13"
 indicatif = "0.18"
 
 # HTTP
