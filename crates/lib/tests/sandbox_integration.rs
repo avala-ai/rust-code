@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
 use agent_code_lib::config::SandboxConfig;
 use agent_code_lib::permissions::PermissionChecker;
 use agent_code_lib::sandbox::SandboxExecutor;
