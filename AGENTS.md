@@ -196,7 +196,7 @@ A concentrated list. If you are about to do any of these, stop and ask.
 - Do **not** add `rustfmt.toml` or `clippy.toml` without discussion
 - Do **not** suppress clippy warnings with blanket `#[allow]` — fix the underlying issue
 - Do **not** add network-requiring tests to the default `cargo test` path
-- Do **not** add Claude/Anthropic attribution to commits in this repo
+- Do **not** add Agent-Code, Claude/Anthropic, Codex, etc attribution to commits in this repo
 - Do **not** force-push to `main` or skip the CI gate
 - Do **not** land large refactors without a prior issue or roadmap entry
 - Do **not** add dependencies under GPL/AGPL or other restrictive licenses
