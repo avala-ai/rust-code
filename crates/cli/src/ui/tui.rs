@@ -642,4 +642,3 @@ fn truncate(s: &str, max: usize) -> String {
         s[..max].to_string()
     }
 }
-

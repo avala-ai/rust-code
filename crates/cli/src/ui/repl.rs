@@ -409,11 +409,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
         model.with(t.text).bold(),
         session_id_display.as_str().with(t.muted),
     );
-    println!(
-        "  {}   {}",
-        "  ▘▘  ".with(t.accent),
-        cwd.with(t.muted),
-    );
+    println!("  {}   {}", "  ▘▘  ".with(t.accent), cwd.with(t.muted),);
 
     println!();
     println!("{}", divider.with(t.muted));

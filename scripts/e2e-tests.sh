@@ -1073,22 +1073,22 @@ fi
     # the same effect by asking the agent to use the Bash tool, then
     # checking that the output appears in /messages.
     #
-    # The previous check used `jq -r '.messages[].content'` but message
-    # content is a structured array of content blocks (Text, ToolUse,
-    # ToolResult), so jq didn't descend into tool_result bodies. Small
-    # models like gpt-5-nano also don't always echo file contents
-    # verbatim in their text response. Grep the raw JSON instead —
-    # that catches the marker wherever it lives in the structure.
+    # The /messages endpoint only returns ContentBlock::Text from
+    # user/assistant messages — tool_use and tool_result content are
+    # stripped server-side (see serve.rs:handle_messages). So the
+    # marker only appears in /messages if the assistant echoes the
+    # file content verbatim in its text reply. Small models often
+    # paraphrase ("the file contains a marker") instead of echoing,
+    # so this prompt forces a verbatim echo with a fixed response
+    # format that the model can't easily shortcut.
     echo "SHELL_MARKER_L1" > "${WORKDIR}/shell-test-l1.txt"
-    api_post "/message" "{\"content\":\"Read the file ${WORKDIR}/shell-test-l1.txt using FileRead and tell me its contents.\"}"
+    api_post "/message" "{\"content\":\"Use the FileRead tool to read ${WORKDIR}/shell-test-l1.txt. Then reply with ONLY the exact contents of the file on a single line, with no additional words, punctuation, or explanation.\"}"
     if [[ "${HTTP_CODE}" == "200" ]]; then
         api_get "/messages"
-        # Grep the entire JSON body (text blocks, tool_result blocks,
-        # nested content — whichever the server uses for tool output).
         if echo "${HTTP_BODY}" | grep -q "SHELL_MARKER_L1"; then
             pass "L1: File content appears in message history"
         else
-            fail "L1: shell output in history" "SHELL_MARKER_L1 not found in /messages response"
+            fail "L1: shell output in history" "SHELL_MARKER_L1 not echoed by assistant (model may have paraphrased)"
         fi
     else
         fail "L1: shell output in history" "Message failed: ${HTTP_CODE}"
