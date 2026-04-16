@@ -73,6 +73,8 @@ pub trait StreamSink: Send + Sync {
     fn on_tool_start(&self, tool_name: &str, input: &serde_json::Value);
     fn on_tool_result(&self, tool_name: &str, result: &crate::tools::ToolResult);
     fn on_thinking(&self, _text: &str) {}
+    /// Called at the start of each agent turn (1-indexed).
+    fn on_turn_start(&self, _turn: usize) {}
     fn on_turn_complete(&self, _turn: usize) {}
     fn on_error(&self, error: &str);
     fn on_usage(&self, _usage: &Usage) {}
@@ -195,6 +197,7 @@ impl QueryEngine {
         for turn in 0..max_turns {
             self.state.turn_count = turn + 1;
             self.state.is_query_active = true;
+            sink.on_turn_start(turn + 1);
 
             // Budget check before each turn.
             let budget_config = crate::services::budget::BudgetConfig::default();

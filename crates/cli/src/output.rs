@@ -110,7 +110,6 @@ enum Event<'a> {
 struct SinkState {
     turn: usize,
     last_usage: Usage,
-    last_tool_name: String,
 }
 
 /// A [`StreamSink`] that writes JSONL events to stdout.
@@ -129,7 +128,6 @@ impl JsonStreamSink {
             inner: Mutex::new(SinkState {
                 turn: 0,
                 last_usage: Usage::default(),
-                last_tool_name: String::new(),
             }),
         }
     }
@@ -156,6 +154,10 @@ impl JsonStreamSink {
 }
 
 impl StreamSink for JsonStreamSink {
+    fn on_turn_start(&self, turn: usize) {
+        self.inner.lock().unwrap().turn = turn;
+    }
+
     fn on_text(&self, text: &str) {
         let turn = self.inner.lock().unwrap().turn;
         emit(&Event::TextDelta {
@@ -173,8 +175,7 @@ impl StreamSink for JsonStreamSink {
     }
 
     fn on_tool_start(&self, tool_name: &str, input: &serde_json::Value) {
-        let mut state = self.inner.lock().unwrap();
-        state.last_tool_name = tool_name.to_string();
+        let state = self.inner.lock().unwrap();
         emit(&Event::ToolCall {
             tool: tool_name,
             input,
@@ -182,10 +183,10 @@ impl StreamSink for JsonStreamSink {
         });
     }
 
-    fn on_tool_result(&self, _tool_name: &str, result: &agent_code_lib::tools::ToolResult) {
+    fn on_tool_result(&self, tool_name: &str, result: &agent_code_lib::tools::ToolResult) {
         let state = self.inner.lock().unwrap();
         emit(&Event::ToolResult {
-            tool: &state.last_tool_name,
+            tool: tool_name,
             output: &result.content,
             is_error: result.is_error,
             turn: state.turn,
