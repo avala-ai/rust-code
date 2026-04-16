@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod output_store;
 pub mod plugins;
 pub mod pricing;
+pub mod secret_masker;
 pub mod session;
 pub mod session_env;
 pub mod shell_passthrough;

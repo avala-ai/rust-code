@@ -20,8 +20,173 @@
 use crate::llm::message::{
     ContentBlock, Message, MessageLevel, SystemMessage, SystemMessageType, UserMessage,
 };
-use crate::services::tokens;
+use crate::services::{secret_masker, tokens};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+/// Number of recent turns during which file reads are locked at `Full`
+/// fidelity and cannot be compressed by the summarizer.
+pub const PROTECTED_TURN_WINDOW: usize = 2;
+
+/// Fidelity of a file's representation in conversation history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionLevel {
+    /// Complete file contents in context (recently read).
+    Full,
+    /// Key sections only — functions referenced, changed lines.
+    Partial,
+    /// LLM-generated 2-3 sentence summary of the file's role.
+    Summary,
+    /// File removed from context entirely.
+    Excluded,
+}
+
+/// Per-file tracking record used by the history compressor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileCompressionRecord {
+    pub path: PathBuf,
+    pub level: CompressionLevel,
+    /// 12-byte SHA256 slice — short enough to be cheap, long enough
+    /// to detect any real content change.
+    #[serde(with = "hex_hash")]
+    pub content_hash: [u8; 12],
+    /// Line range retained at `Partial` level, if any.
+    pub line_range: Option<(usize, usize)>,
+    /// Turn index where this file was last referenced by any tool.
+    pub last_referenced_turn: usize,
+}
+
+impl FileCompressionRecord {
+    /// True while the file is within the protected turn window.
+    pub fn is_protected(&self, current_turn: usize) -> bool {
+        current_turn.saturating_sub(self.last_referenced_turn) < PROTECTED_TURN_WINDOW
+    }
+}
+
+/// Set of file compression records tracked for a session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileCompressionState {
+    pub files: HashMap<PathBuf, FileCompressionRecord>,
+}
+
+impl FileCompressionState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a file read at the given turn, setting level to `Full`.
+    /// If the content has changed since the last record, the level is
+    /// reset to `Full` (stale summaries must be discarded). If unchanged,
+    /// the existing level is preserved but the turn marker is updated.
+    pub fn record_read(&mut self, path: &Path, content: &str, turn: usize) {
+        let hash = hash_content(content);
+        match self.files.get_mut(path) {
+            Some(existing) => {
+                if existing.content_hash != hash {
+                    existing.content_hash = hash;
+                    existing.level = CompressionLevel::Full;
+                    existing.line_range = None;
+                }
+                existing.last_referenced_turn = turn;
+            }
+            None => {
+                self.files.insert(
+                    path.to_path_buf(),
+                    FileCompressionRecord {
+                        path: path.to_path_buf(),
+                        level: CompressionLevel::Full,
+                        content_hash: hash,
+                        line_range: None,
+                        last_referenced_turn: turn,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Demote a file's compression level, unless it is currently protected.
+    pub fn demote(&mut self, path: &Path, level: CompressionLevel, current_turn: usize) -> bool {
+        if let Some(rec) = self.files.get_mut(path) {
+            if rec.is_protected(current_turn) {
+                return false;
+            }
+            rec.level = level;
+            return true;
+        }
+        false
+    }
+
+    /// Persist the state to the standard compression_state.json path
+    /// next to a session file.
+    pub fn save(&self, session_id: &str) -> Result<PathBuf, String> {
+        let path = compression_state_path(session_id)
+            .ok_or_else(|| "Could not determine cache dir".to_string())?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create compression state dir: {e}"))?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("serialize compression state: {e}"))?;
+        std::fs::write(&path, json).map_err(|e| format!("write compression state: {e}"))?;
+        Ok(path)
+    }
+
+    /// Load state from disk for a session id. Returns `None` if no
+    /// state file exists yet (fresh session).
+    pub fn load(session_id: &str) -> Option<Self> {
+        let path = compression_state_path(session_id)?;
+        if !path.exists() {
+            return None;
+        }
+        let content = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+}
+
+/// Compute a 12-byte SHA256 slice of `content` for change detection.
+pub fn hash_content(content: &str) -> [u8; 12] {
+    let digest = Sha256::digest(content.as_bytes());
+    let mut out = [0u8; 12];
+    out.copy_from_slice(&digest[..12]);
+    out
+}
+
+/// Path to the compression state sidecar file for a session.
+fn compression_state_path(session_id: &str) -> Option<PathBuf> {
+    dirs::cache_dir().map(|d| {
+        d.join("agent-code")
+            .join("sessions")
+            .join(format!("{session_id}.compression.json"))
+    })
+}
+
+/// Serde helper: store `[u8; 12]` as a 24-char lowercase hex string.
+mod hex_hash {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8; 12], ser: S) -> Result<S::Ok, S::Error> {
+        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        ser.serialize_str(&hex)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<[u8; 12], D::Error> {
+        let s = String::deserialize(de)?;
+        if s.len() != 24 {
+            return Err(serde::de::Error::custom("expected 24 hex chars"));
+        }
+        let mut out = [0u8; 12];
+        for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+            let byte = u8::from_str_radix(std::str::from_utf8(chunk).unwrap_or(""), 16)
+                .map_err(serde::de::Error::custom)?;
+            out[i] = byte;
+        }
+        Ok(out)
+    }
+}
 
 /// Buffer tokens before auto-compact fires.
 const AUTOCOMPACT_BUFFER_TOKENS: u64 = 13_000;
@@ -192,6 +357,10 @@ pub fn compact_boundary_message(summary: &str) -> Message {
 
 /// Build a compact summary request: asks the LLM to summarize
 /// the conversation up to a certain point.
+///
+/// All message text is run through [`secret_masker`] before being
+/// passed to the summarizer, so secrets that appeared in tool output
+/// never end up baked into the summary.
 pub fn build_compact_summary_prompt(messages: &[Message]) -> String {
     let mut context = String::new();
     for msg in messages {
@@ -200,7 +369,7 @@ pub fn build_compact_summary_prompt(messages: &[Message]) -> String {
                 context.push_str("User: ");
                 for block in &u.content {
                     if let ContentBlock::Text { text } = block {
-                        context.push_str(text);
+                        context.push_str(&secret_masker::mask(text));
                     }
                 }
                 context.push('\n');
@@ -209,7 +378,7 @@ pub fn build_compact_summary_prompt(messages: &[Message]) -> String {
                 context.push_str("Assistant: ");
                 for block in &a.content {
                     if let ContentBlock::Text { text } = block {
-                        context.push_str(text);
+                        context.push_str(&secret_masker::mask(text));
                     }
                 }
                 context.push('\n');
@@ -396,6 +565,125 @@ fn calculate_keep_count(messages: &[Message]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hash_content_detects_change() {
+        let a = hash_content("hello world");
+        let b = hash_content("hello world");
+        let c = hash_content("hello world!");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn file_record_protected_inside_window() {
+        let rec = FileCompressionRecord {
+            path: PathBuf::from("src/main.rs"),
+            level: CompressionLevel::Full,
+            content_hash: hash_content("fn main() {}"),
+            line_range: None,
+            last_referenced_turn: 5,
+        };
+        assert!(rec.is_protected(5));
+        assert!(rec.is_protected(6));
+        assert!(!rec.is_protected(7));
+    }
+
+    #[test]
+    fn record_read_resets_level_on_content_change() {
+        let mut state = FileCompressionState::new();
+        let path = PathBuf::from("src/lib.rs");
+        state.record_read(&path, "original", 1);
+        // Demote outside protection window.
+        state.files.get_mut(&path).unwrap().last_referenced_turn = 0;
+        state.demote(&path, CompressionLevel::Summary, 10);
+        assert_eq!(
+            state.files.get(&path).unwrap().level,
+            CompressionLevel::Summary
+        );
+        // Re-read with new content — level must reset to Full.
+        state.record_read(&path, "changed content", 11);
+        assert_eq!(
+            state.files.get(&path).unwrap().level,
+            CompressionLevel::Full
+        );
+    }
+
+    #[test]
+    fn record_read_preserves_level_on_unchanged_content() {
+        let mut state = FileCompressionState::new();
+        let path = PathBuf::from("src/lib.rs");
+        state.record_read(&path, "same", 1);
+        state.files.get_mut(&path).unwrap().last_referenced_turn = 0;
+        state.demote(&path, CompressionLevel::Partial, 10);
+        state.record_read(&path, "same", 11);
+        assert_eq!(
+            state.files.get(&path).unwrap().level,
+            CompressionLevel::Partial
+        );
+    }
+
+    #[test]
+    fn demote_refuses_protected_files() {
+        let mut state = FileCompressionState::new();
+        let path = PathBuf::from("src/hot.rs");
+        state.record_read(&path, "contents", 5);
+        let ok = state.demote(&path, CompressionLevel::Summary, 5);
+        assert!(!ok);
+        assert_eq!(
+            state.files.get(&path).unwrap().level,
+            CompressionLevel::Full
+        );
+    }
+
+    #[test]
+    fn compression_state_empty_roundtrip() {
+        let state = FileCompressionState::new();
+        let json = serde_json::to_string(&state).unwrap();
+        let back: FileCompressionState = serde_json::from_str(&json).unwrap();
+        assert!(back.files.is_empty());
+    }
+
+    #[test]
+    fn compression_state_handles_unicode_paths() {
+        let mut state = FileCompressionState::new();
+        let path = PathBuf::from("src/crates/café/niño.rs");
+        state.record_read(&path, "contents", 1);
+        let json = serde_json::to_string(&state).unwrap();
+        let back: FileCompressionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.files.len(), 1);
+        assert!(back.files.contains_key(&path));
+    }
+
+    #[test]
+    fn compression_state_demote_after_protection_window_expires() {
+        // Read at turn 0 → protected until turn 2 (PROTECTED_TURN_WINDOW = 2).
+        // Demote attempts inside the window fail; one past the window succeeds.
+        let mut state = FileCompressionState::new();
+        let path = PathBuf::from("src/hot.rs");
+        state.record_read(&path, "contents", 0);
+        assert!(!state.demote(&path, CompressionLevel::Summary, 0));
+        assert!(!state.demote(&path, CompressionLevel::Summary, 1));
+        assert!(state.demote(&path, CompressionLevel::Summary, 2));
+        assert_eq!(
+            state.files.get(&path).unwrap().level,
+            CompressionLevel::Summary
+        );
+    }
+
+    #[test]
+    fn compression_state_roundtrip() {
+        let mut state = FileCompressionState::new();
+        state.record_read(Path::new("a.rs"), "alpha", 1);
+        state.record_read(Path::new("b.rs"), "beta", 2);
+        let json = serde_json::to_string(&state).unwrap();
+        let back: FileCompressionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.files.len(), 2);
+        assert_eq!(
+            back.files.get(Path::new("a.rs")).unwrap().content_hash,
+            hash_content("alpha"),
+        );
+    }
 
     #[test]
     fn test_auto_compact_threshold() {
@@ -600,6 +888,41 @@ mod tests {
         assert!(prompt.contains("assistant said that"));
         assert!(prompt.contains("User:"));
         assert!(prompt.contains("Assistant:"));
+    }
+
+    #[test]
+    fn build_compact_summary_prompt_masks_secrets_in_user_messages() {
+        use crate::llm::message::*;
+        let aws_key = "AKIAIOSFODNN7EXAMPLE";
+        let messages = vec![user_message(format!(
+            "I pasted my AWS key {aws_key} into the file"
+        ))];
+        let prompt = build_compact_summary_prompt(&messages);
+        assert!(
+            !prompt.contains(aws_key),
+            "raw AWS key survived compaction prompt: {prompt}",
+        );
+        assert!(prompt.contains("[REDACTED:aws_access_key]"));
+    }
+
+    #[test]
+    fn build_compact_summary_prompt_masks_secrets_in_assistant_messages() {
+        use crate::llm::message::*;
+        let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let messages = vec![Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: String::new(),
+            content: vec![ContentBlock::Text {
+                text: format!("I used this token: {secret}"),
+            }],
+            model: None,
+            usage: None,
+            stop_reason: None,
+            request_id: None,
+        })];
+        let prompt = build_compact_summary_prompt(&messages);
+        assert!(!prompt.contains(secret));
+        assert!(prompt.contains("REDACTED"));
     }
 
     #[test]

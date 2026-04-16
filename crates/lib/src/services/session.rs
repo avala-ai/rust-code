@@ -11,6 +11,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::llm::message::Message;
+use crate::services::secret_masker;
 
 /// Serializable session state persisted to disk.
 ///
@@ -49,6 +50,16 @@ pub struct SessionData {
 /// Sessions directory path.
 fn sessions_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("agent-code").join("sessions"))
+}
+
+/// Serialize session data to pretty JSON and apply the secret masker.
+///
+/// Extracted so wire-up tests can verify the persistence boundary
+/// without touching the real filesystem.
+pub(crate) fn serialize_masked(data: &SessionData) -> Result<String, String> {
+    let json = serde_json::to_string_pretty(data)
+        .map_err(|e| format!("Failed to serialize session: {e}"))?;
+    Ok(secret_masker::mask(&json))
 }
 
 /// Save the current session to disk.
@@ -107,8 +118,11 @@ pub fn save_session_full(
         plan_mode,
     };
 
-    let json = serde_json::to_string_pretty(&data)
-        .map_err(|e| format!("Failed to serialize session: {e}"))?;
+    // Mask secrets at the persistence boundary. Applied to the fully
+    // serialized JSON so the same regex set covers every text-bearing
+    // field (tool results, user messages, metadata). Escaped JSON
+    // strings still match the same patterns at the byte level.
+    let json = serialize_masked(&data)?;
 
     std::fs::write(&path, json).map_err(|e| format!("Failed to write session file: {e}"))?;
 
@@ -195,7 +209,42 @@ pub fn new_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::message::user_message;
+    use crate::llm::message::{ContentBlock, Message, UserMessage, user_message};
+
+    /// Helper: build a session containing the given messages with
+    /// fixed, deterministic metadata. Used by wire-up tests.
+    fn make_session(messages: Vec<Message>) -> SessionData {
+        SessionData {
+            id: "fixture".into(),
+            created_at: "2026-04-15T00:00:00Z".into(),
+            updated_at: "2026-04-15T00:00:00Z".into(),
+            cwd: "/work".into(),
+            model: "test-model".into(),
+            messages,
+            turn_count: 1,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            plan_mode: false,
+        }
+    }
+
+    /// Helper: a user message whose sole content block is a tool_result
+    /// (simulates the agent receiving tool output that embedded a secret).
+    fn tool_result_user_message(tool_use_id: &str, content: &str) -> Message {
+        Message::User(UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: "2026-04-15T00:00:00Z".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.to_string(),
+                content: content.to_string(),
+                is_error: false,
+                extra_content: Vec::new(),
+            }],
+            is_meta: false,
+            is_compact_summary: false,
+        })
+    }
 
     #[test]
     fn test_new_session_id_format() {
@@ -269,6 +318,220 @@ mod tests {
         assert_eq!(loaded.id, data.id);
         assert_eq!(loaded.model, data.model);
         assert_eq!(loaded.turn_count, data.turn_count);
+    }
+
+    #[test]
+    fn serialize_masked_redacts_secrets_in_messages() {
+        // A tool result leaked an AWS access key into the message history.
+        // When the session is serialized for disk, the secret must not
+        // survive the persistence boundary.
+        let aws_key = "AKIAIOSFODNN7EXAMPLE";
+        let data = SessionData {
+            id: "sess-1".to_string(),
+            created_at: "2026-04-15T00:00:00Z".to_string(),
+            updated_at: "2026-04-15T00:00:00Z".to_string(),
+            cwd: "/work".to_string(),
+            model: "test-model".to_string(),
+            messages: vec![user_message(format!("here is my key {aws_key}"))],
+            turn_count: 1,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            plan_mode: false,
+        };
+        let out = serialize_masked(&data).unwrap();
+        assert!(
+            !out.contains(aws_key),
+            "raw AWS key survived serialization: {out}",
+        );
+        assert!(out.contains("[REDACTED:aws_access_key]"));
+        // Non-secret metadata must still be present.
+        assert!(out.contains("\"cwd\": \"/work\""));
+        assert!(out.contains("\"model\": \"test-model\""));
+    }
+
+    #[test]
+    fn serialize_masked_redacts_generic_credential_assignments() {
+        let secret_line = "api_key=verylongprovidersecret1234567890";
+        let data = SessionData {
+            id: "sess-2".to_string(),
+            created_at: "2026-04-15T00:00:00Z".to_string(),
+            updated_at: "2026-04-15T00:00:00Z".to_string(),
+            cwd: "/work".to_string(),
+            model: "test-model".to_string(),
+            messages: vec![user_message(secret_line)],
+            turn_count: 1,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            plan_mode: false,
+        };
+        let out = serialize_masked(&data).unwrap();
+        assert!(!out.contains("verylongprovidersecret1234567890"));
+        assert!(out.contains("[REDACTED:credential]"));
+    }
+
+    /// Regression probe: masking must never corrupt JSON structure.
+    /// Previously, the credential regex's trailing `["']?` could consume
+    /// the closing quote of a JSON string value, producing unparseable
+    /// output that would break /resume.
+    #[test]
+    fn serialize_masked_produces_parseable_json_for_unquoted_inner_secret() {
+        let data = SessionData {
+            id: "probe".to_string(),
+            created_at: "2026-04-15T00:00:00Z".to_string(),
+            updated_at: "2026-04-15T00:00:00Z".to_string(),
+            cwd: "/work".to_string(),
+            model: "test-model".to_string(),
+            messages: vec![user_message("api_key=hunter2hunter2")],
+            turn_count: 1,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            plan_mode: false,
+        };
+        let out = serialize_masked(&data).unwrap();
+        // Must still parse back as a SessionData.
+        let parsed: Result<SessionData, _> = serde_json::from_str(&out);
+        assert!(
+            parsed.is_ok(),
+            "masked session JSON failed to round-trip: {}\n---\n{out}",
+            parsed.err().unwrap(),
+        );
+        let loaded = parsed.unwrap();
+        assert_eq!(loaded.id, "probe");
+        assert_eq!(loaded.messages.len(), 1);
+    }
+
+    #[test]
+    fn serialize_masked_produces_parseable_json_for_multiple_secret_shapes() {
+        let shapes = [
+            "my api_key=hunter2hunter2",
+            "password: sup3rs3cr3tv@lue (truncated)",
+            r#"env DATABASE_URL=postgres://user:hunter2hunter2@host/db"#,
+            "auth_token = abcdefghijklmn",
+            "mixed: api_key=abcd1234efgh5678 and token=xyz12345abcd6789",
+        ];
+        for shape in shapes {
+            let data = SessionData {
+                id: "probe".to_string(),
+                created_at: "2026-04-15T00:00:00Z".to_string(),
+                updated_at: "2026-04-15T00:00:00Z".to_string(),
+                cwd: "/work".to_string(),
+                model: "test-model".to_string(),
+                messages: vec![user_message(shape.to_string())],
+                turn_count: 1,
+                total_cost_usd: 0.0,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                plan_mode: false,
+            };
+            let out = serialize_masked(&data).unwrap();
+            let parsed: Result<SessionData, _> = serde_json::from_str(&out);
+            assert!(
+                parsed.is_ok(),
+                "shape corrupted JSON: {shape:?}\nerr: {}\nout: {out}",
+                parsed.err().unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn serialize_masked_redacts_secret_in_tool_result_block() {
+        // Tool output commonly leaks env vars. When the session is
+        // serialized, secrets inside ToolResult content must be scrubbed
+        // just like those in plain text blocks.
+        let leaked = "export AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz1234";
+        let data = make_session(vec![tool_result_user_message("call-1", leaked)]);
+        let out = serialize_masked(&data).unwrap();
+        assert!(
+            !out.contains("abcdefghijklmnopqrstuvwxyz1234"),
+            "tool_result secret survived serialization",
+        );
+        assert!(out.contains("REDACTED"));
+        // Round-trip must still work.
+        let _: SessionData =
+            serde_json::from_str(&out).expect("tool_result session must round-trip");
+    }
+
+    #[test]
+    fn serialize_masked_handles_many_messages_with_mixed_secrets() {
+        // Stress: multiple messages, mixed speakers, multiple secret
+        // shapes. All must be masked and the result must still parse.
+        let messages = vec![
+            user_message("AKIAIOSFODNN7EXAMPLE leaked in user message"),
+            tool_result_user_message(
+                "t1",
+                r#"env dump: DATABASE_URL=postgres://user:hunter2hunter2@host/db"#,
+            ),
+            user_message("auth_token = abcdefghijklmnop"),
+            tool_result_user_message("t2", "config.toml says api_key = \"secretprovidervalue\""),
+        ];
+        let data = make_session(messages);
+        let out = serialize_masked(&data).unwrap();
+
+        // No raw secrets remain.
+        for needle in [
+            "AKIAIOSFODNN7EXAMPLE",
+            "hunter2hunter2",
+            "abcdefghijklmnop",
+            "secretprovidervalue",
+        ] {
+            assert!(!out.contains(needle), "leaked {needle} in: {out}",);
+        }
+        // Multiple REDACTED markers present.
+        assert!(out.matches("REDACTED").count() >= 4);
+        // JSON must round-trip through a real parse.
+        let parsed: SessionData =
+            serde_json::from_str(&out).expect("mixed-secret session must round-trip");
+        assert_eq!(parsed.messages.len(), 4);
+    }
+
+    #[test]
+    fn serialize_masked_is_idempotent_save_load_save() {
+        // Re-saving a loaded session must produce byte-identical JSON
+        // (the masker replaced all secrets on the first save; the
+        // second save should find nothing to mask).
+        let data = make_session(vec![
+            user_message("AKIAIOSFODNN7EXAMPLE and api_key=hunter2hunter2"),
+            tool_result_user_message(
+                "t1",
+                "ghp_abcdefghijklmnopqrstuvwxyz0123456789 then password='firstpassword1234'",
+            ),
+        ]);
+
+        let first = serialize_masked(&data).unwrap();
+        let loaded: SessionData = serde_json::from_str(&first).expect("first save must parse");
+
+        // Mirror production: save_session_full re-uses timestamps from
+        // in-memory state, so clone the loaded data as the next save's
+        // input (keeping everything deterministic for the comparison).
+        let second = serialize_masked(&loaded).unwrap();
+
+        assert_eq!(
+            first, second,
+            "save→load→save is not idempotent\nfirst:\n{first}\nsecond:\n{second}",
+        );
+    }
+
+    #[test]
+    fn serialize_masked_leaves_innocuous_content_intact() {
+        let data = SessionData {
+            id: "sess-3".to_string(),
+            created_at: "2026-04-15T00:00:00Z".to_string(),
+            updated_at: "2026-04-15T00:00:00Z".to_string(),
+            cwd: "/work".to_string(),
+            model: "test-model".to_string(),
+            messages: vec![user_message("fn main() { println!(\"hello\"); }")],
+            turn_count: 1,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            plan_mode: false,
+        };
+        let out = serialize_masked(&data).unwrap();
+        assert!(!out.contains("REDACTED"));
+        assert!(out.contains("fn main()"));
     }
 
     #[test]
