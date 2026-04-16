@@ -239,11 +239,9 @@ pub fn render_markdown(text: &str) -> String {
                     output.push_str(&format!("{indent}  {tool}•{reset} "));
                 }
             }
-            Event::End(TagEnd::Item) => {
+            Event::End(TagEnd::Item) if !output.ends_with('\n') => {
                 // Ensure line break after list item.
-                if !output.ends_with('\n') {
-                    output.push('\n');
-                }
+                output.push('\n');
             }
 
             // --- Tables ---
