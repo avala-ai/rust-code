@@ -11,6 +11,7 @@ mod acp;
 mod attach;
 mod commands;
 mod daemon;
+mod output;
 mod serve;
 mod ui;
 mod update;
@@ -45,6 +46,12 @@ struct Cli {
     /// Execute a single prompt and exit (non-interactive mode).
     #[arg(short, long)]
     prompt: Option<String>,
+
+    /// Output format for one-shot mode: text (default) or json (JSONL).
+    /// In json mode, structured events go to stdout and status messages
+    /// go to stderr.
+    #[arg(long, default_value = "text")]
+    output_format: String,
 
     /// API base URL override.
     #[arg(long, env = "AGENT_CODE_API_BASE_URL")]
@@ -202,6 +209,17 @@ async fn main() -> anyhow::Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
     };
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // Validate output format early — fail fast on bad values before
+    // touching config, API keys, or the setup wizard.
+    let output_fmt: output::OutputFormat = cli
+        .output_format
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!(e))?;
+
+    if output_fmt == output::OutputFormat::Json && cli.prompt.is_none() {
+        anyhow::bail!("--output-format json requires --prompt (non-interactive mode)");
+    }
 
     // Set working directory if specified.
     if let Some(ref cwd) = cli.cwd {
@@ -549,27 +567,62 @@ async fn main() -> anyhow::Result<()> {
     // One-shot or interactive mode.
     match cli.prompt {
         Some(prompt) => {
-            // One-shot mode: use a simple sink that prints to stdout.
-            struct StdoutSink;
-            impl agent_code_lib::query::StreamSink for StdoutSink {
-                fn on_text(&self, text: &str) {
-                    print!("{text}");
-                    let _ = std::io::Write::flush(&mut std::io::stdout());
+            let exit_code = match output_fmt {
+                output::OutputFormat::Json => {
+                    // Structured JSONL mode: events on stdout, status on stderr.
+                    let sink = output::JsonStreamSink::new(&config.api.model);
+                    sink.emit_session_start(&engine.state().session_id);
+
+                    let result = engine.run_turn_with_sink(&prompt, &sink).await;
+
+                    let (code, cost) = match &result {
+                        Ok(()) => (
+                            output::ExitCode::Success as u8,
+                            engine.state().total_cost_usd,
+                        ),
+                        Err(_) => (
+                            output::ExitCode::LlmError as u8,
+                            engine.state().total_cost_usd,
+                        ),
+                    };
+                    sink.emit_session_end(cost, code);
+                    code
                 }
-                fn on_tool_start(&self, name: &str, _: &serde_json::Value) {
-                    eprintln!("[{name}]");
-                }
-                fn on_tool_result(&self, name: &str, r: &agent_code_lib::tools::ToolResult) {
-                    if r.is_error {
-                        eprintln!("[{name} error: {}]", r.content.lines().next().unwrap_or(""));
+                output::OutputFormat::Text => {
+                    struct StdoutSink;
+                    impl agent_code_lib::query::StreamSink for StdoutSink {
+                        fn on_text(&self, text: &str) {
+                            print!("{text}");
+                            let _ = std::io::Write::flush(&mut std::io::stdout());
+                        }
+                        fn on_tool_start(&self, name: &str, _: &serde_json::Value) {
+                            eprintln!("[{name}]");
+                        }
+                        fn on_tool_result(
+                            &self,
+                            name: &str,
+                            r: &agent_code_lib::tools::ToolResult,
+                        ) {
+                            if r.is_error {
+                                eprintln!(
+                                    "[{name} error: {}]",
+                                    r.content.lines().next().unwrap_or("")
+                                );
+                            }
+                        }
+                        fn on_error(&self, e: &str) {
+                            eprintln!("Error: {e}");
+                        }
                     }
+                    engine.run_turn_with_sink(&prompt, &StdoutSink).await?;
+                    println!();
+                    output::ExitCode::Success as u8
                 }
-                fn on_error(&self, e: &str) {
-                    eprintln!("Error: {e}");
-                }
+            };
+
+            if exit_code != 0 {
+                std::process::exit(exit_code as i32);
             }
-            engine.run_turn_with_sink(&prompt, &StdoutSink).await?;
-            println!();
         }
         None => {
             // Check for updates in the background (non-blocking).
