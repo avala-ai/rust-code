@@ -35,13 +35,20 @@ static PATTERNS: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
         ("github_token", r"github_pat_[a-zA-Z0-9_]{50,}"),
         // Provider API keys (OpenAI, Anthropic etc.) — long opaque prefix.
         ("provider_api_key", r"sk-[a-zA-Z0-9_\-]{20,}"),
-        // Generic assignment: api_key = "...", password: ..., auth_token=...
-        // Captures the full identifier (group 1) and masks the value.
-        // The identifier may contain the sensitive word anywhere inside it
-        // (e.g. `my_api_key`, `auth_token`, `SESSION_SECRET`).
+        // Generic assignment, quoted form: api_key = "sekrit", password: 'hunter2hunter2'.
+        // Requires matching open/close quotes so this pattern can never
+        // consume a stray delimiter (e.g. a JSON string's closing quote).
         (
             "credential",
-            r#"(?i)\b((?:[a-z][a-z0-9_-]*[_-])?(?:api[_-]?key|secret|password|passwd|token|auth)[a-z0-9_-]*)\s*[:=]\s*["']?[A-Za-z0-9_\-./+=]{8,}["']?"#,
+            r#"(?i)\b((?:[a-z][a-z0-9_-]*[_-])?(?:api[_-]?key|secret|password|passwd|token|auth)[a-z0-9_-]*)\s*[:=]\s*(?:"[A-Za-z0-9_\-./+=]{8,}"|'[A-Za-z0-9_\-./+=]{8,}')"#,
+        ),
+        // Generic assignment, unquoted form: api_key=sekrit, auth_token = sekrit.
+        // The value char class excludes `"` and `'`, so matching stops at
+        // any surrounding JSON/TOML/YAML string delimiter rather than
+        // eating it.
+        (
+            "credential",
+            r#"(?i)\b((?:[a-z][a-z0-9_-]*[_-])?(?:api[_-]?key|secret|password|passwd|token|auth)[a-z0-9_-]*)\s*[:=]\s*[A-Za-z0-9_\-./+=]{8,}"#,
         ),
     ];
 

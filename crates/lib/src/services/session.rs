@@ -336,6 +336,71 @@ mod tests {
         assert!(out.contains("[REDACTED:credential]"));
     }
 
+    /// Regression probe: masking must never corrupt JSON structure.
+    /// Previously, the credential regex's trailing `["']?` could consume
+    /// the closing quote of a JSON string value, producing unparseable
+    /// output that would break /resume.
+    #[test]
+    fn serialize_masked_produces_parseable_json_for_unquoted_inner_secret() {
+        let data = SessionData {
+            id: "probe".to_string(),
+            created_at: "2026-04-15T00:00:00Z".to_string(),
+            updated_at: "2026-04-15T00:00:00Z".to_string(),
+            cwd: "/work".to_string(),
+            model: "test-model".to_string(),
+            messages: vec![user_message("api_key=hunter2hunter2")],
+            turn_count: 1,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            plan_mode: false,
+        };
+        let out = serialize_masked(&data).unwrap();
+        // Must still parse back as a SessionData.
+        let parsed: Result<SessionData, _> = serde_json::from_str(&out);
+        assert!(
+            parsed.is_ok(),
+            "masked session JSON failed to round-trip: {}\n---\n{out}",
+            parsed.err().unwrap(),
+        );
+        let loaded = parsed.unwrap();
+        assert_eq!(loaded.id, "probe");
+        assert_eq!(loaded.messages.len(), 1);
+    }
+
+    #[test]
+    fn serialize_masked_produces_parseable_json_for_multiple_secret_shapes() {
+        let shapes = [
+            "my api_key=hunter2hunter2",
+            "password: sup3rs3cr3tv@lue (truncated)",
+            r#"env DATABASE_URL=postgres://user:hunter2hunter2@host/db"#,
+            "auth_token = abcdefghijklmn",
+            "mixed: api_key=abcd1234efgh5678 and token=xyz12345abcd6789",
+        ];
+        for shape in shapes {
+            let data = SessionData {
+                id: "probe".to_string(),
+                created_at: "2026-04-15T00:00:00Z".to_string(),
+                updated_at: "2026-04-15T00:00:00Z".to_string(),
+                cwd: "/work".to_string(),
+                model: "test-model".to_string(),
+                messages: vec![user_message(shape.to_string())],
+                turn_count: 1,
+                total_cost_usd: 0.0,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                plan_mode: false,
+            };
+            let out = serialize_masked(&data).unwrap();
+            let parsed: Result<SessionData, _> = serde_json::from_str(&out);
+            assert!(
+                parsed.is_ok(),
+                "shape corrupted JSON: {shape:?}\nerr: {}\nout: {out}",
+                parsed.err().unwrap(),
+            );
+        }
+    }
+
     #[test]
     fn serialize_masked_leaves_innocuous_content_intact() {
         let data = SessionData {
