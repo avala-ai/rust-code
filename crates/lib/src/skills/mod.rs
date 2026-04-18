@@ -235,6 +235,43 @@ impl SkillRegistry {
                  and a concrete fix.",
             ),
             (
+                "pentest",
+                "White-box penetration test of a target directory",
+                true,
+                "Conduct a white-box penetration test of the target directory (argument) \
+                 or the whole repository if no argument is given. Run five phases in \
+                 order; do not skip phases.\n\n\
+                 1. RECON. Read the target. Map entry points (HTTP routes, CLI commands, \
+                 event handlers, IPC surfaces), authentication and trust boundaries, and \
+                 high-risk sinks: raw SQL (cursor.execute, .raw, .extra, f-string \
+                 queries), command execution (subprocess, eval, exec, os.system), \
+                 deserializers (pickle, yaml.load non-safe), user-controlled URLs \
+                 (requests, urllib, httpx with untrusted input), file path joins with \
+                 user input, missing authorization checks. Cite file:line for every \
+                 sink.\n\n\
+                 2. SLICE. Partition the code into 4-8 directory slices, each assigned \
+                 1-2 CWE focus areas from CWE-89, CWE-78, CWE-79, CWE-22, CWE-502, \
+                 CWE-798, CWE-862, CWE-863, CWE-918, CWE-200, CWE-352. Rank slices by \
+                 suspected risk.\n\n\
+                 3. VULN ANALYSIS. For each slice, trace user input from source through \
+                 any sanitizer to the dangerous sink. If a sanitizer exists, explain why \
+                 it is or is not sufficient for this specific sink. Produce hypothesized \
+                 exploit paths.\n\n\
+                 4. EXPLOIT OR DISCARD. For every finding, produce a concrete \
+                 proof-of-concept: a curl command, an exact payload string, or \
+                 reproduction steps. If no PoC is producible from code inspection alone, \
+                 demote the finding to INFO or drop it. No theoretical findings. Any \
+                 dynamic verification must target a local development instance, never \
+                 production.\n\n\
+                 5. REPORT. Write a markdown report grouping findings by severity \
+                 (CRITICAL / HIGH / MEDIUM / LOW / INFO). Each finding includes \
+                 file:line, CWE, risk description, vulnerable snippet, fix snippet, \
+                 impact, and PoC. End with a summary table and a ship-readiness verdict. \
+                 Save to the project's standard security reports location (for example \
+                 reports/security/ or docs/security/).\n\n\
+                 Target: {{arg}}. If empty, ask the user which subsystem to test first.",
+            ),
+            (
                 "advisor",
                 "Analyze project architecture and suggest improvements",
                 true,
