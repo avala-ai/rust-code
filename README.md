@@ -89,6 +89,7 @@ File ops, search, shell, git, web, LSP, MCP, notebooks, tasks, and more. Tools e
 | `/refactor` | Refactor code for quality |
 | `/init` | Initialize project configuration |
 | `/security-review` | OWASP-oriented vulnerability scan |
+| `/pentest` | White-box penetration test with proof-of-concept gating |
 | `/advisor` | Architecture and dependency health analysis |
 | `/bughunter` | Systematic bug search |
 | `/plan` | Structured implementation planning |
