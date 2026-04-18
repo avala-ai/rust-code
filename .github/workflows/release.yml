@@ -14,11 +14,16 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          # Linux builders are pinned to ubuntu-22.04 (glibc 2.35) so the
+          # release binaries don't import weak GLIBC_2.39 symbols
+          # (pidfd_spawnp, pidfd_getpid) from newer runners. Those resolve
+          # to NULL on systems with older glibc and segfault when tokio
+          # spawns a subprocess. See issue #134.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: agent-linux-x86_64
             archive: tar.gz
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             artifact: agent-linux-aarch64
             archive: tar.gz
