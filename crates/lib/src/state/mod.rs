@@ -36,6 +36,10 @@ pub struct AppState {
     pub task_manager: std::sync::Arc<crate::services::background::TaskManager>,
     /// Session ID for persistence.
     pub session_id: String,
+    /// When true, the next outgoing request skips prompt caching so the
+    /// cache prefix is rebuilt from scratch. Consumed (reset to false)
+    /// after the next request. Set by `/break-cache`.
+    pub break_cache_next: bool,
     /// Extra directories the user has explicitly added to the working
     /// set with `/add-dir`. Surfaced in the system prompt so the agent
     /// knows it's allowed to read/edit files outside `cwd` without
@@ -61,6 +65,7 @@ impl AppState {
             plan_mode: false,
             task_manager: std::sync::Arc::new(crate::services::background::TaskManager::new()),
             session_id: crate::services::session::new_session_id(),
+            break_cache_next: false,
             additional_dirs: Vec::new(),
         }
     }
@@ -108,6 +113,7 @@ mod tests {
         assert_eq!(state.turn_count, 0);
         assert_eq!(state.total_cost_usd, 0.0);
         assert!(state.messages.is_empty());
+        assert!(!state.break_cache_next);
         assert!(state.additional_dirs.is_empty());
     }
 

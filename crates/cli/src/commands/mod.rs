@@ -360,6 +360,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "break-cache",
+        aliases: &[],
+        description: "Force the next request to skip the prompt cache",
+        hidden: false,
+    },
+    Command {
         name: "add-dir",
         aliases: &[],
         description: "Track an additional directory alongside the cwd (or list/remove)",
@@ -1525,6 +1531,18 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
         }
         Some("btw") => {
             execute_btw(args);
+            CommandResult::Handled
+        }
+        Some("break-cache") => {
+            if engine.state().break_cache_next {
+                println!("Cache bust already armed for the next request.");
+            } else {
+                engine.state_mut().break_cache_next = true;
+                println!(
+                    "Next request will skip the prompt cache. \
+                     Subsequent requests will cache normally."
+                );
+            }
             CommandResult::Handled
         }
         Some("add-dir") => {

@@ -47,7 +47,7 @@ jobs:
         run: echo '<meta http-equiv="refresh" content="0; url=agent_code_lib/">' > docs-out/api/index.html
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
