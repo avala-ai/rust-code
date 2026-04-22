@@ -9,6 +9,7 @@
 //! Commands have access to the query engine state and can modify
 //! the conversation, change settings, or execute side effects.
 
+mod heapdump;
 mod uninstall;
 
 use agent_code_lib::query::QueryEngine;
@@ -364,6 +365,12 @@ pub const COMMANDS: &[Command] = &[
         aliases: &[],
         description: "Force the next request to skip the prompt cache",
         hidden: false,
+    },
+    Command {
+        name: "heapdump",
+        aliases: &[],
+        description: "Write a process memory snapshot to disk for debugging",
+        hidden: true,
     },
     Command {
         name: "rename",
@@ -1539,6 +1546,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                      Subsequent requests will cache normally."
                 );
             }
+            CommandResult::Handled
+        }
+        Some("heapdump") => {
+            heapdump::run();
             CommandResult::Handled
         }
         Some("rename") => {
