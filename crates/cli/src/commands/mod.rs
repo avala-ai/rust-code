@@ -359,6 +359,12 @@ pub const COMMANDS: &[Command] = &[
         description: "Append a quick note to user memory (e.g. /btw always prefer X over Y)",
         hidden: false,
     },
+    Command {
+        name: "break-cache",
+        aliases: &[],
+        description: "Force the next request to skip the prompt cache",
+        hidden: false,
+    },
 ];
 
 /// Execute a slash command. Returns how to proceed.
@@ -1510,6 +1516,18 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
         }
         Some("btw") => {
             execute_btw(args);
+            CommandResult::Handled
+        }
+        Some("break-cache") => {
+            if engine.state().break_cache_next {
+                println!("Cache bust already armed for the next request.");
+            } else {
+                engine.state_mut().break_cache_next = true;
+                println!(
+                    "Next request will skip the prompt cache. \
+                     Subsequent requests will cache normally."
+                );
+            }
             CommandResult::Handled
         }
         _ => {
