@@ -164,6 +164,26 @@ impl QueryEngine {
             .await
     }
 
+    /// Run any configured `PostCompact` hooks with the realized outcome
+    /// of a compaction — before/after message counts plus actual tokens
+    /// freed. Pair this with `fire_pre_compact_hooks` so audit hooks can
+    /// record both the estimate and the ground truth.
+    pub async fn fire_post_compact_hooks(
+        &self,
+        messages_before: usize,
+        messages_after: usize,
+        freed_tokens: u64,
+    ) -> Vec<crate::hooks::HookResult> {
+        let ctx = serde_json::json!({
+            "messages_before": messages_before,
+            "messages_after": messages_after,
+            "freed_tokens": freed_tokens,
+        });
+        self.hooks
+            .run_hooks(&HookEvent::PostCompact, None, &ctx)
+            .await
+    }
+
     /// Run any configured `SessionStart` hooks. The session id and working
     /// directory are passed in the JSON context so hooks can tag logs,
     /// spin up watchers, or load per-project secrets.
@@ -334,6 +354,13 @@ impl QueryEngine {
                 let threshold = compact::auto_compact_threshold(&model);
                 info!("Auto-compact triggered: {token_count} tokens >= {threshold} threshold");
 
+                // Snapshot for PostCompact: message count + token estimate
+                // BEFORE any of the three compaction paths (microcompact,
+                // LLM, context collapse) have run. We fire one PostCompact
+                // with the realized delta at the end of this block.
+                let messages_before = self.state.messages.len();
+                let tokens_before = token_count;
+
                 // Microcompact first: clear stale tool results.
                 let freed = compact::microcompact(&mut self.state.messages, 5);
                 if freed > 0 {
@@ -388,6 +415,20 @@ impl QueryEngine {
                             }
                         }
                     }
+                }
+
+                // Fire PostCompact with the realized delta across every
+                // compaction path above. Only fire when something actually
+                // changed — a no-op PostCompact on every turn would spam
+                // user hooks. We treat "no message change AND no token
+                // drop" as a true no-op.
+                let messages_after = self.state.messages.len();
+                let tokens_after = tokens::estimate_context_tokens(self.state.history());
+                let realized_freed = tokens_before.saturating_sub(tokens_after);
+                if messages_after != messages_before || realized_freed > 0 {
+                    let _ = self
+                        .fire_post_compact_hooks(messages_before, messages_after, realized_freed)
+                        .await;
                 }
             }
 

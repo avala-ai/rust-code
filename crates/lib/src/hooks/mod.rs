@@ -8,6 +8,8 @@
 //! - `SessionStart` — when a session begins
 //! - `SessionStop` — when a session ends
 //! - `UserPromptSubmit` — when the user submits input
+//! - `PreCompact` — before /compact or auto-compact mutates history
+//! - `PostCompact` — after compaction finishes with the actual outcome
 //!
 //! Hooks can be shell commands, HTTP endpoints, or prompt templates,
 //! configured in the settings file.
@@ -166,6 +168,15 @@ mod tests {
     async fn run_hooks_fires_user_prompt_submit() {
         let body = run_and_read(HookEvent::UserPromptSubmit).await;
         assert!(body.contains("fired"), "UserPromptSubmit hook did not run");
+    }
+
+    /// PostCompact is the newest variant. Confirm the dispatcher matches
+    /// it correctly so a hook registered for `post_compact` actually
+    /// receives the event.
+    #[tokio::test]
+    async fn run_hooks_fires_post_compact() {
+        let body = run_and_read(HookEvent::PostCompact).await;
+        assert!(body.contains("fired"), "PostCompact hook did not run");
     }
 
     /// Registering a hook for one event must NOT cause it to fire when

@@ -610,7 +610,7 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                 2,
             );
             let handle = tokio::runtime::Handle::try_current();
-            if let Ok(h) = handle {
+            if let Ok(ref h) = handle {
                 let _ = h.block_on(engine.fire_pre_compact_hooks(pre_len, estimated));
             }
             let freed = agent_code_lib::services::compact::microcompact(
@@ -621,6 +621,14 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                 println!("Freed ~{freed} estimated tokens.");
             } else {
                 println!("Nothing to compact.");
+            }
+            // PostCompact fires with the realized outcome so audit hooks
+            // can pair the estimate with ground truth. Even when nothing
+            // was freed (freed == 0), firing gives hooks a chance to log
+            // the no-op — /compact was still user-invoked.
+            let post_len = engine.state().messages.len();
+            if let Ok(h) = handle {
+                let _ = h.block_on(engine.fire_post_compact_hooks(pre_len, post_len, freed));
             }
             CommandResult::Handled
         }
@@ -2217,6 +2225,10 @@ const HOOK_EVENT_CATALOG: &[(&str, &str)] = &[
         "pre_compact",
         "right before /compact or auto-compact mutates history",
     ),
+    (
+        "post_compact",
+        "after compaction finishes (context: messages_before/after, freed_tokens)",
+    ),
     ("session_stop", "when the session ends"),
 ];
 
@@ -2251,6 +2263,7 @@ fn format_hook_event(event: &agent_code_lib::config::HookEvent) -> &'static str 
         HookEvent::PreTurn => "pre_turn",
         HookEvent::PostTurn => "post_turn",
         HookEvent::PreCompact => "pre_compact",
+        HookEvent::PostCompact => "post_compact",
     }
 }
 
@@ -2269,6 +2282,7 @@ fn parse_hook_event(raw: &str) -> Option<agent_code_lib::config::HookEvent> {
         "pre_turn" => HookEvent::PreTurn,
         "post_turn" => HookEvent::PostTurn,
         "pre_compact" => HookEvent::PreCompact,
+        "post_compact" => HookEvent::PostCompact,
         _ => return None,
     })
 }
@@ -5414,6 +5428,20 @@ mod tests {
         assert_eq!(format_hook_event(&HookEvent::PreTurn), "pre_turn");
         assert_eq!(format_hook_event(&HookEvent::PostTurn), "post_turn");
         assert_eq!(format_hook_event(&HookEvent::PreCompact), "pre_compact");
+        assert_eq!(format_hook_event(&HookEvent::PostCompact), "post_compact");
+    }
+
+    #[test]
+    fn parse_hook_event_accepts_post_compact() {
+        use agent_code_lib::config::HookEvent;
+        assert_eq!(
+            parse_hook_event("post_compact"),
+            Some(HookEvent::PostCompact)
+        );
+        assert_eq!(
+            parse_hook_event("post-compact"),
+            Some(HookEvent::PostCompact)
+        );
     }
 
     #[test]

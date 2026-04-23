@@ -390,6 +390,12 @@ pub enum HookEvent {
     /// hook sees the current message count and an estimate of tokens
     /// that will be freed, so users can archive/snapshot first.
     PreCompact,
+    /// Fired after compaction finishes with the actual outcome (messages
+    /// before/after, tokens freed). Complements `PreCompact` so hooks
+    /// can log the actual effect of the compaction — useful when the
+    /// estimate diverges from reality or when the compactor decides to
+    /// no-op because there was nothing to free.
+    PostCompact,
 }
 
 /// A configured hook action.
@@ -668,6 +674,14 @@ mod tests {
         assert_eq!(json, "\"pre_compact\"");
         let back: HookEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(back, HookEvent::PreCompact);
+    }
+
+    #[test]
+    fn hook_event_serde_roundtrip_post_compact() {
+        let json = serde_json::to_string(&HookEvent::PostCompact).unwrap();
+        assert_eq!(json, "\"post_compact\"");
+        let back: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, HookEvent::PostCompact);
     }
 
     // ---- HookAction serde round-trip ----
