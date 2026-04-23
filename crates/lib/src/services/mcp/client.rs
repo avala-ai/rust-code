@@ -3,10 +3,29 @@
 //! Manages the connection lifecycle, tool discovery, and tool
 //! execution for a single MCP server.
 
-use tracing::{debug, info};
+use std::time::Duration;
+
+use tracing::{debug, info, warn};
 
 use super::transport::McpTransportConnection;
 use super::types::*;
+
+/// Maximum backoff delay between reconnect attempts.
+const MAX_BACKOFF_MS: u64 = 30_000;
+
+/// Initial delay before the first reconnect retry.
+const INITIAL_BACKOFF_MS: u64 = 1_000;
+
+/// Compute the exponential-backoff delay for the given attempt number
+/// (0-indexed). Doubles each attempt, capped at [`MAX_BACKOFF_MS`].
+///
+/// Kept as a pure function so the schedule can be exercised in unit
+/// tests without actually sleeping or opening a transport.
+pub(crate) fn backoff_delay_ms(attempt: u32) -> u64 {
+    INITIAL_BACKOFF_MS
+        .saturating_mul(1u64 << attempt.min(20))
+        .min(MAX_BACKOFF_MS)
+}
 
 /// Client for a single MCP server connection.
 pub struct McpClient {
@@ -195,5 +214,115 @@ impl McpClient {
         self.tools.clear();
         self.resources.clear();
         self.status = McpConnectionStatus::Disconnected;
+    }
+
+    /// Attempt to reconnect to the MCP server with exponential backoff.
+    ///
+    /// Drops the current transport (if any) and retries [`connect`] up
+    /// to `max_attempts` times. Between attempts the client sleeps for
+    /// a delay that doubles each try, capped at 30 s. Returns the last
+    /// error if every attempt fails.
+    ///
+    /// Use this after a transient transport failure (subprocess exit,
+    /// network hiccup) to restore tool discovery without asking the
+    /// user to restart the session.
+    pub async fn reconnect_with_backoff(&mut self, max_attempts: u32) -> Result<(), String> {
+        if max_attempts == 0 {
+            return Err("max_attempts must be greater than zero".to_string());
+        }
+
+        // Drop the stale transport so `connect` can install a fresh one.
+        if let Some(transport) = self.transport.take() {
+            transport.shutdown().await;
+        }
+        self.tools.clear();
+        self.resources.clear();
+
+        let mut last_err = String::new();
+        for attempt in 0..max_attempts {
+            if attempt > 0 {
+                let delay_ms = backoff_delay_ms(attempt - 1);
+                debug!(
+                    "MCP '{}' reconnect attempt {}/{} — waiting {} ms",
+                    self.config.name,
+                    attempt + 1,
+                    max_attempts,
+                    delay_ms
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+
+            match self.connect().await {
+                Ok(()) => {
+                    info!(
+                        "MCP '{}' reconnected on attempt {}",
+                        self.config.name,
+                        attempt + 1
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(
+                        "MCP '{}' reconnect attempt {} failed: {}",
+                        self.config.name,
+                        attempt + 1,
+                        e
+                    );
+                    last_err = e;
+                }
+            }
+        }
+
+        self.status = McpConnectionStatus::Error(last_err.clone());
+        Err(format!(
+            "MCP '{}' failed to reconnect after {max_attempts} attempts: {last_err}",
+            self.config.name
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_schedule_doubles_until_cap() {
+        // 1s → 2s → 4s → 8s → 16s → 30s (capped) → 30s …
+        assert_eq!(backoff_delay_ms(0), 1_000);
+        assert_eq!(backoff_delay_ms(1), 2_000);
+        assert_eq!(backoff_delay_ms(2), 4_000);
+        assert_eq!(backoff_delay_ms(3), 8_000);
+        assert_eq!(backoff_delay_ms(4), 16_000);
+        assert_eq!(backoff_delay_ms(5), MAX_BACKOFF_MS);
+        assert_eq!(backoff_delay_ms(10), MAX_BACKOFF_MS);
+        // Huge attempt counts must not panic from shift overflow.
+        assert_eq!(backoff_delay_ms(u32::MAX), MAX_BACKOFF_MS);
+    }
+
+    #[test]
+    fn backoff_is_monotonic_non_decreasing() {
+        let mut prev = 0;
+        for a in 0..40 {
+            let d = backoff_delay_ms(a);
+            assert!(d >= prev, "backoff decreased at attempt {a}: {prev} -> {d}");
+            prev = d;
+        }
+    }
+
+    #[tokio::test]
+    async fn reconnect_zero_attempts_is_rejected() {
+        let mut client = McpClient::new(McpServerConfig {
+            transport: McpTransport::Stdio {
+                command: "/bin/false".to_string(),
+                args: Vec::new(),
+            },
+            name: "test".to_string(),
+            env: Default::default(),
+        });
+        let err = client.reconnect_with_backoff(0).await.unwrap_err();
+        assert!(
+            err.contains("max_attempts"),
+            "expected max_attempts rejection, got: {err}"
+        );
     }
 }
