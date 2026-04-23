@@ -169,6 +169,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "reload",
+        aliases: &[],
+        description: "Rescan skills / rules / agents / hooks / MCP from disk",
+        hidden: false,
+    },
+    Command {
         name: "init",
         aliases: &[],
         description: "Initialize project config (.agent/settings.toml)",
@@ -1068,6 +1074,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
         }
         Some("output-style") | Some("style") => {
             execute_output_style(args, engine);
+            CommandResult::Handled
+        }
+        Some("reload") => {
+            execute_reload(engine);
             CommandResult::Handled
         }
         Some("init") => {
@@ -3429,6 +3439,37 @@ fn execute_output_style(args: Option<&str>, engine: &mut QueryEngine) {
     // The prompt-hash calculation includes `response_style`, so the
     // cache invalidates automatically on the next turn.
     println!("Response style set to '{}'.", new_style.name());
+}
+
+/// Execute `/reload` — rescan on-disk extensions and invalidate the
+/// cached system prompt so they're surfaced in the next turn.
+///
+/// Counts are computed by re-reading the same files the system-prompt
+/// builder and coordinator read at startup. Nothing persistent is
+/// mutated — `/reload` is idempotent and safe to run any time.
+fn execute_reload(engine: &mut QueryEngine) {
+    let cwd = std::path::PathBuf::from(&engine.state().cwd);
+
+    let skills = agent_code_lib::skills::SkillRegistry::load_all(Some(&cwd));
+    let skill_count = skills.all().len();
+
+    // Agent registry — rebuild with defaults + on-disk definitions.
+    let mut agent_registry = agent_code_lib::services::coordinator::AgentRegistry::with_defaults();
+    agent_registry.load_from_disk(Some(&cwd));
+    let agent_count = agent_registry.list().len();
+
+    let hook_count = engine.state().config.hooks.len();
+    let mcp_count = engine.state().config.mcp_servers.len();
+
+    // Clear the cached system prompt so new skills appear on the very
+    // next turn.
+    engine.reset_system_prompt_cache();
+
+    println!(
+        "Reloaded: {skill_count} skill(s) · {agent_count} agent(s) \
+         · {hook_count} hook(s) · {mcp_count} MCP server(s)"
+    );
+    println!("System prompt cache cleared; changes take effect on next turn.");
 }
 
 #[cfg(test)]

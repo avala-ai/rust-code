@@ -146,6 +146,17 @@ impl QueryEngine {
         &mut self.state
     }
 
+    /// Drop the cached system prompt so it's rebuilt on the next turn.
+    ///
+    /// Called from `/reload` after the caller has done whatever it
+    /// needs to do to make the on-disk extensions (skills, rules,
+    /// agents, hooks, MCP) appear in the new prompt. Skills and rules
+    /// are re-read from disk during `build_system_prompt`, so clearing
+    /// the cache is sufficient to pick them up.
+    pub fn reset_system_prompt_cache(&mut self) {
+        self.cached_system_prompt = None;
+    }
+
     /// Install a Ctrl+C handler that triggers the cancellation token.
     /// Call this once at startup. Subsequent Ctrl+C signals during a
     /// turn will cancel the active operation instead of killing the process.
