@@ -426,6 +426,12 @@ pub const COMMANDS: &[Command] = &[
         description: "Open a GitHub issue prefilled with session context (title optional)",
         hidden: false,
     },
+    Command {
+        name: "profile",
+        aliases: &[],
+        description: "Save/load/list/delete named config profiles (try /profile help)",
+        hidden: false,
+    },
 ];
 
 /// Execute a slash command. Returns how to proceed.
@@ -1710,6 +1716,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             );
             CommandResult::Prompt(prompt)
         }
+        Some("profile") => {
+            execute_profile(args, engine);
+            CommandResult::Handled
+        }
         Some("effort") => {
             let task = args.unwrap_or("").trim();
             let prompt = if task.is_empty() {
@@ -2479,6 +2489,91 @@ fn execute_env() {
         "  {} tracked variables total; set but not listed variables are not read by agent-code.",
         ENV_VARS.len()
     );
+}
+
+/// Execute `/profile` with its sub-commands.
+///
+///   /profile                    list (same as `/profile list`)
+///   /profile list               list saved profiles
+///   /profile save <name>        save current config as <name>
+///   /profile load <name>        replace runtime config with <name>
+///   /profile delete <name>      delete <name>
+///   /profile help               show usage
+fn execute_profile(args: Option<&str>, engine: &mut QueryEngine) {
+    let raw = args.map(|s| s.trim()).unwrap_or("");
+    let (subcmd, rest) = raw
+        .split_once(char::is_whitespace)
+        .map(|(a, b)| (a.trim(), b.trim()))
+        .unwrap_or((raw, ""));
+
+    match subcmd {
+        "" | "list" => {
+            let profiles = agent_code_lib::services::profiles::list_profiles();
+            if profiles.is_empty() {
+                println!("No saved profiles.");
+                println!("Usage: /profile save <name>");
+                return;
+            }
+            println!("Saved profiles:");
+            for p in &profiles {
+                println!("  {}  — model={}", p.name, p.model);
+            }
+        }
+        "save" => {
+            if rest.is_empty() {
+                println!("Usage: /profile save <name>");
+                return;
+            }
+            match agent_code_lib::services::profiles::save_profile(rest, &engine.state().config) {
+                Ok(path) => println!("Saved profile '{rest}' to {}", path.display()),
+                Err(e) => eprintln!("Failed to save profile: {e}"),
+            }
+        }
+        "load" => {
+            if rest.is_empty() {
+                println!("Usage: /profile load <name>");
+                return;
+            }
+            match agent_code_lib::services::profiles::load_profile(rest) {
+                Ok(new_config) => {
+                    engine.state_mut().config = new_config;
+                    println!("Loaded profile '{rest}'. Runtime config replaced.");
+                    println!("Note: env var overrides (AGENT_CODE_MODEL etc.) are NOT re-applied.");
+                }
+                Err(e) => eprintln!("Failed to load profile: {e}"),
+            }
+        }
+        "delete" | "rm" => {
+            if rest.is_empty() {
+                println!("Usage: /profile delete <name>");
+                return;
+            }
+            match agent_code_lib::services::profiles::delete_profile(rest) {
+                Ok(true) => println!("Deleted profile '{rest}'."),
+                Ok(false) => println!("No profile named '{rest}'."),
+                Err(e) => eprintln!("Failed to delete profile: {e}"),
+            }
+        }
+        "help" => {
+            println!("Usage:");
+            println!("  /profile                   list saved profiles");
+            println!("  /profile list              (same as above)");
+            println!("  /profile save <name>       save current config as a new profile");
+            println!("  /profile load <name>       replace runtime config with <name>");
+            println!("  /profile delete <name>     remove <name>");
+            println!();
+            println!(
+                "Profiles are full config snapshots stored under \
+                 <config_dir>/agent-code/profiles/<name>.toml. Loading one \
+                 replaces the runtime config wholesale; merging is intentionally \
+                 not supported."
+            );
+        }
+        other => {
+            eprintln!("Unknown subcommand: {other}");
+            println!("Try /profile help");
+        }
+    }
 }
 
 #[cfg(test)]
