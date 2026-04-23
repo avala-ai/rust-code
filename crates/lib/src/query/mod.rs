@@ -187,6 +187,24 @@ impl QueryEngine {
         let user_msg = user_message(user_input);
         self.state.push_message(user_msg);
 
+        // PreTurn hooks fire after user input is in history, before the
+        // LLM is called. Gives hooks a chance to reject input (e.g. a
+        // content-policy guard can abort by returning non-zero). Exit
+        // code is not enforced today — output is captured and the turn
+        // proceeds regardless — but the event being fired means hooks
+        // configured for `pre_turn` will actually run.
+        let _pre_turn_results = self
+            .hooks
+            .run_hooks(
+                &HookEvent::PreTurn,
+                None,
+                &serde_json::json!({
+                    "turn": self.state.turn_count + 1,
+                    "user_input_preview": user_input.chars().take(200).collect::<String>(),
+                }),
+            )
+            .await;
+
         let max_turns = self.config.max_turns.unwrap_or(50);
         let mut compact_tracking = CompactTracking::default();
         let mut retry_state = crate::llm::retry::RetryState::default();
@@ -661,6 +679,21 @@ impl QueryEngine {
                 info!("Turn complete (no tool calls)");
                 sink.on_turn_complete(turn + 1);
                 self.state.is_query_active = false;
+
+                // PostTurn hooks fire on successful completion. Not fired
+                // on cancel / error paths — hooks shouldn't have to
+                // guard against "did the turn actually succeed?".
+                let _post_turn_results = self
+                    .hooks
+                    .run_hooks(
+                        &HookEvent::PostTurn,
+                        None,
+                        &serde_json::json!({
+                            "turn": turn + 1,
+                            "total_turns": self.state.turn_count,
+                        }),
+                    )
+                    .await;
 
                 // Fire background memory extraction (fire-and-forget).
                 // Only runs if feature enabled and memory directory exists.

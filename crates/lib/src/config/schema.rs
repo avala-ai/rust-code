@@ -370,6 +370,15 @@ pub enum HookEvent {
     PreToolUse,
     PostToolUse,
     UserPromptSubmit,
+    /// Fired before each agent turn starts (after user input is added to
+    /// history, before the LLM is called). Hook body receives the turn
+    /// number and user input via env vars.
+    PreTurn,
+    /// Fired after each agent turn completes (after the final assistant
+    /// message is appended to history). Hook body receives turn number
+    /// and tool-call count via env vars. Not fired if the turn was
+    /// cancelled or errored out.
+    PostTurn,
 }
 
 /// A configured hook action.
@@ -624,6 +633,22 @@ mod tests {
         assert_eq!(json, "\"user_prompt_submit\"");
         let back: HookEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(back, HookEvent::UserPromptSubmit);
+    }
+
+    #[test]
+    fn hook_event_serde_roundtrip_pre_turn() {
+        let json = serde_json::to_string(&HookEvent::PreTurn).unwrap();
+        assert_eq!(json, "\"pre_turn\"");
+        let back: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, HookEvent::PreTurn);
+    }
+
+    #[test]
+    fn hook_event_serde_roundtrip_post_turn() {
+        let json = serde_json::to_string(&HookEvent::PostTurn).unwrap();
+        assert_eq!(json, "\"post_turn\"");
+        let back: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, HookEvent::PostTurn);
     }
 
     // ---- HookAction serde round-trip ----
