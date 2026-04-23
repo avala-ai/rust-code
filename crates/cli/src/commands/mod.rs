@@ -2254,6 +2254,25 @@ fn format_hook_event(event: &agent_code_lib::config::HookEvent) -> &'static str 
     }
 }
 
+/// Parse a user-typed hook event name into the canonical enum variant.
+/// Accepts the same snake_case names that `format_hook_event` produces
+/// AND the more casual forms users tend to type (hyphens, mixed case).
+fn parse_hook_event(raw: &str) -> Option<agent_code_lib::config::HookEvent> {
+    use agent_code_lib::config::HookEvent;
+    let normalized = raw.trim().replace('-', "_").to_ascii_lowercase();
+    Some(match normalized.as_str() {
+        "session_start" => HookEvent::SessionStart,
+        "session_stop" => HookEvent::SessionStop,
+        "pre_tool_use" => HookEvent::PreToolUse,
+        "post_tool_use" => HookEvent::PostToolUse,
+        "user_prompt_submit" => HookEvent::UserPromptSubmit,
+        "pre_turn" => HookEvent::PreTurn,
+        "post_turn" => HookEvent::PostTurn,
+        "pre_compact" => HookEvent::PreCompact,
+        _ => return None,
+    })
+}
+
 fn execute_hooks(args: Option<&str>, engine: &QueryEngine) {
     let trimmed = args.map(str::trim).unwrap_or("");
 
@@ -2279,6 +2298,57 @@ fn execute_hooks(args: Option<&str>, engine: &QueryEngine) {
         return;
     }
 
+    // `/hooks preview <event>` — list which configured hooks would fire
+    // for a given event name, without running them. Useful for auditing
+    // a fresh config ("did my guardrail register?") and catching typos
+    // in the event name — a misspelled event silently never fires, so
+    // this is the only way to verify match coverage.
+    if let Some(rest) = trimmed
+        .strip_prefix("preview ")
+        .or_else(|| trimmed.strip_prefix("preview"))
+    {
+        let event_arg = rest.trim();
+        if event_arg.is_empty() {
+            println!("Usage: /hooks preview <event>");
+            println!("Run `/hooks events` for the event catalog.");
+            return;
+        }
+        let Some(event) = parse_hook_event(event_arg) else {
+            println!("Unknown hook event: {event_arg:?}");
+            println!("Run `/hooks events` for the supported names.");
+            return;
+        };
+        let matches: Vec<_> = engine
+            .state()
+            .config
+            .hooks
+            .iter()
+            .filter(|h| h.event == event)
+            .collect();
+        let name = format_hook_event(&event);
+        if matches.is_empty() {
+            println!("No configured hooks match event '{name}'.");
+            return;
+        }
+        println!(
+            "Hooks that would fire for '{name}' ({count}):",
+            count = matches.len()
+        );
+        for (i, hook) in matches.iter().enumerate() {
+            let tool_filter = hook
+                .tool_name
+                .as_deref()
+                .map(|t| format!(" (tool={t})"))
+                .unwrap_or_default();
+            println!(
+                "  {:>2}. {}{tool_filter}",
+                i + 1,
+                format_hook_action(&hook.action)
+            );
+        }
+        return;
+    }
+
     let hooks = &engine.state().config.hooks;
     if hooks.is_empty() {
         println!("No hooks configured.");
@@ -2301,7 +2371,10 @@ fn execute_hooks(args: Option<&str>, engine: &QueryEngine) {
         println!("       {}", format_hook_action(&hook.action));
     }
     println!();
-    println!("Run `/hooks events` for the event catalog, `/hooks example` for a snippet.");
+    println!(
+        "Run `/hooks events` for the event catalog, `/hooks example` for a snippet, \
+         or `/hooks preview <event>` to see what would fire."
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -5392,6 +5465,70 @@ mod tests {
         use std::collections::HashSet;
         let names: HashSet<&str> = HOOK_EVENT_CATALOG.iter().map(|(n, _)| *n).collect();
         assert_eq!(names.len(), HOOK_EVENT_CATALOG.len());
+    }
+
+    #[test]
+    fn parse_hook_event_accepts_canonical_snake_case() {
+        use agent_code_lib::config::HookEvent;
+        assert_eq!(
+            parse_hook_event("session_start"),
+            Some(HookEvent::SessionStart)
+        );
+        assert_eq!(
+            parse_hook_event("pre_tool_use"),
+            Some(HookEvent::PreToolUse)
+        );
+        assert_eq!(
+            parse_hook_event("user_prompt_submit"),
+            Some(HookEvent::UserPromptSubmit)
+        );
+        assert_eq!(parse_hook_event("pre_compact"), Some(HookEvent::PreCompact));
+    }
+
+    #[test]
+    fn parse_hook_event_accepts_hyphenated_and_mixed_case() {
+        use agent_code_lib::config::HookEvent;
+        // Users commonly type `pre-tool-use` or `Pre-Tool-Use` — the
+        // parser normalizes both to the canonical variant.
+        assert_eq!(
+            parse_hook_event("pre-tool-use"),
+            Some(HookEvent::PreToolUse)
+        );
+        assert_eq!(
+            parse_hook_event("Pre-Tool-Use"),
+            Some(HookEvent::PreToolUse)
+        );
+        assert_eq!(
+            parse_hook_event("SESSION_START"),
+            Some(HookEvent::SessionStart)
+        );
+    }
+
+    #[test]
+    fn parse_hook_event_trims_whitespace() {
+        use agent_code_lib::config::HookEvent;
+        assert_eq!(parse_hook_event("  pre_turn  "), Some(HookEvent::PreTurn));
+    }
+
+    #[test]
+    fn parse_hook_event_rejects_unknown_names() {
+        assert!(parse_hook_event("").is_none());
+        assert!(parse_hook_event("pre_coffee").is_none());
+        assert!(parse_hook_event("session-started").is_none()); // close but wrong
+    }
+
+    #[test]
+    fn parse_hook_event_covers_every_variant_in_catalog() {
+        // Every name in HOOK_EVENT_CATALOG must round-trip through the
+        // parser. If someone adds a new event to the catalog without
+        // updating parse_hook_event, `/hooks preview` would silently
+        // reject the new event name.
+        for (name, _) in HOOK_EVENT_CATALOG {
+            assert!(
+                parse_hook_event(name).is_some(),
+                "catalog entry {name:?} is not parseable — update parse_hook_event"
+            );
+        }
     }
 
     // ---- /history helpers ----
