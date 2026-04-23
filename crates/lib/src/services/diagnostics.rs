@@ -343,7 +343,77 @@ pub async fn run_all(cwd: &Path, config: &crate::config::Config) -> Vec<Check> {
         }
     }
 
+    // Hook configuration validation.
+    //
+    // Catches broken hooks early — a malformed URL or empty command
+    // would otherwise silently fire and do nothing (shell hooks fail
+    // their subprocess; HTTP hooks fail their request), leaving the
+    // user to discover it the hard way when the expected side-effect
+    // doesn't happen. Emits one pass line per N valid hooks, plus one
+    // fail per broken entry.
+    if !config.hooks.is_empty() {
+        let mut broken = 0usize;
+        for (i, hook) in config.hooks.iter().enumerate() {
+            match &hook.action {
+                crate::config::HookAction::Shell { command } => {
+                    if command.trim().is_empty() {
+                        checks.push(Check::fail(
+                            &format!("hooks:entry:{i}"),
+                            &format!("Hook #{i} ({:?}): shell command is empty", hook.event),
+                        ));
+                        broken += 1;
+                    }
+                }
+                crate::config::HookAction::Http { url, method } => {
+                    if let Err(e) = reqwest::Url::parse(url) {
+                        checks.push(Check::fail(
+                            &format!("hooks:entry:{i}"),
+                            &format!(
+                                "Hook #{i} ({:?}): url {url:?} is malformed: {e}",
+                                hook.event
+                            ),
+                        ));
+                        broken += 1;
+                    } else if let Some(m) = method
+                        && !is_valid_http_method(m)
+                    {
+                        checks.push(Check::warn(
+                            &format!("hooks:entry:{i}"),
+                            &format!(
+                                "Hook #{i} ({:?}): method {m:?} is not a recognized HTTP verb",
+                                hook.event
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        let total = config.hooks.len();
+        let ok = total - broken;
+        if broken == 0 {
+            checks.push(Check::pass(
+                "hooks:count",
+                &format!("{total} hook(s) configured, all valid"),
+            ));
+        } else {
+            checks.push(Check::fail(
+                "hooks:count",
+                &format!("{ok}/{total} hook(s) valid ({broken} broken)"),
+            ));
+        }
+    }
+
     checks
+}
+
+/// True when the given string is one of the HTTP verbs the hook
+/// dispatcher actually recognizes. Anything else gets treated as POST
+/// at runtime, which is almost certainly wrong — warn early.
+fn is_valid_http_method(m: &str) -> bool {
+    matches!(
+        m.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+    )
 }
 
 #[cfg(test)]
@@ -460,6 +530,124 @@ mod tests {
         // Should have a provider:env check for AZURE_OPENAI_API_KEY.
         let env_check = checks.iter().find(|c| c.name == "provider:env");
         assert!(env_check.is_some());
+    }
+
+    #[test]
+    fn is_valid_http_method_accepts_common_verbs() {
+        assert!(is_valid_http_method("GET"));
+        assert!(is_valid_http_method("POST"));
+        assert!(is_valid_http_method("PUT"));
+        assert!(is_valid_http_method("PATCH"));
+        assert!(is_valid_http_method("DELETE"));
+        assert!(is_valid_http_method("get")); // case-insensitive
+    }
+
+    #[test]
+    fn is_valid_http_method_rejects_typos() {
+        assert!(!is_valid_http_method("GETS"));
+        assert!(!is_valid_http_method("HEAD")); // not in our dispatcher
+        assert!(!is_valid_http_method(""));
+        assert!(!is_valid_http_method("POSTT"));
+    }
+
+    #[tokio::test]
+    async fn test_hook_validation_skipped_when_no_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::config::Config::default();
+        let checks = run_all(dir.path(), &config).await;
+        assert!(
+            !checks.iter().any(|c| c.name.starts_with("hooks:")),
+            "no hook checks should fire when config.hooks is empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hook_validation_passes_all_valid_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.hooks.push(crate::config::HookDefinition {
+            event: crate::config::HookEvent::SessionStart,
+            tool_name: None,
+            action: crate::config::HookAction::Shell {
+                command: "echo ok".into(),
+            },
+        });
+        config.hooks.push(crate::config::HookDefinition {
+            event: crate::config::HookEvent::PostToolUse,
+            tool_name: None,
+            action: crate::config::HookAction::Http {
+                url: "https://example.com/audit".into(),
+                method: Some("POST".into()),
+            },
+        });
+        let checks = run_all(dir.path(), &config).await;
+        let count = checks.iter().find(|c| c.name == "hooks:count").unwrap();
+        assert_eq!(count.status, CheckStatus::Pass);
+        assert!(count.detail.contains("2 hook(s)"));
+    }
+
+    #[tokio::test]
+    async fn test_hook_validation_flags_empty_shell_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.hooks.push(crate::config::HookDefinition {
+            event: crate::config::HookEvent::SessionStart,
+            tool_name: None,
+            action: crate::config::HookAction::Shell {
+                command: "   ".into(),
+            },
+        });
+        let checks = run_all(dir.path(), &config).await;
+        let entry = checks
+            .iter()
+            .find(|c| c.name == "hooks:entry:0")
+            .expect("broken hook should have an entry check");
+        assert_eq!(entry.status, CheckStatus::Fail);
+        assert!(entry.detail.contains("empty"));
+
+        let count = checks.iter().find(|c| c.name == "hooks:count").unwrap();
+        assert_eq!(count.status, CheckStatus::Fail);
+    }
+
+    #[tokio::test]
+    async fn test_hook_validation_flags_malformed_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.hooks.push(crate::config::HookDefinition {
+            event: crate::config::HookEvent::PostToolUse,
+            tool_name: None,
+            action: crate::config::HookAction::Http {
+                url: "not a url".into(),
+                method: None,
+            },
+        });
+        let checks = run_all(dir.path(), &config).await;
+        let entry = checks
+            .iter()
+            .find(|c| c.name == "hooks:entry:0")
+            .expect("broken hook should have an entry check");
+        assert_eq!(entry.status, CheckStatus::Fail);
+        assert!(entry.detail.contains("malformed"));
+    }
+
+    #[tokio::test]
+    async fn test_hook_validation_warns_on_unknown_http_method() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.hooks.push(crate::config::HookDefinition {
+            event: crate::config::HookEvent::PostToolUse,
+            tool_name: None,
+            action: crate::config::HookAction::Http {
+                url: "https://example.com/hook".into(),
+                method: Some("FETCH".into()), // invalid verb
+            },
+        });
+        let checks = run_all(dir.path(), &config).await;
+        let entry = checks
+            .iter()
+            .find(|c| c.name == "hooks:entry:0")
+            .expect("bad method should surface as a warn entry");
+        assert_eq!(entry.status, CheckStatus::Warn);
     }
 
     #[tokio::test]
