@@ -273,7 +273,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "files",
         aliases: &[],
-        description: "List files in the working directory",
+        description: "List files referenced in the current session (reads, writes, @mentions)",
         hidden: false,
     },
     Command {
@@ -1147,6 +1147,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             execute_fast(engine);
             CommandResult::Handled
         }
+        Some("files") => {
+            execute_files(engine);
+            CommandResult::Handled
+        }
         Some("output-style") | Some("style") => {
             execute_output_style(args, engine);
             CommandResult::Handled
@@ -1359,11 +1363,6 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
         }
         Some("log") => CommandResult::Prompt(
             "Show the last 10 git commits with `git log --oneline -10`.".into(),
-        ),
-        Some("files") => CommandResult::Prompt(
-            "List files in the current directory. Use `ls -la` for details \
-                 or Glob for pattern matching."
-                .into(),
         ),
         Some("scroll") => {
             let messages = &engine.state().messages;
@@ -3733,6 +3732,165 @@ fn default_fast_model(current: &str) -> String {
     }
 }
 
+/// Source through which a file entered the session's attention — used
+/// in `/files` output so users can tell what role the file played.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileSource {
+    /// User typed `@path` in a prompt; content was inlined.
+    Mention,
+    /// A FileRead tool call opened the file.
+    Read,
+    /// A FileWrite tool call created or overwrote the file.
+    Write,
+    /// A FileEdit or MultiEdit tool call modified the file.
+    Edit,
+}
+
+impl FileSource {
+    fn tag(&self) -> &'static str {
+        match self {
+            Self::Mention => "@",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Edit => "edit",
+        }
+    }
+}
+
+/// Gather file references from the conversation history.
+///
+/// Returns a list of `(path, sources, count)` sorted by path, where
+/// `sources` is the set of roles the file played (read, edit, etc.)
+/// and `count` is the total number of references across tool calls
+/// and `@path` mentions.
+pub fn collect_session_files(
+    messages: &[agent_code_lib::llm::message::Message],
+) -> Vec<(String, Vec<FileSource>, usize)> {
+    use agent_code_lib::llm::message::{ContentBlock, Message};
+    use std::collections::HashMap;
+
+    let mut by_path: HashMap<String, (std::collections::HashSet<FileSource>, usize)> =
+        HashMap::new();
+
+    for msg in messages {
+        match msg {
+            Message::User(u) => {
+                for block in &u.content {
+                    if let ContentBlock::Text { text } = block {
+                        for path in extract_at_mentions(text) {
+                            let entry = by_path.entry(path).or_default();
+                            entry.0.insert(FileSource::Mention);
+                            entry.1 += 1;
+                        }
+                    }
+                }
+            }
+            Message::Assistant(a) => {
+                for block in &a.content {
+                    if let ContentBlock::ToolUse { name, input, .. } = block
+                        && let Some((path, source)) = extract_tool_file(name, input)
+                    {
+                        let entry = by_path.entry(path).or_default();
+                        entry.0.insert(source);
+                        entry.1 += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out: Vec<(String, Vec<FileSource>, usize)> = by_path
+        .into_iter()
+        .map(|(path, (sources, count))| {
+            let mut sources: Vec<_> = sources.into_iter().collect();
+            sources.sort_by_key(|s| s.tag());
+            (path, sources, count)
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Extract `@path` references from a user text block. Matches the
+/// same rule as the @-mention expander in the REPL: `@` at start or
+/// after whitespace, followed by non-whitespace chars containing a
+/// `/` or `.` (so bare words like `@foo` aren't mistaken for paths).
+fn extract_at_mentions(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@'
+            && (i == 0 || chars[i - 1].is_whitespace())
+            && i + 1 < chars.len()
+            && !chars[i + 1].is_whitespace()
+        {
+            let start = i + 1;
+            let mut end = start;
+            while end < chars.len() && !chars[end].is_whitespace() {
+                end += 1;
+            }
+            let path: String = chars[start..end].iter().collect();
+            if path.contains('/') || path.contains('.') {
+                out.push(path);
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// If `tool_name` is a file-accessing tool and `input` has a path-ish
+/// field, return the path and the access mode.
+fn extract_tool_file(tool_name: &str, input: &serde_json::Value) -> Option<(String, FileSource)> {
+    let path_field = input
+        .get("path")
+        .or_else(|| input.get("file_path"))
+        .or_else(|| input.get("notebook_path"))
+        .and_then(|v| v.as_str())?;
+    let source = match tool_name {
+        "FileRead" | "NotebookRead" => FileSource::Read,
+        "FileWrite" | "Write" => FileSource::Write,
+        "FileEdit" | "Edit" | "MultiEdit" | "NotebookEdit" => FileSource::Edit,
+        _ => return None,
+    };
+    Some((path_field.to_string(), source))
+}
+
+/// Execute `/files` — render the collected file references as a
+/// compact table so the user knows what the agent has touched.
+fn execute_files(engine: &QueryEngine) {
+    let files = collect_session_files(&engine.state().messages);
+    if files.is_empty() {
+        println!("No files referenced yet this session.");
+        println!("Files appear here when you @-mention them or when a tool reads/writes them.");
+        return;
+    }
+
+    println!("Files referenced this session ({}):", files.len());
+    println!();
+    let path_width = files
+        .iter()
+        .map(|(p, _, _)| p.len())
+        .max()
+        .unwrap_or(8)
+        .min(60);
+    for (path, sources, count) in &files {
+        let tags: Vec<String> = sources.iter().map(|s| s.tag().to_string()).collect();
+        let tags_joined = tags.join(",");
+        println!(
+            "  {:<pw$}  [{:<8}] ×{count}",
+            path,
+            tags_joined,
+            pw = path_width,
+        );
+    }
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4125,5 +4283,84 @@ mod tests {
         // api.fast_model explicitly for non-mainstream models.
         assert_eq!(default_fast_model("deepseek-coder"), "haiku");
         assert_eq!(default_fast_model(""), "haiku");
+    }
+
+    // ---- /files helpers ----
+
+    #[test]
+    fn extract_at_mentions_simple() {
+        let text = "please look at @src/main.rs and @README.md";
+        assert_eq!(
+            extract_at_mentions(text),
+            vec!["src/main.rs".to_string(), "README.md".to_string()],
+        );
+    }
+
+    #[test]
+    fn extract_at_mentions_rejects_email() {
+        // `@` not preceded by whitespace shouldn't trigger.
+        assert!(extract_at_mentions("email@example.com").is_empty());
+    }
+
+    #[test]
+    fn extract_at_mentions_requires_path_shape() {
+        // Bare tokens without / or . are not paths.
+        assert!(extract_at_mentions("ping @alice").is_empty());
+        // Extension alone still counts.
+        assert_eq!(
+            extract_at_mentions("see @foo.md"),
+            vec!["foo.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_tool_file_handles_known_tools() {
+        let input = serde_json::json!({"path": "src/lib.rs"});
+        assert_eq!(
+            extract_tool_file("FileRead", &input),
+            Some(("src/lib.rs".to_string(), FileSource::Read))
+        );
+        assert_eq!(
+            extract_tool_file("FileWrite", &input),
+            Some(("src/lib.rs".to_string(), FileSource::Write))
+        );
+        let edit_input = serde_json::json!({"file_path": "src/lib.rs"});
+        assert_eq!(
+            extract_tool_file("FileEdit", &edit_input),
+            Some(("src/lib.rs".to_string(), FileSource::Edit))
+        );
+    }
+
+    #[test]
+    fn extract_tool_file_ignores_unknown_tools() {
+        let input = serde_json::json!({"path": "x"});
+        assert_eq!(extract_tool_file("Bash", &input), None);
+        assert_eq!(extract_tool_file("Grep", &input), None);
+    }
+
+    #[test]
+    fn collect_session_files_aggregates_by_path() {
+        use agent_code_lib::llm::message::{AssistantMessage, ContentBlock, Message, user_message};
+        let user = user_message("check @src/main.rs");
+        let asst = Message::Assistant(AssistantMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: "2026-04-23T00:00:00Z".into(),
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "FileRead".into(),
+                input: serde_json::json!({"path": "src/main.rs"}),
+            }],
+            model: None,
+            usage: None,
+            stop_reason: None,
+            request_id: None,
+        });
+        let files = collect_session_files(&[user, asst]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "src/main.rs");
+        // Both a mention and a read — sorted by tag label.
+        let tags: Vec<_> = files[0].1.iter().map(|s| s.tag()).collect();
+        assert_eq!(tags, vec!["@", "read"]);
+        assert_eq!(files[0].2, 2);
     }
 }
