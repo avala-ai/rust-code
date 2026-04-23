@@ -99,6 +99,21 @@ enum Event<'a> {
         message: &'a str,
         turn: usize,
     },
+    /// Non-fatal warning surfaced by the engine (budget approaching a
+    /// limit, rate-limit backoff, schema fallback, etc.). JSONL consumers
+    /// need these on stdout so they can tag runs without re-parsing
+    /// stderr.
+    Warning {
+        message: &'a str,
+        turn: usize,
+    },
+    /// Autocompaction just freed context. The human stderr line still
+    /// fires — this event lets consumers surface cost/context shifts
+    /// in dashboards and audit logs.
+    Compact {
+        freed_tokens: u64,
+        turn: usize,
+    },
     SessionEnd {
         turns: usize,
         total_cost_usd: f64,
@@ -219,10 +234,17 @@ impl StreamSink for JsonStreamSink {
     }
 
     fn on_warning(&self, msg: &str) {
+        // Stderr stays for humans tailing the run; stdout JSONL is for
+        // automation consumers that would otherwise lose budget /
+        // rate-limit signals entirely.
+        let turn = self.inner.lock().unwrap().turn;
+        emit(&Event::Warning { message: msg, turn });
         let _ = writeln!(std::io::stderr(), "{msg}");
     }
 
     fn on_compact(&self, freed_tokens: u64) {
+        let turn = self.inner.lock().unwrap().turn;
+        emit(&Event::Compact { freed_tokens, turn });
         let _ = writeln!(std::io::stderr(), "compacted: freed ~{freed_tokens} tokens");
     }
 }
@@ -343,10 +365,59 @@ mod tests {
                 exit_code: 0,
             })
             .unwrap(),
+            serde_json::to_value(Event::Warning {
+                message: "budget exceeded\nsecond line",
+                turn: 2,
+            })
+            .unwrap(),
+            serde_json::to_value(Event::Compact {
+                freed_tokens: 1500,
+                turn: 3,
+            })
+            .unwrap(),
         ];
         for val in events {
             let line = serde_json::to_string(&val).unwrap();
             assert!(!line.contains('\n'), "event must be single-line: {line}",);
         }
+    }
+
+    #[test]
+    fn event_serialization_warning_uses_snake_case_type() {
+        let event = Event::Warning {
+            message: "budget approaching",
+            turn: 4,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"warning""#));
+        assert!(json.contains(r#""message":"budget approaching""#));
+        assert!(json.contains(r#""turn":4"#));
+    }
+
+    #[test]
+    fn event_serialization_compact_uses_snake_case_type() {
+        let event = Event::Compact {
+            freed_tokens: 2048,
+            turn: 7,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"compact""#));
+        assert!(json.contains(r#""freed_tokens":2048"#));
+        assert!(json.contains(r#""turn":7"#));
+    }
+
+    #[test]
+    fn warning_event_preserves_turn_from_sink_state() {
+        // Warnings need the current turn stamped in the envelope so
+        // consumers can correlate them with the surrounding TurnComplete.
+        // This is a structural check — the sink reads `inner.turn` under
+        // the same lock that on_turn_start writes to.
+        let sink = JsonStreamSink::new("test-model");
+        sink.on_turn_start(9);
+        // We can't easily capture the stdout line from here without a
+        // test scaffold; assert the internal state is what on_warning
+        // will read instead.
+        let captured_turn = sink.inner.lock().unwrap().turn;
+        assert_eq!(captured_turn, 9);
     }
 }
