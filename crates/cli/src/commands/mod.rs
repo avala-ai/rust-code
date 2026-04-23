@@ -193,6 +193,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "editor",
+        aliases: &["ed"],
+        description: "Compose a multi-line prompt in $EDITOR and submit it",
+        hidden: false,
+    },
+    Command {
         name: "branch",
         aliases: &[],
         description: "Show or switch git branch",
@@ -1144,6 +1150,17 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             execute_copy(engine);
             CommandResult::Handled
         }
+        Some("editor") | Some("ed") => match execute_editor(args) {
+            Ok(Some(prompt)) => CommandResult::Prompt(prompt),
+            Ok(None) => {
+                println!("Editor closed with empty content; nothing to send.");
+                CommandResult::Handled
+            }
+            Err(e) => {
+                eprintln!("Failed to launch editor: {e}");
+                CommandResult::Handled
+            }
+        },
         Some("branch") => {
             if let Some(name) = args {
                 CommandResult::Prompt(format!("Switch to git branch '{name}' and confirm."))
@@ -3472,6 +3489,106 @@ fn execute_reload(engine: &mut QueryEngine) {
     println!("System prompt cache cleared; changes take effect on next turn.");
 }
 
+/// Execute `/editor` — open `$EDITOR` on a temp file, return the
+/// contents as a prompt when the editor exits.
+///
+/// Resolves the editor in this order:
+///   1. `$VISUAL`
+///   2. `$EDITOR`
+///   3. `vim` if present on PATH
+///   4. `vi` if present on PATH
+///   5. `nano` if present on PATH
+///
+/// If `args` is non-empty it's used as the initial file contents so
+/// users can pre-fill with `/editor fix the bug in ...`.
+fn execute_editor(args: Option<&str>) -> Result<Option<String>, String> {
+    let editor = resolve_editor().ok_or_else(|| {
+        "No editor found. Set $EDITOR or $VISUAL, or install vim / nano.".to_string()
+    })?;
+
+    let tmp = tempfile::Builder::new()
+        .prefix("agent-code-prompt-")
+        .suffix(".md")
+        .tempfile()
+        .map_err(|e| format!("tempfile: {e}"))?;
+
+    // Pre-fill with args so `/editor start here` works.
+    let initial = args.map(|s| s.trim()).unwrap_or("");
+    if !initial.is_empty() {
+        std::fs::write(tmp.path(), initial).map_err(|e| format!("write: {e}"))?;
+    } else {
+        // Add a header hint that gets stripped on read-back.
+        let hint = "\n\n# ------------------------------------------------------\n\
+                    # Write your prompt above. Save and quit to submit.\n\
+                    # Leave empty to cancel. Lines starting with # are stripped.\n\
+                    # ------------------------------------------------------\n";
+        std::fs::write(tmp.path(), hint).map_err(|e| format!("write: {e}"))?;
+    }
+
+    let status = std::process::Command::new(&editor)
+        .arg(tmp.path())
+        .status()
+        .map_err(|e| format!("spawn {editor}: {e}"))?;
+
+    if !status.success() {
+        return Err(format!("{editor} exited with {status}"));
+    }
+
+    let body = std::fs::read_to_string(tmp.path()).map_err(|e| format!("read: {e}"))?;
+    let cleaned: String = body
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+/// Pick an editor. Returns the binary name/path to spawn.
+fn resolve_editor() -> Option<String> {
+    if let Ok(v) = std::env::var("VISUAL")
+        && !v.trim().is_empty()
+    {
+        return Some(v);
+    }
+    if let Ok(e) = std::env::var("EDITOR")
+        && !e.trim().is_empty()
+    {
+        return Some(e);
+    }
+    for candidate in ["vim", "vi", "nano"] {
+        if which_in_path(candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Cheap `which` — checks if a binary is on PATH.
+fn which_in_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return true;
+        }
+        // Windows: try .exe suffix.
+        if cfg!(target_os = "windows") {
+            let exe = candidate.with_extension("exe");
+            if exe.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3744,5 +3861,92 @@ mod tests {
             + b.system_messages
             + b.tool_schemas;
         assert_eq!(b.total, sum);
+    }
+
+    // ---- /editor helpers ----
+
+    #[test]
+    fn resolve_editor_prefers_visual() {
+        // SAFETY: single-threaded test, restored before exit.
+        let prev_visual = std::env::var_os("VISUAL");
+        let prev_editor = std::env::var_os("EDITOR");
+        unsafe {
+            std::env::set_var("VISUAL", "my-visual");
+            std::env::set_var("EDITOR", "my-editor");
+        }
+        let result = resolve_editor();
+        unsafe {
+            match prev_visual {
+                Some(v) => std::env::set_var("VISUAL", v),
+                None => std::env::remove_var("VISUAL"),
+            }
+            match prev_editor {
+                Some(v) => std::env::set_var("EDITOR", v),
+                None => std::env::remove_var("EDITOR"),
+            }
+        }
+        assert_eq!(result.as_deref(), Some("my-visual"));
+    }
+
+    #[test]
+    fn resolve_editor_falls_back_to_editor_env() {
+        let prev_visual = std::env::var_os("VISUAL");
+        let prev_editor = std::env::var_os("EDITOR");
+        unsafe {
+            std::env::remove_var("VISUAL");
+            std::env::set_var("EDITOR", "my-editor");
+        }
+        let result = resolve_editor();
+        unsafe {
+            match prev_visual {
+                Some(v) => std::env::set_var("VISUAL", v),
+                None => std::env::remove_var("VISUAL"),
+            }
+            match prev_editor {
+                Some(v) => std::env::set_var("EDITOR", v),
+                None => std::env::remove_var("EDITOR"),
+            }
+        }
+        assert_eq!(result.as_deref(), Some("my-editor"));
+    }
+
+    #[test]
+    fn resolve_editor_ignores_empty_env() {
+        let prev_visual = std::env::var_os("VISUAL");
+        let prev_editor = std::env::var_os("EDITOR");
+        unsafe {
+            std::env::set_var("VISUAL", "   ");
+            std::env::set_var("EDITOR", "");
+        }
+        let result = resolve_editor();
+        unsafe {
+            match prev_visual {
+                Some(v) => std::env::set_var("VISUAL", v),
+                None => std::env::remove_var("VISUAL"),
+            }
+            match prev_editor {
+                Some(v) => std::env::set_var("EDITOR", v),
+                None => std::env::remove_var("EDITOR"),
+            }
+        }
+        // Falls through to which_in_path; result depends on host but
+        // should never be the empty/whitespace string from env.
+        assert_ne!(result.as_deref(), Some(""));
+        assert_ne!(result.as_deref(), Some("   "));
+    }
+
+    #[test]
+    fn which_in_path_finds_shell() {
+        // Every unix box we test on has /bin/sh; every Windows has cmd.
+        if cfg!(target_os = "windows") {
+            assert!(which_in_path("cmd"));
+        } else {
+            assert!(which_in_path("sh"));
+        }
+    }
+
+    #[test]
+    fn which_in_path_rejects_missing() {
+        assert!(!which_in_path("binary-that-cannot-possibly-exist-xyz-42"));
     }
 }
