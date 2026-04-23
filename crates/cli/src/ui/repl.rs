@@ -576,88 +576,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 
                 // Toggle shortcuts help panel on "?".
                 if input == "?" {
-                    let t = super::theme::current();
-                    println!();
-                    println!("  {}", "Keyboard Shortcuts".with(t.accent).bold());
-                    println!("  {}", "─".repeat(50).with(t.muted));
-                    println!(
-                        "  {}  {}",
-                        "! command".with(t.text),
-                        "run shell command directly".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "@ path/file".with(t.text),
-                        "attach file contents to prompt".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "& prompt".with(t.text),
-                        "run prompt in background".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "/ + command".with(t.text),
-                        "slash commands (/help to list all)".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "Tab".with(t.text),
-                        "auto-complete /commands".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "\\ + Enter".with(t.text),
-                        "multi-line input".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "Esc / Ctrl+C".with(t.text),
-                        "cancel (Ctrl+C twice to exit)".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "Ctrl+R".with(t.text),
-                        "search history".with(t.muted),
-                    );
-                    println!("  {}  {}", "Ctrl+D".with(t.text), "exit".with(t.muted),);
-                    println!("  {}", "─".repeat(50).with(t.muted));
-                    println!(
-                        "  {}  {}",
-                        "/model <name>".with(t.text),
-                        "switch model".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "/scroll".with(t.text),
-                        "scrollable conversation view".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "/snip <N-M>".with(t.text),
-                        "remove messages from history".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "/fork".with(t.text),
-                        "branch conversation".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "/rewind".with(t.text),
-                        "undo last turn".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "/features".with(t.text),
-                        "show feature flags".with(t.muted),
-                    );
-                    println!(
-                        "  {}  {}",
-                        "/doctor".with(t.text),
-                        "check environment health".with(t.muted),
-                    );
-                    println!();
+                    render_help_panel(engine.state());
                     continue;
                 }
 
@@ -954,6 +873,138 @@ fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
     } else {
         raw
     }
+}
+
+/// Render the interactive help panel shown when the user types `?`.
+///
+/// Pulled out of the REPL loop so it can evolve without cluttering the
+/// main read-dispatch body. Three sections:
+///
+///   * **Current state** — live session info (model, mode, tokens, cost)
+///   * **Keyboard shortcuts** — key bindings and input prefixes
+///   * **Commands** — all non-hidden slash commands, auto-generated from
+///     `COMMANDS`, so new commands show up without touching this panel
+fn render_help_panel(state: &agent_code_lib::state::AppState) {
+    let t = super::theme::current();
+    let divider = "─".repeat(60);
+
+    println!();
+
+    // ---- Current state ----
+    println!("  {}", "Current session".with(t.accent).bold());
+    println!("  {}", divider.as_str().with(t.muted));
+
+    let tokens = state.total_usage.total();
+    let window =
+        agent_code_lib::services::tokens::context_window_for_model(&state.config.api.model);
+    let ctx_pct = if window > 0 {
+        (tokens as f64 / window as f64 * 100.0).round() as u64
+    } else {
+        0
+    };
+    let perm_mode = format!("{:?}", state.config.permissions.default_mode).to_lowercase();
+    let mode_badges: String = {
+        let mut badges: Vec<String> = Vec::new();
+        if state.plan_mode {
+            badges.push("plan".to_string());
+        }
+        if state.brief_mode {
+            badges.push("brief".to_string());
+        }
+        if !state.additional_dirs.is_empty() {
+            badges.push(format!("+{} dirs", state.additional_dirs.len()));
+        }
+        if badges.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", badges.join(", "))
+        }
+    };
+
+    println!(
+        "  {:<14} {}{}",
+        "model".with(t.muted),
+        state.config.api.model.as_str().with(t.text),
+        mode_badges.with(t.accent),
+    );
+    println!(
+        "  {:<14} {}",
+        "permissions".with(t.muted),
+        perm_mode.with(t.text),
+    );
+    println!(
+        "  {:<14} {} (turn {})",
+        "usage".with(t.muted),
+        format!(
+            "{tokens} tokens · {ctx_pct}% of {window} · ${:.4}",
+            state.total_cost_usd
+        )
+        .with(t.text),
+        state.turn_count,
+    );
+
+    // ---- Keyboard shortcuts ----
+    println!();
+    println!("  {}", "Keyboard & input".with(t.accent).bold());
+    println!("  {}", divider.as_str().with(t.muted));
+    let rows = [
+        ("! command", "run shell command directly"),
+        ("@ path/file", "inline file contents in the prompt"),
+        ("& prompt", "run prompt in background"),
+        ("/name", "slash command — Tab to complete"),
+        ("\\ + Enter", "continue on next line"),
+        ("Tab", "auto-complete slash commands"),
+        ("Ctrl+R", "search prompt history"),
+        ("Esc / Ctrl+C", "cancel (Ctrl+C twice to exit)"),
+        ("Ctrl+D", "exit REPL"),
+    ];
+    for (key, desc) in rows {
+        println!("  {:<18} {}", key.with(t.text), desc.with(t.muted));
+    }
+
+    // ---- Commands ----
+    println!();
+    println!(
+        "  {} {}",
+        "Commands".with(t.accent).bold(),
+        format!(
+            "({})",
+            crate::commands::COMMANDS
+                .iter()
+                .filter(|c| !c.hidden)
+                .count()
+        )
+        .with(t.muted),
+    );
+    println!("  {}", divider.as_str().with(t.muted));
+
+    // Auto-generated, sorted alphabetically.
+    let mut cmds: Vec<_> = crate::commands::COMMANDS
+        .iter()
+        .filter(|c| !c.hidden)
+        .collect();
+    cmds.sort_by_key(|c| c.name);
+
+    // Column-align the names.
+    let max_name_len = cmds.iter().map(|c| c.name.len()).max().unwrap_or(10);
+    let name_width = (max_name_len + 2).min(24);
+
+    for cmd in cmds {
+        let alias_suffix = if cmd.aliases.is_empty() {
+            String::new()
+        } else {
+            format!(" (alias: /{})", cmd.aliases.join(", /"))
+        };
+        println!(
+            "  /{:<width$} {}{}",
+            cmd.name.with(t.text),
+            cmd.description.with(t.muted),
+            alias_suffix.with(t.muted),
+            width = name_width,
+        );
+    }
+
+    println!();
 }
 
 /// Expand @path references in user input to include file contents.
