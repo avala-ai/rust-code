@@ -573,6 +573,11 @@ pub fn scrollback_viewer(messages: &[agent_code_lib::llm::message::Message]) {
     let max_scroll = all_lines.len().saturating_sub(view_height);
     let mut scroll: usize = max_scroll; // Start at bottom (most recent).
 
+    // Search state.
+    let mut search_query: Option<String> = None;
+    let mut matches: Vec<usize> = Vec::new();
+    let mut match_idx: usize = 0;
+
     terminal::enable_raw_mode().expect("raw mode");
 
     render_scrollback(
@@ -581,6 +586,9 @@ pub fn scrollback_viewer(messages: &[agent_code_lib::llm::message::Message]) {
         view_height,
         term_w as usize,
         messages.len(),
+        search_query.as_deref(),
+        &matches,
+        match_idx,
     );
 
     loop {
@@ -605,6 +613,38 @@ pub fn scrollback_viewer(messages: &[agent_code_lib::llm::message::Message]) {
                 KeyCode::End => {
                     scroll = max_scroll;
                 }
+                KeyCode::Char('/') => {
+                    // Enter search-input submode. Returns Some(query) on
+                    // Enter, None on Esc/empty.
+                    if let Some(query) = read_search_query(view_height, term_w as usize) {
+                        matches = find_matches(&all_lines, &query);
+                        search_query = Some(query);
+                        match_idx = 0;
+                        if let Some(&first) = matches.first() {
+                            scroll = first.saturating_sub(view_height / 3).min(max_scroll);
+                        }
+                    }
+                }
+                KeyCode::Char('n') => {
+                    if !matches.is_empty() {
+                        match_idx = (match_idx + 1) % matches.len();
+                        scroll = matches[match_idx]
+                            .saturating_sub(view_height / 3)
+                            .min(max_scroll);
+                    }
+                }
+                KeyCode::Char('N') => {
+                    if !matches.is_empty() {
+                        match_idx = if match_idx == 0 {
+                            matches.len() - 1
+                        } else {
+                            match_idx - 1
+                        };
+                        scroll = matches[match_idx]
+                            .saturating_sub(view_height / 3)
+                            .min(max_scroll);
+                    }
+                }
                 _ => continue,
             }
             // Clear and re-render.
@@ -615,6 +655,9 @@ pub fn scrollback_viewer(messages: &[agent_code_lib::llm::message::Message]) {
                 view_height,
                 term_w as usize,
                 messages.len(),
+                search_query.as_deref(),
+                &matches,
+                match_idx,
             );
         }
     }
@@ -624,12 +667,89 @@ pub fn scrollback_viewer(messages: &[agent_code_lib::llm::message::Message]) {
     println!("  (exited scroll view)\r");
 }
 
+/// Read a `/search` query from the user in raw mode. Returns
+/// `Some(query)` on Enter, `None` on Esc or empty input. Renders an
+/// inline prompt at the bottom of the terminal.
+fn read_search_query(view_height: usize, width: usize) -> Option<String> {
+    use crossterm::{
+        event::{self, Event, KeyCode, KeyEvent},
+        terminal,
+    };
+
+    let mut buf = String::new();
+    let t = super::theme::current();
+    let accent = theme_to_ratatui(t.accent);
+
+    loop {
+        // Render just the footer with the prompt — overwrite the footer
+        // line in place (up one row, clear, print).
+        let prompt = format!(" /{buf}█ ");
+        let line = Line::from(Span::styled(
+            truncate(&prompt, width),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        // Move to bottom of viewport and overwrite the footer line.
+        write!(out, "\x1b[{};1H\x1b[2K", view_height + 2).ok();
+        write!(out, "{}", render_lines_to_ansi(&[line])).ok();
+        out.flush().ok();
+
+        let ev = match event::read() {
+            Ok(Event::Key(KeyEvent { code, .. })) => code,
+            _ => continue,
+        };
+
+        match ev {
+            KeyCode::Esc => return None,
+            KeyCode::Enter => {
+                // Re-enable raw mode in case child loop disabled it.
+                let _ = terminal::enable_raw_mode();
+                return if buf.is_empty() { None } else { Some(buf) };
+            }
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Char(c) => {
+                buf.push(c);
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Find every line index whose text content contains `query` (case-
+/// insensitive). Matched against the concatenated span text of each
+/// line, stripping ANSI.
+fn find_matches(lines: &[Line<'_>], query: &str) -> Vec<usize> {
+    let q = query.to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            if text.to_lowercase().contains(&q) {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn render_scrollback(
     lines: &[Line<'_>],
     scroll: usize,
     view_height: usize,
     width: usize,
     msg_count: usize,
+    search_query: Option<&str>,
+    matches: &[usize],
+    match_idx: usize,
 ) {
     let t = super::theme::current();
     let muted = theme_to_ratatui(t.muted);
@@ -638,10 +758,20 @@ fn render_scrollback(
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
-    // Header.
-    let header = format!(
-        " Conversation ({msg_count} messages) │ ↑↓ scroll │ PgUp/PgDn │ Home/End │ q quit "
-    );
+    // Header: include match indicator when searching.
+    let header = match search_query {
+        Some(q) if !matches.is_empty() => format!(
+            " Conversation ({msg_count} msgs) │ /{q} {}/{} │ n next · N prev · q quit ",
+            match_idx + 1,
+            matches.len(),
+        ),
+        Some(q) => {
+            format!(" Conversation ({msg_count} msgs) │ /{q} (no matches) │ / search · q quit ")
+        }
+        None => format!(
+            " Conversation ({msg_count} msgs) │ ↑↓/jk scroll │ PgUp/PgDn │ / search │ q quit "
+        ),
+    };
     let hdr_line = Line::from(Span::styled(
         truncate(&header, width),
         Style::default().fg(accent).add_modifier(Modifier::BOLD),
@@ -691,5 +821,46 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{}...", &s[..max - 3])
     } else {
         s[..max].to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_matches_case_insensitive_substring() {
+        let lines = vec![
+            Line::from(Span::raw("Hello World".to_string())),
+            Line::from(Span::raw("foo bar".to_string())),
+            Line::from(Span::raw("HELLO there".to_string())),
+        ];
+        let matches = find_matches(&lines, "hello");
+        assert_eq!(matches, vec![0, 2]);
+    }
+
+    #[test]
+    fn find_matches_empty_query_returns_empty() {
+        let lines = vec![Line::from(Span::raw("Hello World".to_string()))];
+        assert!(find_matches(&lines, "").is_empty());
+    }
+
+    #[test]
+    fn find_matches_no_hit_returns_empty() {
+        let lines = vec![Line::from(Span::raw("Hello World".to_string()))];
+        assert!(find_matches(&lines, "xyz").is_empty());
+    }
+
+    #[test]
+    fn find_matches_across_spans() {
+        // The text is split into multiple spans — search must consider
+        // the concatenation, not individual spans.
+        let lines = vec![Line::from(vec![
+            Span::raw("Hello ".to_string()),
+            Span::styled("wor".to_string(), Style::default()),
+            Span::raw("ld".to_string()),
+        ])];
+        let matches = find_matches(&lines, "hello world");
+        assert_eq!(matches, vec![0]);
     }
 }

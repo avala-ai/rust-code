@@ -272,8 +272,8 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "scroll",
-        aliases: &["history-view"],
-        description: "Scrollable view of conversation history (arrow keys to navigate, q to exit)",
+        aliases: &["history-view", "transcript"],
+        description: "Scrollable view of conversation history (↑↓ / j k / PgUp PgDn, / to search, q to exit)",
         hidden: false,
     },
     Command {
