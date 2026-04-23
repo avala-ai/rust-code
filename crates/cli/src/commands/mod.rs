@@ -571,6 +571,18 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             CommandResult::Handled
         }
         Some("compact") => {
+            // Snapshot the stats the user would see, then fire PreCompact
+            // hooks before we mutate history. This lets users archive or
+            // export before compaction replaces older messages.
+            let pre_len = engine.state().messages.len();
+            let estimated = agent_code_lib::services::compact::estimate_compactable_tokens(
+                engine.state().messages.as_slice(),
+                2,
+            );
+            let handle = tokio::runtime::Handle::try_current();
+            if let Ok(h) = handle {
+                let _ = h.block_on(engine.fire_pre_compact_hooks(pre_len, estimated));
+            }
             let freed = agent_code_lib::services::compact::microcompact(
                 &mut engine.state_mut().messages,
                 2,
