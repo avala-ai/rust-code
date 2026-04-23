@@ -402,6 +402,12 @@ pub const COMMANDS: &[Command] = &[
         description: "Fetch and review open review comments on the current or specified PR",
         hidden: false,
     },
+    Command {
+        name: "perf-issue",
+        aliases: &[],
+        description: "Audit recent changes for performance regressions",
+        hidden: false,
+    },
 ];
 
 /// Execute a slash command. Returns how to proceed.
@@ -1570,6 +1576,42 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                  first, then nits). Ask the user which items to address.\n\n\
                  Never respond to reviewers without the user's go-ahead. Never mark threads \
                  resolved — that's the reviewer's call."
+            );
+            CommandResult::Prompt(prompt)
+        }
+        Some("perf-issue") => {
+            let scope = args.map(|s| s.trim()).filter(|s| !s.is_empty());
+            let target = match scope {
+                Some(s) => format!("the following target: {s}"),
+                None => "the current git diff".to_string(),
+            };
+            let prompt = format!(
+                "Audit {target} for performance regressions. Do NOT rewrite code — \
+                 produce a report. For each finding, cite file:line, describe the hot \
+                 path it affects, and propose the minimal fix.\n\n\
+                 Look specifically for:\n\
+                 - N+1 queries: loops that issue a query per iteration (SQL, HTTP, RPC) \
+                 where a batch/IN clause / prefetch would collapse the fan-out\n\
+                 - Missing DB indexes: new WHERE / ORDER BY / JOIN columns without an \
+                 index; full-table scans on growing tables\n\
+                 - Synchronous I/O on hot paths: blocking reads/writes inside request \
+                 handlers, tight loops, or render paths\n\
+                 - Allocation hotspots: per-iteration allocations that could be pooled, \
+                 cloned buffers that could be borrowed, repeated string concatenation in \
+                 loops (Vec<u8>/String builder instead)\n\
+                 - Quadratic algorithms hidden behind nested iteration over user data; \
+                 .contains() inside .iter() on large inputs\n\
+                 - Cache invalidation bugs: writes that don't bust caches, reads that \
+                 hit stale entries\n\
+                 - Unbounded growth: unbounded channels, Vec pushes without a ceiling, \
+                 in-memory state that grows per request\n\
+                 - Synchronous operations in async contexts: `std::thread::sleep` in \
+                 async fn, blocking file I/O instead of `tokio::fs`, CPU-bound work \
+                 that should be `spawn_blocking`\n\n\
+                 Format the report as: severity (critical / high / medium / low), \
+                 file:line, one-sentence impact, proposed fix. Sort critical first. \
+                 If the diff is clean, say so plainly — do not invent findings to \
+                 justify the run."
             );
             CommandResult::Prompt(prompt)
         }
