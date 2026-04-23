@@ -11,6 +11,48 @@ fn agent() -> Command {
     Command::cargo_bin("agent").expect("binary should exist")
 }
 
+/// Every env var that `ApiConfig::default` accepts as a fallback source
+/// for the API key. Tests that want to assert "no key is available"
+/// must scrub every one of these — otherwise a developer running
+/// `cargo test --all-targets` with their normal shell env sees tests
+/// fail because the binary proceeds past the key check, starts
+/// retrying, and tracing WARN lines leak onto stdout.
+///
+/// Keep this list in sync with `ApiConfig::default` in
+/// `crates/lib/src/config/schema.rs`.
+const API_KEY_ENV_VARS: &[&str] = &[
+    "AGENT_CODE_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "XAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "ZHIPU_API_KEY",
+    "TOGETHER_API_KEY",
+    "OPENROUTER_API_KEY",
+    "COHERE_API_KEY",
+    "PERPLEXITY_API_KEY",
+    // Bedrock / Vertex steer the base URL even without a key; strip
+    // them so the test path is deterministic regardless of where
+    // the developer was last logged in.
+    "AGENT_CODE_USE_BEDROCK",
+    "AGENT_CODE_USE_VERTEX",
+    "AWS_REGION",
+];
+
+/// Apply `env_remove` for every known API key env var so the binary
+/// can't resolve a fallback and bails at the key check.
+fn scrub_api_keys(cmd: &mut Command) -> &mut Command {
+    for var in API_KEY_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 // ── Flag parsing ──────────────────────────────────────────────────
 
 #[test]
@@ -46,7 +88,9 @@ fn output_format_text_is_default() {
     // With no --output-format flag but also no API key, the text path
     // should be taken. Without a key it will fail at API key validation,
     // but AFTER format parsing succeeds (no "unknown output format" error).
-    let output = agent()
+    let mut cmd = agent();
+    scrub_api_keys(&mut cmd);
+    let output = cmd
         .args(["--prompt", "hello"])
         .output()
         .expect("should execute");
@@ -65,9 +109,17 @@ fn output_format_json_no_api_key_emits_session_events() {
     // Even when the API key is missing and the run fails, JSON mode
     // should still emit session_start and session_end events so
     // downstream consumers get a well-formed stream.
-    let output = agent()
+    //
+    // We scrub EVERY provider env var, not just AGENT_CODE_API_KEY:
+    // if a developer's shell has ANTHROPIC_API_KEY (or any of the
+    // 12+ other fallbacks), the binary would proceed past the key
+    // check, the LLM call would fail, retries would log WARN via
+    // tracing onto stdout, and the JSONL assertion below would fail.
+    // See API_KEY_ENV_VARS for the full list.
+    let mut cmd = agent();
+    scrub_api_keys(&mut cmd);
+    let output = cmd
         .args(["--output-format", "json", "--prompt", "hello"])
-        .env_remove("AGENT_CODE_API_KEY")
         .output()
         .expect("should execute");
 
