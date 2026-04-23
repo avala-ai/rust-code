@@ -412,6 +412,14 @@ pub enum HookEvent {
     /// tooling (audit logs, auto-commit, summary mailers) can act on
     /// it without re-reading the transcript.
     Stop,
+    /// Fired when the agent surfaces something the user should see
+    /// — budget stops, context-window-nearly-full blocking warnings,
+    /// rate-limit fallbacks. Context carries `message`, optional
+    /// `title`, and a `notification_type` string categorizing the
+    /// event (e.g. `"budget_limit"`, `"context_full"`,
+    /// `"permission_request"`) so desktop-notifier / Slack / email
+    /// integrations can filter.
+    Notification,
 }
 
 /// A configured hook action.
@@ -714,6 +722,14 @@ mod tests {
         assert_eq!(json, "\"stop\"");
         let back: HookEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(back, HookEvent::Stop);
+    }
+
+    #[test]
+    fn hook_event_serde_roundtrip_notification() {
+        let json = serde_json::to_string(&HookEvent::Notification).unwrap();
+        assert_eq!(json, "\"notification\"");
+        let back: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, HookEvent::Notification);
     }
 
     // ---- HookAction serde round-trip ----

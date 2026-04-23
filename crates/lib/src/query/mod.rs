@@ -167,6 +167,31 @@ impl QueryEngine {
             .await
     }
 
+    /// Run any configured `Notification` hooks when the agent surfaces
+    /// something the user should see — budget limits, context-window
+    /// warnings, rate-limit fallbacks, or anything else a desktop
+    /// notifier / Slack integration wants to route.
+    ///
+    /// `notification_type` categorizes the event so hook configs can
+    /// filter (e.g. `"budget_limit"`, `"context_full"`). `title` is
+    /// optional and defaults to None.
+    pub async fn fire_notification_hooks(
+        &self,
+        message: &str,
+        title: Option<&str>,
+        notification_type: &str,
+    ) -> Vec<crate::hooks::HookResult> {
+        let ctx = serde_json::json!({
+            "session_id": self.state.session_id,
+            "message": message,
+            "title": title,
+            "notification_type": notification_type,
+        });
+        self.hooks
+            .run_hooks(&HookEvent::Notification, None, &ctx)
+            .await
+    }
+
     /// Run any configured `PreCompact` hooks, passing a JSON context
     /// describing the conversation about to be compacted (message count
     /// and an estimate of tokens freed). Returns the per-hook results so
@@ -370,6 +395,12 @@ impl QueryEngine {
             ) {
                 crate::services::budget::BudgetDecision::Stop { message } => {
                     sink.on_warning(&message);
+                    // Budget stops are the hardest "user attention
+                    // needed" moment — fire Notification so desktop
+                    // notifiers / Slack integrations route it.
+                    let _ = self
+                        .fire_notification_hooks(&message, Some("Budget limit"), "budget_limit")
+                        .await;
                     self.state.is_query_active = false;
                     return Ok(());
                 }
@@ -377,6 +408,9 @@ impl QueryEngine {
                     message, ..
                 } => {
                     sink.on_warning(&message);
+                    let _ = self
+                        .fire_notification_hooks(&message, Some("Budget warning"), "budget_warning")
+                        .await;
                 }
                 crate::services::budget::BudgetDecision::Continue => {}
             }
@@ -490,7 +524,14 @@ impl QueryEngine {
             // Step 2: Check token warning state.
             let warning = compact::token_warning_state(self.state.history(), &model);
             if warning.is_blocking {
-                sink.on_warning("Context window nearly full. Consider starting a new session.");
+                let msg = "Context window nearly full. Consider starting a new session.";
+                sink.on_warning(msg);
+                // Blocking context warning is the second "user must
+                // see" moment. Non-blocking warnings (x% remaining)
+                // stay warning-only — they're informational.
+                let _ = self
+                    .fire_notification_hooks(msg, Some("Context nearly full"), "context_full")
+                    .await;
             } else if warning.is_above_warning {
                 sink.on_warning(&format!("Context {}% remaining", warning.percent_left));
             }

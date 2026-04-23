@@ -2247,6 +2247,10 @@ const HOOK_EVENT_CATALOG: &[(&str, &str)] = &[
         "stop",
         "agent finished responding; about to yield back to the user (fires once per response)",
     ),
+    (
+        "notification",
+        "agent needs user attention — budget stop, context full (context: message, title, notification_type)",
+    ),
     ("session_stop", "when the session ends"),
 ];
 
@@ -2284,6 +2288,7 @@ fn format_hook_event(event: &agent_code_lib::config::HookEvent) -> &'static str 
         HookEvent::PostCompact => "post_compact",
         HookEvent::FileChanged => "file_changed",
         HookEvent::Stop => "stop",
+        HookEvent::Notification => "notification",
     }
 }
 
@@ -2305,6 +2310,7 @@ fn parse_hook_event(raw: &str) -> Option<agent_code_lib::config::HookEvent> {
         "post_compact" => HookEvent::PostCompact,
         "file_changed" => HookEvent::FileChanged,
         "stop" => HookEvent::Stop,
+        "notification" => HookEvent::Notification,
         _ => return None,
     })
 }
@@ -5636,6 +5642,19 @@ mod tests {
         assert_eq!(parse_hook_event("stop"), Some(HookEvent::Stop));
         assert_eq!(parse_hook_event("Stop"), Some(HookEvent::Stop));
         assert_eq!(parse_hook_event("STOP"), Some(HookEvent::Stop));
+    }
+
+    #[test]
+    fn parse_hook_event_accepts_notification() {
+        use agent_code_lib::config::HookEvent;
+        assert_eq!(
+            parse_hook_event("notification"),
+            Some(HookEvent::Notification)
+        );
+        assert_eq!(
+            parse_hook_event("Notification"),
+            Some(HookEvent::Notification)
+        );
     }
 
     #[test]
