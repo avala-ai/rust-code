@@ -520,6 +520,35 @@ impl SkillRegistry {
                  hooks. If a step fails, stop and report — don't compensate by \
                  skipping the next step.",
             ),
+            (
+                "ultrareview",
+                "Exhaustive code review: the diff, callers, callees, tests, and edge cases",
+                true,
+                "Go beyond `/review` (which only reads the diff). Do a thorough \
+                 review that traces the blast radius of the change:\n\n\
+                 1. Read the full diff against the base branch.\n\
+                 2. For every changed public function, use the LSP or grep to find \
+                 its callers. Check whether the change breaks any caller's \
+                 assumptions — argument shape, return shape, error semantics, side \
+                 effects.\n\
+                 3. For every changed public function, trace its callees. A \
+                 change that adds a new call path can surface an assumption those \
+                 callees were relying on.\n\
+                 4. Check the test surface: for each modified function, is there \
+                 a test that exercises the new behavior? If not, flag it.\n\
+                 5. Check edge cases the diff didn't explicitly address: empty \
+                 inputs, unicode, very long inputs, concurrent callers, allocator \
+                 failure, partial writes, retries, cancellation.\n\
+                 6. Check for cross-cutting concerns: does the change affect \
+                 error messages, logs, metrics, feature flags, migration paths?\n\
+                 7. Check the commit message / PR body for claims the diff \
+                 doesn't back up (\"now faster\", \"also fixes X\") and verify \
+                 each with the code.\n\n\
+                 Output: severity-sorted findings (critical / high / medium / \
+                 low) with file:line, one-sentence impact, and proposed \
+                 remediation. If the diff is genuinely clean after all seven \
+                 passes, say so — do not invent findings to justify the review.",
+            ),
         ];
 
         for (name, description, user_invocable, body) in bundled {
