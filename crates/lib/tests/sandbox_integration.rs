@@ -31,6 +31,10 @@ fn make_ctx(cwd: std::path::PathBuf, sandbox: Option<Arc<SandboxExecutor>>) -> T
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "windows",
+    ignore = "BashTool invokes bash(1); Windows Git-Bash subprocess handling diverges"
+)]
 async fn bash_runs_normally_with_disabled_sandbox() {
     // Regression guard: wrapping with a disabled sandbox must not change
     // command behavior — `echo hello` still returns `hello` on stdout.
@@ -53,6 +57,10 @@ async fn bash_runs_normally_with_disabled_sandbox() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "windows",
+    ignore = "BashTool invokes bash(1); Windows Git-Bash subprocess handling diverges"
+)]
 async fn bash_runs_normally_without_sandbox_context() {
     // Second guard for the no-sandbox-threaded path (ctx.sandbox = None).
     let tmp = tempfile::tempdir().unwrap();
