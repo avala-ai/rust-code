@@ -456,6 +456,12 @@ pub const COMMANDS: &[Command] = &[
         description: "Replay every turn's thinking blocks in order with a short pause between",
         hidden: false,
     },
+    Command {
+        name: "keybindings",
+        aliases: &["keys"],
+        description: "List keyboard shortcuts and the override file path",
+        hidden: false,
+    },
 ];
 
 /// Execute a slash command. Returns how to proceed.
@@ -1771,6 +1777,52 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
         }
         Some("profile") => {
             execute_profile(args, engine);
+            CommandResult::Handled
+        }
+        Some("keybindings") => {
+            let registry = crate::ui::keybindings::KeybindingRegistry::load();
+            let bindings = registry.all();
+            if bindings.is_empty() {
+                println!("No keybindings loaded.");
+            } else {
+                println!();
+                println!("  Key             Action");
+                println!("  ---             ------");
+                for b in &bindings {
+                    use crate::ui::keybindings::KeyAction;
+                    let action = match &b.action {
+                        KeyAction::Command { command } => format!("/{command}"),
+                        KeyAction::Prompt { prompt } => {
+                            let short = prompt.chars().take(40).collect::<String>();
+                            let ellipsis = if prompt.chars().count() > 40 {
+                                "…"
+                            } else {
+                                ""
+                            };
+                            format!("prompt: \"{short}{ellipsis}\"")
+                        }
+                        KeyAction::Toggle { setting } => format!("toggle: {setting}"),
+                    };
+                    let desc = b
+                        .description
+                        .as_deref()
+                        .map(|d| format!(" — {d}"))
+                        .unwrap_or_default();
+                    println!("  {:<14}  {action}{desc}", b.key);
+                }
+                println!();
+                if let Some(d) = dirs::config_dir() {
+                    let path = d.join("agent-code").join("keybindings.json");
+                    if path.exists() {
+                        println!("  Overrides file: {}", path.display());
+                    } else {
+                        println!(
+                            "  Add custom bindings at: {} (JSON, see docs/reference/cli-flags.mdx)",
+                            path.display()
+                        );
+                    }
+                }
+            }
             CommandResult::Handled
         }
         Some("tokens") => {
