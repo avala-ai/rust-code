@@ -408,6 +408,12 @@ pub const COMMANDS: &[Command] = &[
         description: "Audit recent changes for performance regressions",
         hidden: false,
     },
+    Command {
+        name: "autofix-pr",
+        aliases: &[],
+        description: "Check out a PR, run lint + tests, fix failures, push back",
+        hidden: false,
+    },
 ];
 
 /// Execute a slash command. Returns how to proceed.
@@ -1612,6 +1618,44 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                  file:line, one-sentence impact, proposed fix. Sort critical first. \
                  If the diff is clean, say so plainly — do not invent findings to \
                  justify the run."
+            );
+            CommandResult::Prompt(prompt)
+        }
+        Some("autofix-pr") => {
+            let target = args.map(|s| s.trim()).unwrap_or("");
+            let selector = if target.is_empty() {
+                "the current branch's PR".to_string()
+            } else {
+                format!("PR {target}")
+            };
+            let prompt = format!(
+                "Autofix {selector}. Work inside a git worktree so the current working \
+                 tree stays clean. Steps, in order — do NOT skip the verification steps:\n\n\
+                 1. Confirm the PR exists and is open: `gh pr view {target}` (or for \
+                 the current branch). Abort with a clear message if merged or closed.\n\
+                 2. Create an isolated worktree via the worktree tool, checkout the PR's \
+                 head branch in it. Run all further commands from that worktree.\n\
+                 3. Detect the project toolchain from manifest files (Cargo.toml, \
+                 package.json, pyproject.toml, go.mod). Run the project's lint and test \
+                 commands — check AGENTS.md / CONTRIBUTING.md for the canonical commands \
+                 first; fall back to `cargo check && cargo clippy --all-targets -D warnings \
+                 && cargo test` etc.\n\
+                 4. Capture every failure. Classify: formatter/linter (safe to fix), \
+                 unit-test failures (read source, root-cause, minimal fix), type errors \
+                 (honor the types, don't cast to bypass).\n\
+                 5. Apply minimal fixes for each failure. Run the gate again after EACH \
+                 fix to confirm it's real — do not batch speculative edits.\n\
+                 6. When all checks pass, commit with a conventional message describing \
+                 what was fixed (e.g. \"fix(lint): satisfy clippy, address test flake\"). \
+                 One commit per logical fix if they're orthogonal; one combined commit \
+                 if they're the same class of fix.\n\
+                 7. Push to the PR's head branch. Never force-push. Never skip hooks.\n\
+                 8. Report back: commit SHAs pushed, what was fixed, anything left broken \
+                 that needs the author's judgment (e.g. a failing test that asserts wrong \
+                 behavior — flag, don't delete).\n\n\
+                 Never touch workflow files (.github/workflows/**) as part of an autofix. \
+                 Never modify tests to make them pass — fix the code they test, or flag \
+                 that the test is wrong."
             );
             CommandResult::Prompt(prompt)
         }
