@@ -99,6 +99,115 @@ fn fuzzy_subsequence(haystack: &str, needle: &str) -> bool {
     true
 }
 
+/// Find an `@path-partial` context ending at byte position `pos` in
+/// `line`, if any. Returns `(at_byte_idx, partial)` where `at_byte_idx`
+/// is the byte position of the `@` and `partial` is the text after it
+/// up to `pos`. Returns `None` when the cursor isn't in an `@`-context.
+///
+/// Rules: the `@` must be at the start of the line or preceded by
+/// whitespace (so `email@example.com` doesn't accidentally trigger
+/// path completion mid-word).
+fn find_at_context(line: &str, pos: usize) -> Option<(usize, &str)> {
+    if pos > line.len() {
+        return None;
+    }
+    let prefix = &line[..pos];
+    let at_idx = prefix.rfind('@')?;
+    // Must be at start, or preceded by whitespace.
+    if at_idx > 0 {
+        let prev = prefix[..at_idx].chars().next_back()?;
+        if !prev.is_whitespace() {
+            return None;
+        }
+    }
+    let partial = &prefix[at_idx + 1..];
+    // Reject if whitespace is in the partial — that means the cursor
+    // has already moved past the path token.
+    if partial.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    Some((at_idx, partial))
+}
+
+/// Enumerate file/directory candidates matching an `@` partial path
+/// under `cwd`. Returns up to 50 results, directories first (with a
+/// trailing `/` in the replacement so Tab-tab descends), then files.
+fn complete_at_path(cwd: &str, partial: &str) -> Vec<Pair> {
+    // Split partial into (search_dir, prefix_filter).
+    let (rel_dir, prefix) = match partial.rfind('/') {
+        Some(idx) => (&partial[..idx], &partial[idx + 1..]),
+        None => ("", partial),
+    };
+
+    // Resolve rel_dir relative to cwd; reject absolute paths or any
+    // `..` component to avoid accidentally scanning the filesystem.
+    if rel_dir.starts_with('/') || rel_dir.split('/').any(|c| c == "..") {
+        return Vec::new();
+    }
+
+    let search_dir = if rel_dir.is_empty() {
+        std::path::PathBuf::from(cwd)
+    } else {
+        std::path::PathBuf::from(cwd).join(rel_dir)
+    };
+
+    let entries = match std::fs::read_dir(&search_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let prefix_lower = prefix.to_lowercase();
+    let mut dirs: Vec<(String, bool)> = Vec::new();
+    let mut files: Vec<(String, bool)> = Vec::new();
+
+    for entry in entries.flatten() {
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        // Skip dotfiles unless the user typed a `.` prefix.
+        if name.starts_with('.') && !prefix.starts_with('.') {
+            continue;
+        }
+        if !prefix.is_empty() && !name.to_lowercase().starts_with(&prefix_lower) {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir {
+            dirs.push((name, true));
+        } else {
+            files.push((name, false));
+        }
+    }
+
+    dirs.sort_by(|a, b| a.0.cmp(&b.0));
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut pairs: Vec<Pair> = Vec::new();
+    for (name, is_dir) in dirs.into_iter().chain(files).take(50) {
+        let rel = if rel_dir.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel_dir}/{name}")
+        };
+        let replacement = if is_dir {
+            format!("@{rel}/")
+        } else {
+            format!("@{rel}")
+        };
+        let display = if is_dir {
+            format!("{rel}/  (dir)")
+        } else {
+            rel.clone()
+        };
+        pairs.push(Pair {
+            display,
+            replacement,
+        });
+    }
+    pairs
+}
+
 impl Completer for CommandCompleter {
     type Candidate = Pair;
 
@@ -108,7 +217,19 @@ impl Completer for CommandCompleter {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        // Only complete at the start of input for / commands.
+        // @path completion fires whenever the cursor is inside an @-token,
+        // regardless of where that token is in the line.
+        if let Some((at_idx, partial)) = find_at_context(line, pos) {
+            let cwd = std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| ".".into());
+            let pairs = complete_at_path(&cwd, partial);
+            if !pairs.is_empty() {
+                return Ok((at_idx, pairs));
+            }
+        }
+
+        // Otherwise fall back to slash-command completion.
         if !line.starts_with('/') {
             return Ok((0, vec![]));
         }
@@ -1203,5 +1324,137 @@ mod completer_tests {
             name_prefix > alias_prefix,
             "name prefix {name_prefix} should beat alias prefix {alias_prefix}"
         );
+    }
+}
+
+#[cfg(test)]
+mod at_completion_tests {
+    //! Tests for the `@`-path tab completer. These are file-system tests
+    //! over a tempdir so we don't depend on the repo layout.
+
+    use super::{complete_at_path, find_at_context};
+
+    #[test]
+    fn at_context_at_start_of_line() {
+        let line = "@src";
+        let pos = 4;
+        assert_eq!(find_at_context(line, pos), Some((0, "src")));
+    }
+
+    #[test]
+    fn at_context_after_whitespace() {
+        let line = "explain @src/main";
+        let pos = line.len();
+        assert_eq!(find_at_context(line, pos), Some((8, "src/main")));
+    }
+
+    #[test]
+    fn at_context_rejected_when_preceded_by_non_whitespace() {
+        // email@example.com → not a path context
+        assert_eq!(find_at_context("email@example.com", 10), None);
+    }
+
+    #[test]
+    fn at_context_rejected_when_partial_contains_whitespace() {
+        // Once the user types past the token, we should stop completing.
+        assert_eq!(find_at_context("@src/main.rs here", 17), None);
+    }
+
+    #[test]
+    fn at_context_empty_partial_after_at() {
+        let line = "@";
+        assert_eq!(find_at_context(line, 1), Some((0, "")));
+    }
+
+    #[test]
+    fn at_context_no_at_sign_returns_none() {
+        assert_eq!(find_at_context("just text here", 10), None);
+    }
+
+    #[test]
+    fn at_context_multiple_at_signs_uses_most_recent() {
+        let line = "@src foo @tests";
+        let pos = line.len();
+        assert_eq!(find_at_context(line, pos), Some((9, "tests")));
+    }
+
+    #[test]
+    fn complete_paths_lists_tempdir_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("alpha.md"), "").unwrap();
+        std::fs::write(tmp.path().join("beta.rs"), "").unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+
+        let results = complete_at_path(cwd, "");
+        let replacements: Vec<String> = results.iter().map(|p| p.replacement.clone()).collect();
+        // Directories first, trailing slash.
+        assert!(replacements.contains(&"@src/".to_string()));
+        assert!(replacements.contains(&"@alpha.md".to_string()));
+        assert!(replacements.contains(&"@beta.rs".to_string()));
+        // dirs sort before files.
+        let src_pos = replacements.iter().position(|r| r == "@src/").unwrap();
+        let alpha_pos = replacements.iter().position(|r| r == "@alpha.md").unwrap();
+        assert!(src_pos < alpha_pos, "dirs should list before files");
+    }
+
+    #[test]
+    fn complete_paths_filters_by_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("alpha.md"), "").unwrap();
+        std::fs::write(tmp.path().join("beta.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("alphabet.txt"), "").unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+
+        let results = complete_at_path(cwd, "alp");
+        let replacements: Vec<String> = results.iter().map(|p| p.replacement.clone()).collect();
+        assert!(replacements.contains(&"@alpha.md".to_string()));
+        assert!(replacements.contains(&"@alphabet.txt".to_string()));
+        assert!(!replacements.contains(&"@beta.rs".to_string()));
+    }
+
+    #[test]
+    fn complete_paths_descends_into_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+
+        let results = complete_at_path(cwd, "src/m");
+        let replacements: Vec<String> = results.iter().map(|p| p.replacement.clone()).collect();
+        assert_eq!(replacements, vec!["@src/main.rs".to_string()]);
+    }
+
+    #[test]
+    fn complete_paths_skips_dotfiles_unless_requested() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".hidden"), "").unwrap();
+        std::fs::write(tmp.path().join("visible"), "").unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+
+        let default = complete_at_path(cwd, "");
+        let replacements: Vec<String> = default.iter().map(|p| p.replacement.clone()).collect();
+        assert!(replacements.contains(&"@visible".to_string()));
+        assert!(!replacements.contains(&"@.hidden".to_string()));
+
+        let with_dot = complete_at_path(cwd, ".");
+        let replacements: Vec<String> = with_dot.iter().map(|p| p.replacement.clone()).collect();
+        assert!(replacements.contains(&"@.hidden".to_string()));
+    }
+
+    #[test]
+    fn complete_paths_rejects_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+        assert!(complete_at_path(cwd, "../foo").is_empty());
+        assert!(complete_at_path(cwd, "/etc/passwd").is_empty());
+    }
+
+    #[test]
+    fn complete_paths_empty_for_nonexistent_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+        assert!(complete_at_path(cwd, "does-not-exist/foo").is_empty());
     }
 }
