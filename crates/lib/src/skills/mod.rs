@@ -594,6 +594,36 @@ impl SkillRegistry {
                  iterations\" or \"ceiling reached, last state was X\". Never \
                  loop past the ceiling without user approval.",
             ),
+            (
+                "passes",
+                "Multi-pass planning: goal → approach → implement → verify",
+                true,
+                "Break the task into four explicit passes. Don't skip a pass. \
+                 Before starting, write the task you're solving in one sentence.\n\n\
+                 **Pass 1 — Goal and success criteria** \
+                 State what \"done\" means in 1-3 bullets: the externally \
+                 visible change, the user impact, and the specific condition \
+                 that proves the task is complete (test passes, command \
+                 succeeds, file contains X, URL returns Y). No implementation \
+                 details yet.\n\n\
+                 **Pass 2 — Approach and trade-offs** \
+                 List the two or three plausible approaches. For each, note \
+                 the rough cost, the risk, and the \"what might go wrong\". \
+                 Pick one and say why it wins over the others. If a reviewer \
+                 would ask \"why this and not that\", answer it here. If there \
+                 is only one plausible approach, say so explicitly.\n\n\
+                 **Pass 3 — Implement** \
+                 Do the work. Keep the diff scoped to what Pass 1 and Pass 2 \
+                 said you'd do — if you notice a related improvement, note \
+                 it as a follow-up instead of expanding scope.\n\n\
+                 **Pass 4 — Verify** \
+                 Run the exact check you named in Pass 1. Report what you \
+                 ran and what it returned. If it doesn't pass, loop back to \
+                 Pass 2 — don't paper over a failing check with commentary.\n\n\
+                 At the end, produce a one-paragraph summary: what changed, \
+                 why that approach, how you verified. This is what goes into \
+                 the PR description.",
+            ),
         ];
 
         for (name, description, user_invocable, body) in bundled {
