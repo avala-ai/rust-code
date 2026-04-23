@@ -157,6 +157,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "ctxviz",
+        aliases: &["context-viz"],
+        description: "Per-category token breakdown of the current context",
+        hidden: false,
+    },
+    Command {
         name: "init",
         aliases: &[],
         description: "Initialize project config (.agent/settings.toml)",
@@ -1099,6 +1105,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                     println!("  {d}");
                 }
             }
+            CommandResult::Handled
+        }
+        Some("ctxviz") | Some("context-viz") => {
+            execute_ctxviz(engine);
             CommandResult::Handled
         }
         Some("agents") => {
@@ -2857,6 +2867,219 @@ fn copy_to_clipboard(text: &str) -> Result<&'static str, String> {
     Err(last_err.unwrap_or_else(|| "no clipboard command available on this platform".into()))
 }
 
+/// Per-category context breakdown. The fields are independent
+/// token estimates summed to produce `total`. Exposed so tests can
+/// exercise the accounting without driving a full QueryEngine.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContextBreakdown {
+    pub system_prompt: u64,
+    pub user_text: u64,
+    pub assistant_text: u64,
+    pub tool_use: u64,
+    pub tool_result: u64,
+    pub thinking: u64,
+    pub system_messages: u64,
+    pub tool_schemas: u64,
+    pub total: u64,
+    pub window: u64,
+    pub compact_threshold: u64,
+    pub message_count: usize,
+}
+
+/// Compute a per-category token breakdown for the given state and
+/// tool registry. Uses the same estimation path as runtime planning.
+fn compute_context_breakdown(
+    state: &agent_code_lib::state::AppState,
+    tools: &agent_code_lib::tools::registry::ToolRegistry,
+) -> ContextBreakdown {
+    use agent_code_lib::llm::message::{ContentBlock, Message};
+    use agent_code_lib::services::tokens;
+
+    // System prompt — rebuild from scratch here so the breakdown is
+    // accurate even if the engine has a stale cache.
+    let system_prompt = agent_code_lib::query::build_system_prompt(tools, state);
+    let system_prompt_tokens = tokens::estimate_tokens(&system_prompt);
+
+    let mut user_text = 0u64;
+    let mut assistant_text = 0u64;
+    let mut tool_use = 0u64;
+    let mut tool_result = 0u64;
+    let mut thinking = 0u64;
+    let mut system_messages = 0u64;
+
+    for msg in &state.messages {
+        match msg {
+            Message::User(u) => {
+                for block in &u.content {
+                    match block {
+                        ContentBlock::Text { .. } => {
+                            user_text =
+                                user_text.saturating_add(tokens::estimate_block_tokens(block));
+                        }
+                        ContentBlock::ToolResult { .. } => {
+                            tool_result =
+                                tool_result.saturating_add(tokens::estimate_block_tokens(block));
+                        }
+                        _ => {
+                            user_text =
+                                user_text.saturating_add(tokens::estimate_block_tokens(block));
+                        }
+                    }
+                }
+            }
+            Message::Assistant(a) => {
+                for block in &a.content {
+                    match block {
+                        ContentBlock::Text { .. } => {
+                            assistant_text =
+                                assistant_text.saturating_add(tokens::estimate_block_tokens(block));
+                        }
+                        ContentBlock::ToolUse { .. } => {
+                            tool_use =
+                                tool_use.saturating_add(tokens::estimate_block_tokens(block));
+                        }
+                        ContentBlock::Thinking { .. } => {
+                            thinking =
+                                thinking.saturating_add(tokens::estimate_block_tokens(block));
+                        }
+                        _ => {
+                            assistant_text =
+                                assistant_text.saturating_add(tokens::estimate_block_tokens(block));
+                        }
+                    }
+                }
+            }
+            Message::System(_) => {
+                system_messages =
+                    system_messages.saturating_add(tokens::estimate_message_tokens(msg));
+            }
+        }
+    }
+
+    // Tool schemas — each enabled tool contributes name + description
+    // + JSON schema as sent to the model.
+    let mut tool_schemas = 0u64;
+    for tool in tools.all() {
+        if !tool.is_enabled() {
+            continue;
+        }
+        tool_schemas = tool_schemas.saturating_add(tokens::estimate_tokens(tool.name()));
+        tool_schemas = tool_schemas.saturating_add(tokens::estimate_tokens(tool.description()));
+        let schema_str = serde_json::to_string(&tool.input_schema()).unwrap_or_default();
+        tool_schemas = tool_schemas.saturating_add(tokens::estimate_tokens(&schema_str));
+    }
+
+    let total = system_prompt_tokens
+        + user_text
+        + assistant_text
+        + tool_use
+        + tool_result
+        + thinking
+        + system_messages
+        + tool_schemas;
+
+    let model = &state.config.api.model;
+    let window = tokens::context_window_for_model(model);
+    let compact_threshold = agent_code_lib::services::compact::auto_compact_threshold(model);
+
+    ContextBreakdown {
+        system_prompt: system_prompt_tokens,
+        user_text,
+        assistant_text,
+        tool_use,
+        tool_result,
+        thinking,
+        system_messages,
+        tool_schemas,
+        total,
+        window,
+        compact_threshold,
+        message_count: state.messages.len(),
+    }
+}
+
+/// Execute `/ctxviz` — compute the breakdown and render a table.
+fn execute_ctxviz(engine: &QueryEngine) {
+    let b = compute_context_breakdown(engine.state(), engine_tools(engine));
+    let pct = |n: u64| {
+        if b.total == 0 {
+            0
+        } else {
+            (n as f64 / b.total as f64 * 100.0).round() as u64
+        }
+    };
+    let window_pct = if b.window > 0 {
+        (b.total as f64 / b.window as f64 * 100.0).round() as u64
+    } else {
+        0
+    };
+    println!(
+        "Context breakdown (~{} tokens, {}% of {} window):\n",
+        b.total, window_pct, b.window
+    );
+    println!(
+        "  System prompt       {:>8}  {:>3}%",
+        b.system_prompt,
+        pct(b.system_prompt)
+    );
+    println!(
+        "  Tool schemas        {:>8}  {:>3}%",
+        b.tool_schemas,
+        pct(b.tool_schemas)
+    );
+    println!(
+        "  User text           {:>8}  {:>3}%",
+        b.user_text,
+        pct(b.user_text)
+    );
+    println!(
+        "  Assistant text      {:>8}  {:>3}%",
+        b.assistant_text,
+        pct(b.assistant_text)
+    );
+    println!(
+        "  Tool use            {:>8}  {:>3}%",
+        b.tool_use,
+        pct(b.tool_use)
+    );
+    println!(
+        "  Tool result         {:>8}  {:>3}%",
+        b.tool_result,
+        pct(b.tool_result)
+    );
+    println!(
+        "  Thinking            {:>8}  {:>3}%",
+        b.thinking,
+        pct(b.thinking)
+    );
+    println!(
+        "  System msgs         {:>8}  {:>3}%",
+        b.system_messages,
+        pct(b.system_messages)
+    );
+    println!();
+    println!(
+        "  {} messages · auto-compact at {} tokens",
+        b.message_count, b.compact_threshold
+    );
+    if b.total >= b.compact_threshold {
+        println!("  ⚠ Over compact threshold — next turn will auto-compact.");
+    }
+}
+
+/// Accessor shim — the engine doesn't currently expose its registry
+/// publicly, but it does hand out `&AppState`. We lazily build the
+/// default tools registry once per process so `/ctxviz` can include
+/// schema token counts in its breakdown without requiring access to
+/// the engine's own registry. This is an approximation — if the
+/// engine has registered additional tools (e.g. MCP), those won't be
+/// counted. Good enough for a debugging aid.
+fn engine_tools(_engine: &QueryEngine) -> &agent_code_lib::tools::registry::ToolRegistry {
+    use std::sync::OnceLock;
+    static REG: OnceLock<agent_code_lib::tools::registry::ToolRegistry> = OnceLock::new();
+    REG.get_or_init(agent_code_lib::tools::registry::ToolRegistry::default_tools)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3029,10 +3252,17 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn copy_to_clipboard_errors_with_empty_path() {
         // Force `copy_to_clipboard` to have no candidates on PATH by
         // temporarily emptying PATH. This verifies the error path
         // returns a helpful string instead of silently succeeding.
+        //
+        // Windows-only: `clip.exe` lives in `%SYSTEMROOT%\System32` and
+        // Windows' `CreateProcess` searches the system directory even
+        // with an empty PATH, so clearing PATH doesn't actually hide
+        // it. The test is an assertion about the fallback code path on
+        // *nix; the Windows probe (`clip` only) has a simpler path.
         //
         // SAFETY: single-threaded test, restored before exit.
         let prev = std::env::var_os("PATH");
@@ -3047,5 +3277,80 @@ mod tests {
             }
         }
         assert!(result.is_err(), "expected error on empty PATH");
+    }
+
+    // ---- /ctxviz breakdown accounting ----
+
+    #[test]
+    fn ctxviz_breakdown_empty_state_has_only_system_prompt() {
+        let state = agent_code_lib::state::AppState::new(agent_code_lib::config::Config::default());
+        let tools = agent_code_lib::tools::registry::ToolRegistry::new();
+        let b = compute_context_breakdown(&state, &tools);
+        assert_eq!(b.message_count, 0);
+        assert_eq!(b.user_text, 0);
+        assert_eq!(b.assistant_text, 0);
+        assert_eq!(b.tool_use, 0);
+        assert_eq!(b.tool_result, 0);
+        assert_eq!(b.tool_schemas, 0, "empty registry → no schema tokens");
+        assert!(b.system_prompt > 0, "system prompt always has content");
+        assert!(b.total >= b.system_prompt);
+    }
+
+    #[test]
+    fn ctxviz_breakdown_user_text_counted_separately_from_assistant() {
+        use agent_code_lib::llm::message::{AssistantMessage, ContentBlock, Message, user_message};
+        fn mk_assistant(text: &str) -> Message {
+            Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: "2026-04-22T00:00:00Z".into(),
+                content: vec![ContentBlock::Text { text: text.into() }],
+                model: None,
+                usage: None,
+                stop_reason: None,
+                request_id: None,
+            })
+        }
+        let mut state =
+            agent_code_lib::state::AppState::new(agent_code_lib::config::Config::default());
+        state.push_message(user_message("hello there"));
+        state.push_message(mk_assistant("general kenobi"));
+        let tools = agent_code_lib::tools::registry::ToolRegistry::new();
+        let b = compute_context_breakdown(&state, &tools);
+        assert_eq!(b.message_count, 2);
+        assert!(b.user_text > 0, "user text must accumulate");
+        assert!(b.assistant_text > 0, "assistant text must accumulate");
+        assert_eq!(b.tool_use, 0);
+        assert_eq!(b.tool_result, 0);
+    }
+
+    #[test]
+    fn ctxviz_breakdown_total_equals_sum_of_parts() {
+        use agent_code_lib::llm::message::{AssistantMessage, ContentBlock, Message, user_message};
+        fn mk_assistant(text: &str) -> Message {
+            Message::Assistant(AssistantMessage {
+                uuid: uuid::Uuid::new_v4(),
+                timestamp: "2026-04-22T00:00:00Z".into(),
+                content: vec![ContentBlock::Text { text: text.into() }],
+                model: None,
+                usage: None,
+                stop_reason: None,
+                request_id: None,
+            })
+        }
+        let mut state =
+            agent_code_lib::state::AppState::new(agent_code_lib::config::Config::default());
+        state.push_message(user_message("hi"));
+        state.push_message(mk_assistant("ok"));
+        let tools = agent_code_lib::tools::registry::ToolRegistry::new();
+        let b = compute_context_breakdown(&state, &tools);
+        let sum = b.system_prompt
+            + b.user_text
+            + b.assistant_text
+            + b.tool_use
+            + b.tool_result
+            + b.thinking
+            + b.system_messages
+            + b.tool_schemas;
+        assert_eq!(b.total, sum);
     }
 }
