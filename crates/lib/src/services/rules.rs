@@ -132,9 +132,7 @@ fn load_rule_file(path: &Path) -> Result<Rule, String> {
         .ok_or_else(|| "no filename stem".to_string())?
         .to_string();
     let (meta, body) = parse_frontmatter(&content);
-    let title = meta
-        .title
-        .unwrap_or_else(|| name.replace(['-', '_'], " "));
+    let title = meta.title.unwrap_or_else(|| name.replace(['-', '_'], " "));
     Ok(Rule {
         name,
         title,
