@@ -3975,7 +3975,7 @@ fn execute_session_picker(engine: &mut QueryEngine) {
                 data.total_cost_usd,
             );
         }
-        Err(e) => println!("Failed to resume {chosen}: {e}"),
+        Err(e) => eprintln!("Failed to resume session: {e}"),
     }
 }
 
