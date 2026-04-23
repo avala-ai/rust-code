@@ -432,6 +432,12 @@ pub const COMMANDS: &[Command] = &[
         description: "Save/load/list/delete named config profiles (try /profile help)",
         hidden: false,
     },
+    Command {
+        name: "tokens",
+        aliases: &[],
+        description: "Estimate the token count of arbitrary text (e.g. /tokens hello world)",
+        hidden: false,
+    },
 ];
 
 /// Execute a slash command. Returns how to proceed.
@@ -1718,6 +1724,25 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
         }
         Some("profile") => {
             execute_profile(args, engine);
+            CommandResult::Handled
+        }
+        Some("tokens") => {
+            let text = args.unwrap_or("").trim();
+            if text.is_empty() {
+                println!("Usage: /tokens <text>");
+                println!("Example: /tokens the quick brown fox");
+                return CommandResult::Handled;
+            }
+            let n = agent_code_lib::services::tokens::estimate_tokens(text);
+            let bytes = text.len();
+            let chars = text.chars().count();
+            println!("  Tokens:     ~{n}");
+            println!("  Characters: {chars}");
+            println!("  Bytes:      {bytes}");
+            if n > 0 {
+                let ratio = chars as f64 / n as f64;
+                println!("  Chars/token: {ratio:.2}");
+            }
             CommandResult::Handled
         }
         Some("effort") => {
