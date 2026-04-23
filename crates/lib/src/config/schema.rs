@@ -426,6 +426,12 @@ pub enum HookEvent {
     /// full `additional_dirs` list, and a `cause` tag ("cd" or
     /// "add-dir") so repo-watching hooks can retune their scope.
     CwdChanged,
+    /// Fired when on-disk extensions are reloaded (via `/reload`).
+    /// Context carries skill / agent / hook / MCP-server counts after
+    /// the reload, so external dashboards or alerting hooks can
+    /// detect "a skill file just got added" without polling the
+    /// filesystem.
+    ConfigChange,
 }
 
 /// A configured hook action.
@@ -744,6 +750,14 @@ mod tests {
         assert_eq!(json, "\"cwd_changed\"");
         let back: HookEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(back, HookEvent::CwdChanged);
+    }
+
+    #[test]
+    fn hook_event_serde_roundtrip_config_change() {
+        let json = serde_json::to_string(&HookEvent::ConfigChange).unwrap();
+        assert_eq!(json, "\"config_change\"");
+        let back: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, HookEvent::ConfigChange);
     }
 
     // ---- HookAction serde round-trip ----

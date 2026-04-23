@@ -2255,6 +2255,10 @@ const HOOK_EVENT_CATALOG: &[(&str, &str)] = &[
         "cwd_changed",
         "session cwd or tracked dirs changed (context: previous_cwd, new_cwd, additional_dirs, cause)",
     ),
+    (
+        "config_change",
+        "/reload rescanned on-disk extensions (context: skill_count, agent_count, hook_count, mcp_count)",
+    ),
     ("session_stop", "when the session ends"),
 ];
 
@@ -2294,6 +2298,7 @@ fn format_hook_event(event: &agent_code_lib::config::HookEvent) -> &'static str 
         HookEvent::Stop => "stop",
         HookEvent::Notification => "notification",
         HookEvent::CwdChanged => "cwd_changed",
+        HookEvent::ConfigChange => "config_change",
     }
 }
 
@@ -2317,6 +2322,7 @@ fn parse_hook_event(raw: &str) -> Option<agent_code_lib::config::HookEvent> {
         "stop" => HookEvent::Stop,
         "notification" => HookEvent::Notification,
         "cwd_changed" => HookEvent::CwdChanged,
+        "config_change" => HookEvent::ConfigChange,
         _ => return None,
     })
 }
@@ -3962,6 +3968,18 @@ fn execute_reload(engine: &mut QueryEngine) {
          · {hook_count} hook(s) · {mcp_count} MCP server(s)"
     );
     println!("System prompt cache cleared; changes take effect on next turn.");
+
+    // Fire ConfigChange so external dashboards / CI watchers see the
+    // reload. Use block_on to bridge the sync dispatcher into the
+    // async hook registry; matches the /compact and /cd precedent.
+    if let Ok(h) = tokio::runtime::Handle::try_current() {
+        let _ = h.block_on(engine.fire_config_change_hooks(
+            skill_count,
+            agent_count,
+            hook_count,
+            mcp_count,
+        ));
+    }
 }
 
 /// Execute `/editor` — open `$EDITOR` on a temp file, return the
@@ -5696,6 +5714,19 @@ mod tests {
         use agent_code_lib::config::HookEvent;
         assert_eq!(parse_hook_event("cwd_changed"), Some(HookEvent::CwdChanged));
         assert_eq!(parse_hook_event("cwd-changed"), Some(HookEvent::CwdChanged));
+    }
+
+    #[test]
+    fn parse_hook_event_accepts_config_change() {
+        use agent_code_lib::config::HookEvent;
+        assert_eq!(
+            parse_hook_event("config_change"),
+            Some(HookEvent::ConfigChange)
+        );
+        assert_eq!(
+            parse_hook_event("config-change"),
+            Some(HookEvent::ConfigChange)
+        );
     }
 
     #[test]

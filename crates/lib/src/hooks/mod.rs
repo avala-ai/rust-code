@@ -14,6 +14,7 @@
 //! - `Stop` — agent finished responding; about to yield to the user
 //! - `Notification` — agent needs user attention (budget / context full)
 //! - `CwdChanged` — session cwd or tracked dirs changed
+//! - `ConfigChange` — /reload rescanned on-disk extensions
 //!
 //! Hooks can be shell commands, HTTP endpoints, or prompt templates,
 //! configured in the settings file.
@@ -205,6 +206,12 @@ mod tests {
     async fn run_hooks_fires_cwd_changed() {
         let body = run_and_read(HookEvent::CwdChanged).await;
         assert!(body.contains("fired"), "CwdChanged hook did not run");
+    }
+
+    #[tokio::test]
+    async fn run_hooks_fires_config_change() {
+        let body = run_and_read(HookEvent::ConfigChange).await;
+        assert!(body.contains("fired"), "ConfigChange hook did not run");
     }
 
     /// Registering a hook for one event must NOT cause it to fire when
