@@ -69,6 +69,17 @@ enum Event<'a> {
         session_id: &'a str,
         model: &'a str,
         timestamp: &'a str,
+        /// Session working directory. Absolute path. Lets consumers
+        /// tag runs against a project root without polling state.
+        cwd: &'a str,
+        /// Host OS identifier (`linux`, `macos`, `windows`).
+        os: &'a str,
+        /// Host CPU architecture (`x86_64`, `aarch64`, ...).
+        arch: &'a str,
+        /// Version of the agent binary — matches the `version` field in
+        /// `crates/cli/Cargo.toml`. Use for correlating runs with
+        /// release notes when triaging issues.
+        agent_version: &'a str,
     },
     /// A new agent turn has just begun. Fires BEFORE any text or tool
     /// activity for this turn, so consumers can render a "turn N"
@@ -167,10 +178,17 @@ impl JsonStreamSink {
     /// Emit the `session_start` envelope before the first turn.
     pub fn emit_session_start(&self, session_id: &str) {
         let ts = chrono::Utc::now().to_rfc3339();
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         emit(&Event::SessionStart {
             session_id,
             model: &self.model,
             timestamp: &ts,
+            cwd: &cwd,
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+            agent_version: env!("CARGO_PKG_VERSION"),
         });
     }
 
@@ -353,10 +371,52 @@ mod tests {
             session_id: "abc-123",
             model: "test-model",
             timestamp: "2026-04-15T00:00:00Z",
+            cwd: "/tmp/proj",
+            os: "linux",
+            arch: "x86_64",
+            agent_version: "9.9.9",
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"session_start""#));
         assert!(json.contains(r#""session_id":"abc-123""#));
+        assert!(json.contains(r#""cwd":"/tmp/proj""#));
+        assert!(json.contains(r#""os":"linux""#));
+        assert!(json.contains(r#""arch":"x86_64""#));
+        assert!(json.contains(r#""agent_version":"9.9.9""#));
+    }
+
+    /// Envelope snapshot guard: `session_start` carries exactly these 7
+    /// keys (type + 6 payload). If a future refactor adds or removes a
+    /// field, strict-shape JSONL consumers silently break — this test
+    /// forces the migration conversation.
+    #[test]
+    fn session_start_envelope_shape_is_seven_keys() {
+        let event = Event::SessionStart {
+            session_id: "x",
+            model: "m",
+            timestamp: "t",
+            cwd: "/w",
+            os: "linux",
+            arch: "x86_64",
+            agent_version: "0.0.0",
+        };
+        let val = serde_json::to_value(event).unwrap();
+        let obj = val.as_object().unwrap();
+        let mut keys: Vec<_> = obj.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "agent_version",
+                "arch",
+                "cwd",
+                "model",
+                "os",
+                "session_id",
+                "timestamp",
+                "type",
+            ]
+        );
     }
 
     #[test]
@@ -416,6 +476,10 @@ mod tests {
                 session_id: "x",
                 model: "m",
                 timestamp: "t",
+                cwd: "/w",
+                os: "linux",
+                arch: "x86_64",
+                agent_version: "0.0.0",
             })
             .unwrap(),
             serde_json::to_value(Event::TurnStart { turn: 1 }).unwrap(),
