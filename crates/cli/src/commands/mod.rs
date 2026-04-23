@@ -127,6 +127,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "tools",
+        aliases: &[],
+        description: "List every tool the agent can invoke in this session",
+        hidden: false,
+    },
+    Command {
         name: "review",
         aliases: &[],
         description: "Ask the agent to review the current diff",
@@ -919,6 +925,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                     println!("  {}{} — {}", skill.name, invocable, desc);
                 }
             }
+            CommandResult::Handled
+        }
+        Some("tools") => {
+            execute_tools(engine);
             CommandResult::Handled
         }
         Some("skill") => {
@@ -3964,6 +3974,46 @@ fn execute_reload(engine: &mut QueryEngine) {
     println!("System prompt cache cleared; changes take effect on next turn.");
 }
 
+/// Render a one-line summary of the tool: name + first line of the
+/// tool's description (normalized to a single space-joined string).
+/// Kept pure so tests can probe it without an engine.
+fn render_tool_summary(name: &str, description: &str) -> String {
+    // Collapse whitespace so multi-line descriptions render as one
+    // clean line in the /tools output.
+    let collapsed: String = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clipped = clip_summary(&collapsed, 120);
+    format!("  {name:<22} {clipped}")
+}
+
+/// Clip a summary string to at most `max_chars` characters (not bytes
+/// — respects multi-byte boundaries), appending `…` when truncated.
+fn clip_summary(s: &str, max_chars: usize) -> String {
+    let count = s.chars().count();
+    if count <= max_chars {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{head}…")
+}
+
+/// Execute `/tools` — list every tool currently registered on the
+/// active query engine. Gives users a way to see what's available in
+/// this session without reading source or `/help` (which only lists
+/// slash commands). Sorted alphabetically for stable output.
+fn execute_tools(engine: &QueryEngine) {
+    let tools = engine.tools().all();
+    if tools.is_empty() {
+        println!("No tools registered.");
+        return;
+    }
+    let mut sorted: Vec<_> = tools.iter().collect();
+    sorted.sort_by(|a, b| a.name().cmp(b.name()));
+    println!("{} tool(s) available:", sorted.len());
+    for tool in sorted {
+        println!("{}", render_tool_summary(tool.name(), tool.description()));
+    }
+}
+
 /// Execute `/editor` — open `$EDITOR` on a temp file, return the
 /// contents as a prompt when the editor exits.
 ///
@@ -5149,6 +5199,50 @@ mod tests {
         let base = std::env::temp_dir();
         let got = resolve_cd_target("~", &base).unwrap();
         assert_eq!(got, home_canonical.unwrap());
+    }
+
+    // ---- /tools helpers ----
+
+    #[test]
+    fn render_tool_summary_collapses_whitespace() {
+        let out = render_tool_summary("Bash", "Run a shell\n  command  with\targs");
+        assert!(out.contains("Bash"));
+        assert!(out.contains("Run a shell command with args"));
+        assert!(!out.contains('\n'));
+    }
+
+    #[test]
+    fn render_tool_summary_pads_name_column() {
+        let out = render_tool_summary("X", "desc");
+        // Name padded to 22 chars so the description column aligns
+        // across rows in the listing.
+        assert!(out.starts_with("  X"));
+        let desc_idx = out.find("desc").unwrap();
+        assert!(
+            desc_idx >= 24,
+            "description should start after padded name: {out:?}"
+        );
+    }
+
+    #[test]
+    fn clip_summary_short_passthrough() {
+        assert_eq!(clip_summary("short", 100), "short");
+    }
+
+    #[test]
+    fn clip_summary_truncates_with_ellipsis() {
+        let long = "a".repeat(200);
+        let clipped = clip_summary(&long, 30);
+        assert_eq!(clipped.chars().count(), 30);
+        assert!(clipped.ends_with('…'));
+    }
+
+    #[test]
+    fn clip_summary_respects_char_boundaries() {
+        // Multi-byte chars — shouldn't panic or produce invalid utf-8.
+        let glyphy = "café🌮burrito🌯".repeat(20);
+        let clipped = clip_summary(&glyphy, 10);
+        assert_eq!(clipped.chars().count(), 10);
     }
 
     #[test]

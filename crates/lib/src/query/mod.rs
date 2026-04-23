@@ -146,6 +146,14 @@ impl QueryEngine {
         &mut self.state
     }
 
+    /// Get a reference to the active tool registry. Used by CLI
+    /// surfaces that want to introspect which tools are available
+    /// in the current session (e.g. `/tools` listings or doctor
+    /// checks).
+    pub fn tools(&self) -> &ToolRegistry {
+        &self.tools
+    }
+
     /// Run any configured `CwdChanged` hooks when the session's
     /// working-directory state mutates. `cause` is `"cd"` when the
     /// primary cwd was replaced (e.g. via `/cd`) and `"add-dir"` when
