@@ -177,6 +177,28 @@ impl QueryEngine {
             .await
     }
 
+    /// Run any configured `ConfigChange` hooks when on-disk extensions
+    /// are reloaded (via `/reload`). Context carries counts for each
+    /// extension category so external dashboards can alert on adds /
+    /// removes without polling the filesystem.
+    pub async fn fire_config_change_hooks(
+        &self,
+        skill_count: usize,
+        agent_count: usize,
+        hook_count: usize,
+        mcp_count: usize,
+    ) -> Vec<crate::hooks::HookResult> {
+        let ctx = serde_json::json!({
+            "skill_count": skill_count,
+            "agent_count": agent_count,
+            "hook_count": hook_count,
+            "mcp_count": mcp_count,
+        });
+        self.hooks
+            .run_hooks(&HookEvent::ConfigChange, None, &ctx)
+            .await
+    }
+
     /// Run any configured `FileChanged` hooks when a file-mutating tool
     /// (`FileWrite`, `FileEdit`, `MultiEdit`, `NotebookEdit`) completes.
     /// Consolidates what would otherwise be four separate `PostToolUse`
