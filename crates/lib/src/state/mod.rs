@@ -45,6 +45,10 @@ pub struct AppState {
     /// knows it's allowed to read/edit files outside `cwd` without
     /// re-asking. Cleared on session exit — not persisted.
     pub additional_dirs: Vec<String>,
+    /// When true, the system prompt instructs the model to keep
+    /// responses terse (≤3 sentences unless asked for detail). Toggled
+    /// by `/brief`. Session-local — not persisted.
+    pub brief_mode: bool,
 }
 
 impl AppState {
@@ -67,6 +71,7 @@ impl AppState {
             session_id: crate::services::session::new_session_id(),
             break_cache_next: false,
             additional_dirs: Vec::new(),
+            brief_mode: false,
         }
     }
 
@@ -115,6 +120,7 @@ mod tests {
         assert!(state.messages.is_empty());
         assert!(!state.break_cache_next);
         assert!(state.additional_dirs.is_empty());
+        assert!(!state.brief_mode);
     }
 
     #[test]

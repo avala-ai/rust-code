@@ -863,6 +863,20 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
     }
     prompt.push('\n');
 
+    // Brief mode: user has opted into terse responses. The instruction
+    // lives near the top so it stays highly salient across long
+    // contexts.
+    if state.brief_mode {
+        prompt.push_str(
+            "# Response style\n\n\
+             Brief mode is enabled. Keep responses under 3 sentences unless the user \
+             asks for detail or the task genuinely requires a longer answer (e.g. a \
+             file listing, a code block, a multi-step plan). Skip prefaces, recaps, \
+             and restating the question. Report tool output concisely and end with a \
+             short decision or next step.\n\n",
+        );
+    }
+
     // Inject memory context (project + user + on-demand relevant).
     let mut memory = crate::memory::MemoryContext::load(Some(std::path::Path::new(&state.cwd)));
 
@@ -1131,6 +1145,34 @@ mod tests {
         assert!(prompt.contains("Additional tracked directories"));
         assert!(prompt.contains("/tmp/alpha"));
         assert!(prompt.contains("/tmp/beta"));
+    }
+
+    /// Brief mode off: no "Response style" block in the system prompt.
+    #[test]
+    fn system_prompt_omits_brief_block_when_off() {
+        let state = AppState::new(crate::config::Config::default());
+        let tools = ToolRegistry::new();
+        let prompt = build_system_prompt(&tools, &state);
+        assert!(!prompt.contains("Brief mode is enabled"));
+    }
+
+    /// Brief mode on: system prompt includes a terse-style instruction
+    /// near the top so it's salient in long contexts.
+    #[test]
+    fn system_prompt_injects_brief_block_when_on() {
+        let mut state = AppState::new(crate::config::Config::default());
+        state.brief_mode = true;
+        let tools = ToolRegistry::new();
+        let prompt = build_system_prompt(&tools, &state);
+        assert!(prompt.contains("Brief mode is enabled"));
+        assert!(prompt.contains("under 3 sentences"));
+        // Must appear before tool docs so it's not buried.
+        let brief_idx = prompt.find("Brief mode is enabled").unwrap();
+        let tools_idx = prompt.find("# Available Tools").unwrap();
+        assert!(
+            brief_idx < tools_idx,
+            "brief block should come before Available Tools"
+        );
     }
 
     /// Verify that cancelling via the shared handle cancels the current

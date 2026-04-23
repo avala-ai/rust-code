@@ -151,6 +151,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "brief",
+        aliases: &[],
+        description: "Toggle brief mode (terse responses, ≤3 sentences)",
+        hidden: false,
+    },
+    Command {
         name: "init",
         aliases: &[],
         description: "Initialize project config (.agent/settings.toml)",
@@ -969,6 +975,16 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                 println!("Plan mode enabled. Only read-only tools available.");
             } else {
                 println!("Plan mode disabled. All tools available.");
+            }
+            CommandResult::Handled
+        }
+        Some("brief") => {
+            let brief = &mut engine.state_mut().brief_mode;
+            *brief = !*brief;
+            if *brief {
+                println!("Brief mode enabled. Responses will be kept terse (≤3 sentences).");
+            } else {
+                println!("Brief mode disabled. Response style restored.");
             }
             CommandResult::Handled
         }
