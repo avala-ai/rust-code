@@ -298,6 +298,8 @@ pub struct UiConfig {
     pub theme: String,
     /// Editing mode: "emacs" or "vi".
     pub edit_mode: String,
+    /// Between-turn status line customization.
+    pub statusline: StatusLineConfig,
 }
 
 impl Default for UiConfig {
@@ -307,8 +309,119 @@ impl Default for UiConfig {
             syntax_highlight: true,
             theme: "dark".to_string(),
             edit_mode: "emacs".to_string(),
+            statusline: StatusLineConfig::default(),
         }
     }
+}
+
+/// Customization for the status divider the REPL draws before each
+/// prompt after the first turn.
+///
+/// When `enabled = false` the divider is suppressed. When `template`
+/// is set, the string is rendered with `{placeholder}` substitution
+/// instead of the built-in layout, letting operators reshape the
+/// line without waiting for a feature PR. Unknown placeholders are
+/// left verbatim so future runtime additions degrade gracefully on
+/// older configs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatusLineConfig {
+    /// When false, the divider between turns is not drawn at all.
+    pub enabled: bool,
+    /// Optional format string. Placeholders: `{model}`, `{turn}`,
+    /// `{tokens}`, `{cost}`, `{cwd}`, `{session_id}`. When None, the
+    /// built-in default layout is used.
+    pub template: Option<String>,
+}
+
+impl Default for StatusLineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            template: None,
+        }
+    }
+}
+
+/// Variables available to [`render_statusline_template`].
+///
+/// Passed as a struct (rather than a HashMap) so the placeholder set
+/// is fixed at compile time — typos in placeholders are caught by
+/// `render_statusline_template`, which leaves unknown `{...}` tokens
+/// verbatim for forwards compatibility.
+#[derive(Debug, Clone)]
+pub struct StatusLineVars<'a> {
+    pub model: &'a str,
+    pub turn: u64,
+    pub tokens: u64,
+    pub cost_usd: f64,
+    pub cwd: &'a str,
+    pub session_id: &'a str,
+}
+
+/// Substitute `{name}` placeholders in `template` with values from
+/// `vars`. Unknown placeholders pass through unchanged so newer
+/// templates don't break an older runtime.
+///
+/// Escape a literal `{` or `}` with `{{` / `}}`.
+pub fn render_statusline_template(template: &str, vars: &StatusLineVars<'_>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => {
+                if chars.peek() == Some(&'{') {
+                    // Escaped literal `{`.
+                    chars.next();
+                    out.push('{');
+                    continue;
+                }
+                let mut name = String::new();
+                let mut closed = false;
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        closed = true;
+                        break;
+                    }
+                    name.push(inner);
+                }
+                if !closed {
+                    // Unterminated placeholder — emit it back verbatim
+                    // so a partial template doesn't silently drop the
+                    // opening brace and trailing text.
+                    out.push('{');
+                    out.push_str(&name);
+                    break;
+                }
+                match name.as_str() {
+                    "model" => out.push_str(vars.model),
+                    "turn" => out.push_str(&vars.turn.to_string()),
+                    "tokens" => out.push_str(&vars.tokens.to_string()),
+                    "cost" => out.push_str(&format!("{:.4}", vars.cost_usd)),
+                    "cwd" => out.push_str(vars.cwd),
+                    "session_id" => out.push_str(vars.session_id),
+                    _ => {
+                        // Unknown placeholder — pass through.
+                        out.push('{');
+                        out.push_str(&name);
+                        out.push('}');
+                    }
+                }
+            }
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                    out.push('}');
+                } else {
+                    // Stray `}` — keep it so the user sees exactly
+                    // what they typed and can fix their template.
+                    out.push('}');
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Feature flags. All enabled by default — no artificial gates.
@@ -551,6 +664,111 @@ mod tests {
     fn ui_config_default_edit_mode_emacs() {
         let cfg = UiConfig::default();
         assert_eq!(cfg.edit_mode, "emacs");
+    }
+
+    // ---- StatusLineConfig ----
+
+    #[test]
+    fn statusline_default_is_enabled_with_no_template() {
+        let cfg = StatusLineConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.template.is_none());
+    }
+
+    #[test]
+    fn statusline_parses_from_toml() {
+        let t: UiConfig = toml::from_str(
+            r#"
+[statusline]
+enabled = true
+template = "{model} · turn {turn}"
+"#,
+        )
+        .unwrap();
+        assert!(t.statusline.enabled);
+        assert_eq!(
+            t.statusline.template.as_deref(),
+            Some("{model} · turn {turn}")
+        );
+    }
+
+    #[test]
+    fn statusline_disabled_flag_roundtrips() {
+        let t: UiConfig = toml::from_str(
+            r#"
+[statusline]
+enabled = false
+"#,
+        )
+        .unwrap();
+        assert!(!t.statusline.enabled);
+        assert!(t.statusline.template.is_none());
+    }
+
+    fn sample_vars() -> StatusLineVars<'static> {
+        StatusLineVars {
+            model: "gpt-5.4",
+            turn: 3,
+            tokens: 1234,
+            cost_usd: 0.0421,
+            cwd: "/home/dev/proj",
+            session_id: "sess-abc",
+        }
+    }
+
+    #[test]
+    fn template_renders_all_builtin_placeholders() {
+        let out = render_statusline_template(
+            "m={model} t={turn} tok={tokens} c={cost} cwd={cwd} id={session_id}",
+            &sample_vars(),
+        );
+        assert_eq!(
+            out,
+            "m=gpt-5.4 t=3 tok=1234 c=0.0421 cwd=/home/dev/proj id=sess-abc"
+        );
+    }
+
+    #[test]
+    fn template_escapes_double_braces_literally() {
+        let out = render_statusline_template("{{model}}={model}", &sample_vars());
+        assert_eq!(out, "{model}=gpt-5.4");
+    }
+
+    #[test]
+    fn template_unknown_placeholder_passes_through() {
+        // Forwards-compat: if a newer template uses `{branch}` but
+        // this runtime doesn't know it yet, leave it verbatim
+        // instead of silently dropping the text.
+        let out = render_statusline_template("{model}|{branch}", &sample_vars());
+        assert_eq!(out, "gpt-5.4|{branch}");
+    }
+
+    #[test]
+    fn template_unterminated_brace_is_preserved() {
+        // Malformed `{` with no closer must not swallow the rest of
+        // the template. Operator gets exactly what they typed so the
+        // fix is obvious.
+        let out = render_statusline_template("prefix {model", &sample_vars());
+        assert_eq!(out, "prefix {model");
+    }
+
+    #[test]
+    fn template_cost_is_four_digit_precision() {
+        // Matches the built-in layout which always shows ${:.4}.
+        let out = render_statusline_template("${cost}", &sample_vars());
+        assert_eq!(out, "$0.0421");
+    }
+
+    #[test]
+    fn template_no_placeholders_is_returned_as_is() {
+        let out = render_statusline_template("static status", &sample_vars());
+        assert_eq!(out, "static status");
+    }
+
+    #[test]
+    fn template_stray_closing_brace_is_preserved() {
+        let out = render_statusline_template("} {model}", &sample_vars());
+        assert_eq!(out, "} gpt-5.4");
     }
 
     // ---- FeaturesConfig::default() ----

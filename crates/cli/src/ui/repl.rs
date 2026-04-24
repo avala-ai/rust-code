@@ -648,18 +648,37 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
         // Inline status divider before prompt (after first turn).
         {
             let state = engine.state();
-            if state.turn_count > 0 {
+            let statusline_cfg = &state.config.ui.statusline;
+            if state.turn_count > 0 && statusline_cfg.enabled {
                 let term_w = crossterm::terminal::size()
                     .map(|(w, _)| w as usize)
                     .unwrap_or(80)
                     .min(100);
-                let status = format!(
-                    " {} · turn {} · {} tokens · ${:.4} ",
-                    state.config.api.model,
-                    state.turn_count,
-                    state.total_usage.total(),
-                    state.total_cost_usd,
-                );
+                let status = if let Some(template) = statusline_cfg.template.as_deref() {
+                    let vars = agent_code_lib::config::StatusLineVars {
+                        model: &state.config.api.model,
+                        turn: state.turn_count as u64,
+                        tokens: state.total_usage.total(),
+                        cost_usd: state.total_cost_usd,
+                        cwd: &state.cwd,
+                        session_id: &state.session_id,
+                    };
+                    // Wrap in a single space on each side so the
+                    // template sits cleanly between the divider
+                    // dashes, matching the built-in layout.
+                    format!(
+                        " {} ",
+                        agent_code_lib::config::render_statusline_template(template, &vars)
+                    )
+                } else {
+                    format!(
+                        " {} · turn {} · {} tokens · ${:.4} ",
+                        state.config.api.model,
+                        state.turn_count,
+                        state.total_usage.total(),
+                        state.total_cost_usd,
+                    )
+                };
                 let pad = term_w.saturating_sub(status.len());
                 let left = pad / 2;
                 let right = pad - left;
