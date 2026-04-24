@@ -2269,6 +2269,10 @@ const HOOK_EVENT_CATALOG: &[(&str, &str)] = &[
         "config_change",
         "/reload rescanned on-disk extensions (context: skill_count, agent_count, hook_count, mcp_count)",
     ),
+    (
+        "error",
+        "a turn exited in an unrecoverable error (context: stage, message, turn)",
+    ),
     ("session_stop", "when the session ends"),
 ];
 
@@ -2309,6 +2313,7 @@ fn format_hook_event(event: &agent_code_lib::config::HookEvent) -> &'static str 
         HookEvent::Notification => "notification",
         HookEvent::CwdChanged => "cwd_changed",
         HookEvent::ConfigChange => "config_change",
+        HookEvent::Error => "error",
     }
 }
 
@@ -2333,6 +2338,7 @@ fn parse_hook_event(raw: &str) -> Option<agent_code_lib::config::HookEvent> {
         "notification" => HookEvent::Notification,
         "cwd_changed" => HookEvent::CwdChanged,
         "config_change" => HookEvent::ConfigChange,
+        "error" => HookEvent::Error,
         _ => return None,
     })
 }
