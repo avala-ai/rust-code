@@ -137,6 +137,18 @@ pub struct ApiConfig {
     /// ANTHROPIC_API_KEY, OPENAI_API_KEY env vars.
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
+    /// Optional shell command that prints an API key to stdout.
+    ///
+    /// When `api_key` is unset after file + env resolution, this
+    /// command is executed via `bash -c` and its trimmed stdout is
+    /// used as the API key. Intended for pulling short-lived keys
+    /// from a secrets manager (vault, 1Password, aws sts, etc.)
+    /// instead of pinning a long-lived key to disk.
+    ///
+    /// Not serialized back out so the helper command doesn't land in
+    /// a dumped config that could be shared.
+    #[serde(default, skip_serializing)]
+    pub api_key_helper: Option<String>,
     /// Maximum output tokens per response.
     pub max_output_tokens: Option<u32>,
     /// Thinking mode: "enabled", "disabled", or "adaptive".
@@ -228,6 +240,7 @@ impl Default for ApiConfig {
             model: "gpt-5.4".to_string(),
             fast_model: None,
             api_key,
+            api_key_helper: None,
             max_output_tokens: Some(16384),
             thinking: None,
             effort: None,
@@ -505,6 +518,44 @@ mod tests {
     fn api_config_default_effort_is_none() {
         let cfg = ApiConfig::default();
         assert!(cfg.effort.is_none());
+    }
+
+    #[test]
+    fn api_config_default_api_key_helper_is_none() {
+        let cfg = ApiConfig::default();
+        assert!(cfg.api_key_helper.is_none());
+    }
+
+    #[test]
+    fn api_config_parses_api_key_helper_from_toml() {
+        let toml = r#"
+base_url = "https://api.example.com/v1"
+model = "gpt-5"
+timeout_secs = 60
+max_retries = 3
+api_key_helper = "/usr/local/bin/get-api-key --profile dev"
+"#;
+        let cfg: ApiConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.api_key_helper.as_deref(),
+            Some("/usr/local/bin/get-api-key --profile dev")
+        );
+    }
+
+    #[test]
+    fn api_config_api_key_helper_not_serialized() {
+        // Matches the existing contract for `api_key`: helper command
+        // must stay out of any dumped config to avoid leaking it via
+        // `--print-config` or similar.
+        let cfg = ApiConfig {
+            api_key_helper: Some("/usr/bin/secret-pull".to_string()),
+            ..ApiConfig::default()
+        };
+        let dumped = toml::to_string(&cfg).unwrap();
+        assert!(
+            !dumped.contains("api_key_helper"),
+            "api_key_helper leaked into serialized config: {dumped}"
+        );
     }
 
     #[test]

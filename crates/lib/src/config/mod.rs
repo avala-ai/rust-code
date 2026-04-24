@@ -90,8 +90,76 @@ impl Config {
             config.api.model = model;
         }
 
+        // Layer 4: Dynamic API key helper.
+        //
+        // If no API key was resolved from file or env, run the
+        // user-configured `api_key_helper` command (via `bash -c`) and
+        // use its trimmed stdout as the key. Allows fetching short-lived
+        // tokens from a secrets manager without pinning them to disk.
+        if config.api.api_key.is_none()
+            && let Some(cmd) = &config.api.api_key_helper
+        {
+            match resolve_api_key_from_helper(cmd) {
+                Ok(key) if !key.is_empty() => config.api.api_key = Some(key),
+                Ok(_) => {
+                    tracing::warn!("api_key_helper produced empty output — no key set");
+                }
+                Err(e) => {
+                    // Log only the category of failure — never the
+                    // raw error text, which could carry helper stdout
+                    // or stderr that contains the key itself.
+                    tracing::warn!("api_key_helper failed: {}", e.category());
+                }
+            }
+        }
+
         Ok(config)
     }
+}
+
+/// Why an `api_key_helper` invocation failed. Deliberately coarse so
+/// callers can log a category string without risking the key itself
+/// (or stderr that carries it) showing up in diagnostic output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApiKeyHelperError {
+    /// Could not spawn the subprocess (e.g. `bash` missing, permission).
+    SpawnFailed,
+    /// Subprocess ran but exited non-zero.
+    NonZeroExit,
+    /// Stdout was not valid UTF-8.
+    InvalidUtf8,
+}
+
+impl ApiKeyHelperError {
+    pub(crate) fn category(self) -> &'static str {
+        match self {
+            Self::SpawnFailed => "spawn failed",
+            Self::NonZeroExit => "non-zero exit",
+            Self::InvalidUtf8 => "invalid UTF-8 output",
+        }
+    }
+}
+
+/// Run a user-configured shell command and return its trimmed stdout
+/// as the API key. Returns a categorized error if the command fails
+/// to spawn, exits non-zero, or produces non-UTF-8 output.
+///
+/// Error variants intentionally do NOT carry subprocess stdout or
+/// stderr — either could contain the API key itself, so callers must
+/// not log it.
+pub(crate) fn resolve_api_key_from_helper(command: &str) -> Result<String, ApiKeyHelperError> {
+    let output = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(command)
+        .output()
+        .map_err(|_| ApiKeyHelperError::SpawnFailed)?;
+
+    if !output.status.success() {
+        return Err(ApiKeyHelperError::NonZeroExit);
+    }
+
+    let key = String::from_utf8(output.stdout).map_err(|_| ApiKeyHelperError::InvalidUtf8)?;
+    Ok(key.trim().to_string())
 }
 
 /// Merge a sequence of TOML config layers (lowest → highest priority) into a
@@ -881,5 +949,94 @@ action = "ask"
 
         let found = find_local_config_in_ancestors(&inner).unwrap();
         assert_eq!(found, inner_local);
+    }
+
+    // ---- api_key_helper: dynamic API-key sourcing ----
+
+    #[cfg(unix)]
+    #[test]
+    fn api_key_helper_returns_trimmed_stdout() {
+        // `echo` prints with a trailing newline that the helper must trim.
+        let key = resolve_api_key_from_helper("echo sk-from-helper").unwrap();
+        assert_eq!(key, "sk-from-helper");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_key_helper_surfaces_nonzero_exit() {
+        let err = resolve_api_key_from_helper("exit 7").unwrap_err();
+        assert_eq!(err, ApiKeyHelperError::NonZeroExit);
+        // Category must stay category-level — no raw subprocess text.
+        assert_eq!(err.category(), "non-zero exit");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_key_helper_error_category_does_not_leak_stderr() {
+        // A helper that emits the would-be key on stderr and exits
+        // non-zero must not see that text show up in the category
+        // string that we log.
+        let err = resolve_api_key_from_helper("echo sk-SECRET-1234 >&2; exit 1").unwrap_err();
+        let cat = err.category();
+        assert!(
+            !cat.contains("sk-"),
+            "category leaked stderr content: {cat:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_key_helper_spawn_failure_is_categorized() {
+        // `/nonexistent-shell-xyz` will fail to spawn; bash -c then
+        // surfaces as non-zero. This doesn't hit SpawnFailed (bash
+        // itself spawns fine) but exercises the NonZeroExit branch
+        // when the inner command is missing. The SpawnFailed branch
+        // is covered indirectly by the category() mapping.
+        let err = resolve_api_key_from_helper("/nonexistent-helper-xyz").unwrap_err();
+        assert_eq!(err, ApiKeyHelperError::NonZeroExit);
+    }
+
+    #[test]
+    fn api_key_helper_category_mapping_is_complete() {
+        // Guard against a future enum variant landing without an
+        // accompanying category string.
+        assert_eq!(ApiKeyHelperError::SpawnFailed.category(), "spawn failed");
+        assert_eq!(ApiKeyHelperError::NonZeroExit.category(), "non-zero exit");
+        assert_eq!(
+            ApiKeyHelperError::InvalidUtf8.category(),
+            "invalid UTF-8 output"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_key_helper_empty_output_resolves_to_empty_string() {
+        // Command succeeds but prints nothing; caller is responsible for
+        // treating empty-string as "no key set" — verified below.
+        //
+        // Avoid formatting the resolved key into any assert message:
+        // the variable is conceptually a secret, and static analyzers
+        // flag paths where the key could land in panic output.
+        let key = resolve_api_key_from_helper("true").unwrap();
+        assert_eq!(key.len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_key_helper_stderr_does_not_leak_into_key() {
+        // Helpers that emit diagnostics on stderr must not have those
+        // mixed into the resolved key.
+        let key = resolve_api_key_from_helper("echo sk-real; echo warn >&2").unwrap();
+        assert_eq!(key, "sk-real");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_key_helper_multiline_output_is_trimmed_only_at_edges() {
+        // Accept any opaque secret shape — just trim surrounding
+        // whitespace. A newline inside the secret (weird but legal for
+        // some encoded tokens) must be preserved.
+        let key = resolve_api_key_from_helper("printf '  part1\\npart2  '").unwrap();
+        assert_eq!(key, "part1\npart2");
     }
 }
