@@ -7,6 +7,27 @@
 //! - Destructive command warnings
 //! - Output truncation for large results
 //! - Cancellation via CancellationToken
+//!
+//! The safety pipeline is split into named sub-modules so each helper
+//! can be tested in isolation:
+//!
+//! - [`bash_security`] — destructive-command classification
+//! - [`command_semantics`] — coarse effect classification
+//! - [`read_only_validation`] — refuse mutations under read-only profile
+//! - [`sandbox_decision`] — single decision function for a command
+//! - [`sed_edit_parser`] + [`sed_validation`] — gate `sed -i` through the
+//!   FileEdit permission path
+//!
+//! `bash.rs` itself is now a thin orchestrator: it calls the helpers in
+//! order from `validate_input`, then dispatches to the shell with the
+//! sandbox wrapping the host already configured.
+
+pub mod bash_security;
+pub mod command_semantics;
+pub mod read_only_validation;
+pub mod sandbox_decision;
+pub mod sed_edit_parser;
+pub mod sed_validation;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -19,72 +40,15 @@ use tokio::process::Command;
 use super::{Tool, ToolContext, ToolResult};
 use crate::error::ToolError;
 
+pub use bash_security::{DestructiveFinding, DestructivenessLevel, classify_destructive};
+pub use command_semantics::{Effect, classify, classify_single, is_read_only};
+pub use read_only_validation::{PermissionProfile, ReadOnlyViolation, validate_read_only};
+pub use sandbox_decision::{ExecutionContext, SandboxDecision, decide};
+pub use sed_edit_parser::{SedEdit, parse_sed_edits};
+pub use sed_validation::{FileEditPermission, SedViolation, validate_sed_edits};
+
 /// Maximum output size before truncation (256KB).
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
-
-/// Commands that are potentially destructive and warrant a warning.
-const DESTRUCTIVE_PATTERNS: &[&str] = &[
-    // Filesystem destruction.
-    "rm -rf",
-    "rm -r /",
-    "rm -fr",
-    "rmdir",
-    "shred",
-    // Git destructive operations.
-    "git reset --hard",
-    "git clean -f",
-    "git clean -d",
-    "git push --force",
-    "git push -f",
-    "git checkout -- .",
-    "git checkout -f",
-    "git restore .",
-    "git branch -D",
-    "git branch --delete --force",
-    "git stash drop",
-    "git stash clear",
-    "git rebase --abort",
-    // Database operations.
-    "DROP TABLE",
-    "DROP DATABASE",
-    "DROP SCHEMA",
-    "DELETE FROM",
-    "TRUNCATE",
-    // System operations.
-    "shutdown",
-    "reboot",
-    "halt",
-    "poweroff",
-    "init 0",
-    "init 6",
-    "mkfs",
-    "dd if=",
-    "dd of=/dev",
-    "> /dev/sd",
-    "wipefs",
-    // Permission escalation.
-    "chmod -R 777",
-    "chmod 777",
-    "chown -R",
-    // Process/system danger.
-    "kill -9",
-    "killall",
-    "pkill -9",
-    // Fork bomb.
-    ":(){ :|:& };:",
-    // NPM/package destruction.
-    "npm publish",
-    "cargo publish",
-    // Docker cleanup.
-    "docker system prune -a",
-    "docker volume prune",
-    // Kubernetes.
-    "kubectl delete namespace",
-    "kubectl delete --all",
-    // Infrastructure.
-    "terraform destroy",
-    "pulumi destroy",
-];
 
 /// Paths that should never be written to.
 ///
@@ -169,52 +133,37 @@ impl Tool for BashTool {
             return Ok(());
         }
 
-        // Check for destructive commands.
-        let cmd_lower = command.to_lowercase();
-        for pattern in DESTRUCTIVE_PATTERNS {
-            if cmd_lower.contains(&pattern.to_lowercase()) {
-                return Err(format!(
-                    "Potentially destructive command detected: contains '{pattern}'. \
-                     This command could cause data loss or system damage. \
-                     If you're sure, ask the user for confirmation first."
-                ));
+        // Build a parsed view of the command so the classifier modules
+        // can reason about it. If the parser fails we fall back to a
+        // raw-only `ParsedCommand` so destructive-pattern detection
+        // still runs.
+        let parsed = super::bash_parse::parse_bash(command).unwrap_or_else(|| {
+            super::bash_parse::ParsedCommand {
+                raw: command.to_string(),
+                ..super::bash_parse::ParsedCommand::default()
             }
+        });
+
+        // Destructive-command classifier. Mirrors the historical inline
+        // checks (substring match, piped destructive base, chained
+        // segments) but lives in a single named helper.
+        let findings = bash_security::find_destructive(&parsed);
+        if let Some(first) = findings.first() {
+            return Err(format!(
+                "Potentially destructive command detected: {}. \
+                 This command could cause data loss or system damage. \
+                 If you're sure, ask the user for confirmation first.",
+                first.reason
+            ));
         }
 
-        // Check for piped destructive patterns.
-        // Split on pipes and check each segment's base command.
-        for segment in command.split('|') {
-            let trimmed = segment.trim();
-            let base_cmd = trimmed.split_whitespace().next().unwrap_or("");
-            if matches!(
-                base_cmd,
-                "rm" | "shred" | "dd" | "mkfs" | "wipefs" | "shutdown" | "reboot" | "halt"
-            ) {
-                return Err(format!(
-                    "Potentially destructive command in pipe: '{base_cmd}'. \
-                     Ask the user for confirmation first."
-                ));
-            }
-        }
-
-        // Check for chained destructive commands (&&, ;).
-        for segment in cmd_lower.split("&&").flat_map(|s| s.split(';')) {
-            let trimmed = segment.trim();
-            for pattern in DESTRUCTIVE_PATTERNS {
-                if trimmed.contains(&pattern.to_lowercase()) {
-                    return Err(format!(
-                        "Potentially destructive command in chain: contains '{pattern}'. \
-                         Ask the user for confirmation first."
-                    ));
-                }
-            }
-        }
-
-        // Advanced security checks (inspired by TS bashSecurity.ts).
+        // Advanced shell-injection checks (separate from destructive
+        // patterns; flagged as "obfuscation" rather than "destruction").
         check_shell_injection(command)?;
 
         // Block writes to protected paths. Includes both system
         // directories and the project's team-memory directory.
+        let cmd_lower = command.to_lowercase();
         for path in BLOCKED_WRITE_PATHS {
             if cmd_lower.contains(&format!(">{path}"))
                 || cmd_lower.contains(&format!("tee {path}"))
@@ -228,11 +177,9 @@ impl Tool for BashTool {
         }
 
         // Tree-sitter AST analysis (catches obfuscation that regex misses).
-        if let Some(parsed) = super::bash_parse::parse_bash(command) {
-            let violations = super::bash_parse::check_parsed_security(&parsed);
-            if let Some(first) = violations.first() {
-                return Err(format!("AST security check: {first}"));
-            }
+        let violations = super::bash_parse::check_parsed_security(&parsed);
+        if let Some(first) = violations.first() {
+            return Err(format!("AST security check: {first}"));
         }
 
         Ok(())
@@ -247,6 +194,24 @@ impl Tool for BashTool {
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidInput("'command' is required".into()))?;
+
+        // Route any `sed -i` invocations through the FileEdit permission
+        // path so protected directories stay protected from both surfaces.
+        let parsed = super::bash_parse::parse_bash(command).unwrap_or_else(|| {
+            super::bash_parse::ParsedCommand {
+                raw: command.to_string(),
+                ..super::bash_parse::ParsedCommand::default()
+            }
+        });
+        if let Err(violation) =
+            sed_validation::validate_sed_edits(&parsed, &ctx.cwd, ctx.permission_checker.as_ref())
+        {
+            return Err(ToolError::InvalidInput(format!(
+                "sed -i refused for '{}': {}",
+                violation.file.display(),
+                violation.reason
+            )));
+        }
 
         let timeout_ms = input
             .get("timeout")
