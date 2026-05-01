@@ -1623,6 +1623,7 @@ We ship 12 skills today. Expand the bundled set to cover the most common day-to-
 - [ ] **verify** — independent verification pass after a non-trivial implementation
 - [ ] **schedule-agent** — wrap the cron tools (8.5) with a friendlier authoring flow
 - [ ] **update-config** — guided edits to settings.json with validation
+- [ ] **app-builder** — agent + sandboxed preview workspace + iframe + chat for scaffolding new projects and iterating on UI
 - [ ] Each skill: standalone test, doc entry, and listed in `/skills`
 
 ### 8.4 Settings Migrations Framework
@@ -1670,6 +1671,7 @@ The current coordinator (`crates/lib/src/services/coordinator.rs`) is a session 
 - [ ] Shared scratchpad: append-only log readable by lead and teammates, gated by a permission rule
 - [ ] Concurrency cap configurable per project (`max_teammates`)
 - [ ] Cancellation propagates from lead to teammates
+- [ ] **Kanban view** — Flutter client surface that groups active teammates into columns by status (`pending`, `running`, `awaiting-permission`, `done`, `errored`) or by repo/branch, with artifact previews on each card and a "create teammate" entry point. Reuses the existing client; the wire protocol just adds teammate metadata.
 - [ ] Add to `docs/multi-agent.mdx`
 
 ### 8.8 Additional Model-Callable Tools
@@ -1730,6 +1732,24 @@ Today there is one task model. Generalize so different task kinds (local shell, 
 - [ ] Surface task kind in `/tasks` output and in `TaskList`/`TaskGet` tool results
 - [ ] Persist kind-specific payload alongside the task record
 
+### 8.14 Cloud-Runtime Mode
+
+Today every agent run is local: the binary on your machine drives the LLM provider directly. A cloud-runtime dimension lets the same agent execute on managed infra — long-running tasks, scheduled routines, and "fire and forget" runs that survive a laptop closing. The CLI and Flutter client should treat cloud agents as a first-class object alongside local ones.
+
+This is a multi-PR effort and depends on 8.6 (direct-connect server + wire protocol) landing first.
+
+- [ ] **Cloud agent service** — long-running host that accepts agent runs over the 8.6 wire protocol; per-run isolated workspace with an attached repo checkout; configurable timeouts and resource caps
+- [ ] **`Agent.create({ cloud: { repos } })` API** — TypeScript client surface (in `packages/agent_code_client`) that creates a cloud-mode agent the same way callers create a local one
+- [ ] **Repo binding** — cloud agent gets a fresh git checkout from a configured remote (GitHub / self-hosted) per run; commits stream back as a branch the user can PR
+- [ ] **Status + artifact APIs** — `cloud_agent.status`, `cloud_agent.artifacts`, `cloud_agent.cancel`; artifacts are anything the agent produced (diffs, files, logs, screenshots)
+- [ ] **Slash commands**: `/cloud run <prompt>`, `/cloud list`, `/cloud attach <id>`, `/cloud cancel <id>`
+- [ ] **Auth** — per-user API keys with scoped permissions (run-only, repo-scoped, org-scoped); revocable from a settings page
+- [ ] **Cost accounting** — cloud runs surface their LLM + compute cost in the existing `services/budget.rs` ledger, separately tagged from local runs
+- [ ] **Doc page**: `docs/cloud-runtime.mdx` covering architecture, security model, and operator deployment guide
+- [ ] **Reference deployment** — Helm chart or container compose file in `helm/` or `docker/cloud/` so an operator can run their own cloud-runtime cluster
+
+This is the single biggest gap to a "polished hosted product" experience. Cron + remote-trigger (8.5) is the local-only version of this; 8.14 is the managed equivalent that someone else's machine actually executes.
+
 ---
 
 ## Performance Targets — In Progress
@@ -1787,11 +1807,12 @@ Priority areas where contributions are most welcome:
 14. **Disk-loaded output styles** (8.2) — small, high-visibility win
 15. **Cron + RemoteTrigger model tools** (8.5) — storage and executor already exist
 16. **Direct-connect server / IDE bridge** (8.6) — host non-terminal clients
-17. **Teammate / swarm mode** (8.7) — Team* and SyntheticOutput tools
-18. **Bundled first-party skills** (8.3) — batch, loop, simplify, verify, stuck, remember
+17. **Teammate / swarm mode + kanban view** (8.7) — Team* and SyntheticOutput tools, plus a parallel-agent management surface
+18. **Bundled first-party skills** (8.3) — batch, loop, simplify, verify, stuck, remember, app-builder
 19. **Settings migrations framework** (8.4) — forward-migrate older config files
 20. **Bash tool hardening** (8.9) — split safety helpers into testable modules
+21. **Cloud-runtime mode** (8.14) — managed long-running agents addressable from CLI/SDK; depends on 8.6
 
 ---
 
-*Last updated: 2026-04-30*
+*Last updated: 2026-05-01*
