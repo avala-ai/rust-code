@@ -51,6 +51,98 @@ pub fn write_memory(
     Ok(file_path)
 }
 
+/// Write a team-shared memory entry, with author + ISO-8601 timestamp.
+///
+/// This is the only sanctioned path for adding to
+/// `<project>/.agent/team-memory/`. The model's own file-write tools
+/// route through `write_memory`, which is fine for the per-user
+/// memory directory but must not be used to mutate team memory; see
+/// [`super::is_team_memory_path`] for the matching guard predicate.
+///
+/// `force=false` makes this an append-only operation: a collision
+/// against an existing filename returns `Err` with a descriptive
+/// message. The slash-command handler can then prompt the user to
+/// pick a new name or pass `--force`.
+pub fn write_team_memory(
+    team_memory_dir: &Path,
+    filename: &str,
+    meta: &MemoryMeta,
+    content: &str,
+    force: bool,
+) -> Result<PathBuf, String> {
+    let _ = std::fs::create_dir_all(team_memory_dir);
+
+    let file_path = team_memory_dir.join(filename);
+    if file_path.exists() && !force {
+        return Err(format!(
+            "team-memory entry '{filename}' already exists. \
+             Pick a different name or pass --force to overwrite."
+        ));
+    }
+
+    let type_str = match &meta.memory_type {
+        Some(MemoryType::User) => "user",
+        Some(MemoryType::Feedback) => "feedback",
+        Some(MemoryType::Project) => "project",
+        Some(MemoryType::Reference) => "reference",
+        None => "project",
+    };
+
+    let mut header = format!(
+        "---\nname: {}\ndescription: {}\ntype: {}",
+        meta.name, meta.description, type_str
+    );
+    if let Some(a) = &meta.author {
+        header.push_str(&format!("\nauthor: {a}"));
+    }
+    if let Some(c) = &meta.created_at {
+        header.push_str(&format!("\ncreated_at: {c}"));
+    }
+    header.push_str("\n---\n\n");
+
+    let file_content = format!("{header}{content}");
+    std::fs::write(&file_path, &file_content)
+        .map_err(|e| format!("Failed to write team-memory file: {e}"))?;
+
+    update_index(team_memory_dir, filename, &meta.name, &meta.description)?;
+
+    Ok(file_path)
+}
+
+/// List filenames currently registered in the team-memory directory
+/// (excluding `MEMORY.md`).
+pub fn list_team_memory(team_memory_dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(team_memory_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().is_some_and(|e| e == "md")
+                && path.file_name().is_some_and(|n| n != "MEMORY.md")
+            {
+                path.file_name().and_then(|n| n.to_str()).map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Remove a team-memory entry. Trims `.md` automatically if absent.
+pub fn delete_team_memory(team_memory_dir: &Path, name_or_filename: &str) -> Result<(), String> {
+    let filename = if name_or_filename.ends_with(".md") {
+        name_or_filename.to_string()
+    } else {
+        format!("{name_or_filename}.md")
+    };
+    delete_memory(team_memory_dir, &filename)
+}
+
 /// Update the MEMORY.md index with a pointer to a memory file.
 /// If an entry for this filename already exists, replace it.
 fn update_index(
@@ -157,6 +249,8 @@ mod tests {
             name: "Test Memory".to_string(),
             description: "A test memory file".to_string(),
             memory_type: Some(MemoryType::User),
+            author: None,
+            created_at: None,
         }
     }
 
@@ -187,6 +281,8 @@ mod tests {
             name: "Updated".to_string(),
             description: "Updated description".to_string(),
             memory_type: Some(MemoryType::Feedback),
+            author: None,
+            created_at: None,
         };
         write_memory(dir.path(), "test.md", &meta2, "version 2").unwrap();
 
@@ -226,6 +322,8 @@ mod tests {
             name: "Second".to_string(),
             description: "Second file".to_string(),
             memory_type: Some(MemoryType::Project),
+            author: None,
+            created_at: None,
         };
         write_memory(dir.path(), "two.md", &meta2, "second").unwrap();
 
@@ -239,6 +337,68 @@ mod tests {
         assert!(index.contains("two.md"));
     }
 
+    fn team_meta() -> MemoryMeta {
+        MemoryMeta {
+            name: "Deploy".into(),
+            description: "team deploy steps".into(),
+            memory_type: Some(MemoryType::Project),
+            author: Some("alice@example.com".into()),
+            created_at: Some("2025-01-02T03:04:05Z".into()),
+        }
+    }
+
+    #[test]
+    fn test_write_team_memory_writes_frontmatter_with_author() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_team_memory(dir.path(), "deploy.md", &team_meta(), "ship it", false)
+            .expect("write succeeds");
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("author: alice@example.com"));
+        assert!(body.contains("created_at: 2025-01-02T03:04:05Z"));
+        assert!(body.contains("ship it"));
+        let index = std::fs::read_to_string(dir.path().join("MEMORY.md")).unwrap();
+        assert!(index.contains("[Deploy](deploy.md)"));
+    }
+
+    #[test]
+    fn test_write_team_memory_refuses_collision_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        write_team_memory(dir.path(), "deploy.md", &team_meta(), "v1", false).unwrap();
+        let err =
+            write_team_memory(dir.path(), "deploy.md", &team_meta(), "v2", false).unwrap_err();
+        assert!(err.contains("already exists"));
+        // Body unchanged.
+        let body = std::fs::read_to_string(dir.path().join("deploy.md")).unwrap();
+        assert!(body.contains("v1"));
+        assert!(!body.contains("v2"));
+    }
+
+    #[test]
+    fn test_write_team_memory_overwrites_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        write_team_memory(dir.path(), "deploy.md", &team_meta(), "v1", false).unwrap();
+        write_team_memory(dir.path(), "deploy.md", &team_meta(), "v2", true).unwrap();
+        let body = std::fs::read_to_string(dir.path().join("deploy.md")).unwrap();
+        assert!(body.contains("v2"));
+    }
+
+    #[test]
+    fn test_list_team_memory_skips_index() {
+        let dir = tempfile::tempdir().unwrap();
+        write_team_memory(dir.path(), "a.md", &team_meta(), "a", false).unwrap();
+        write_team_memory(dir.path(), "b.md", &team_meta(), "b", false).unwrap();
+        let names = list_team_memory(dir.path());
+        assert_eq!(names, vec!["a.md", "b.md"]);
+    }
+
+    #[test]
+    fn test_delete_team_memory_accepts_bare_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_team_memory(dir.path(), "deploy.md", &team_meta(), "x", false).unwrap();
+        delete_team_memory(dir.path(), "deploy").unwrap();
+        assert!(!dir.path().join("deploy.md").exists());
+    }
+
     #[test]
     fn test_index_line_length_cap() {
         let dir = tempfile::tempdir().unwrap();
@@ -246,6 +406,8 @@ mod tests {
             name: "A".repeat(200),
             description: "B".repeat(200),
             memory_type: Some(MemoryType::User),
+            author: None,
+            created_at: None,
         };
         write_memory(dir.path(), "long.md", &meta, "content").unwrap();
 

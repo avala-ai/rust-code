@@ -94,6 +94,8 @@ fn parse_simple_yaml(yaml: &str) -> Option<MemoryMeta> {
     let mut name = String::new();
     let mut description = String::new();
     let mut memory_type = None;
+    let mut author: Option<String> = None;
+    let mut created_at: Option<String> = None;
 
     for line in yaml.lines() {
         let line = line.trim();
@@ -115,6 +117,8 @@ fn parse_simple_yaml(yaml: &str) -> Option<MemoryMeta> {
                         _ => None,
                     };
                 }
+                "author" if !value.is_empty() => author = Some(value.to_string()),
+                "created_at" if !value.is_empty() => created_at = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -128,6 +132,8 @@ fn parse_simple_yaml(yaml: &str) -> Option<MemoryMeta> {
         name,
         description,
         memory_type,
+        author,
+        created_at,
     })
 }
 

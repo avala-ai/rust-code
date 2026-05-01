@@ -19,6 +19,34 @@ pub enum MemoryType {
     Reference,
 }
 
+/// Where a memory entry lives. Drives loader precedence and write rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    /// Per-user memory under `~/.config/agent-code/memory/`.
+    /// Read-write for the user; can also be appended to by background extraction.
+    User,
+    /// Per-project memory under `<project>/.agent/memory/` (if present).
+    /// Read by every session in the project; written by the user.
+    Project,
+    /// Team-shared memory under `<project>/.agent/team-memory/`.
+    /// Version-controlled. Read by every session that opens this project.
+    /// Written only via the explicit `/team-remember` slash command —
+    /// not by background extraction or the model's own file-write tools.
+    Team,
+}
+
+impl Scope {
+    /// Display label used in collision logs and prompts.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Scope::User => "user",
+            Scope::Project => "project",
+            Scope::Team => "team",
+        }
+    }
+}
+
 /// Parsed frontmatter from a memory file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryMeta {
@@ -26,6 +54,12 @@ pub struct MemoryMeta {
     pub description: String,
     #[serde(rename = "type")]
     pub memory_type: Option<MemoryType>,
+    /// Author email or name. Set on team-memory writes; optional otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// ISO-8601 timestamp the entry was created. Set on team-memory writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
 }
 
 /// What should NOT be stored as memory.
@@ -117,6 +151,8 @@ mod tests {
             name: "user prefs".into(),
             description: "editor preferences".into(),
             memory_type: Some(MemoryType::User),
+            author: None,
+            created_at: None,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: MemoryMeta = serde_json::from_str(&json).unwrap();
@@ -131,11 +167,35 @@ mod tests {
             name: "misc".into(),
             description: "untyped memory".into(),
             memory_type: None,
+            author: None,
+            created_at: None,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: MemoryMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(back.name, "misc");
         assert!(back.memory_type.is_none());
+    }
+
+    #[test]
+    fn memory_meta_serde_roundtrip_with_team_fields() {
+        let meta = MemoryMeta {
+            name: "team note".into(),
+            description: "a shared note".into(),
+            memory_type: Some(MemoryType::Project),
+            author: Some("alice@example.com".into()),
+            created_at: Some("2025-01-02T03:04:05Z".into()),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: MemoryMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.author.as_deref(), Some("alice@example.com"));
+        assert_eq!(back.created_at.as_deref(), Some("2025-01-02T03:04:05Z"));
+    }
+
+    #[test]
+    fn scope_label_text() {
+        assert_eq!(Scope::User.label(), "user");
+        assert_eq!(Scope::Project.label(), "project");
+        assert_eq!(Scope::Team.label(), "team");
     }
 
     #[test]

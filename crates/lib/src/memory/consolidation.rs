@@ -130,6 +130,27 @@ pub fn build_consolidation_prompt(memory_dir: &Path) -> String {
     prompt
 }
 
+/// Convenience wrapper: run consolidation on the team-memory directory
+/// for `project_root`. Same pipeline as [`run_consolidation`] — only
+/// the target directory differs. Callers are responsible for first
+/// confirming with the user, since team-memory writes enter version
+/// control.
+pub async fn run_team_consolidation(
+    project_root: &Path,
+    llm: Arc<dyn crate::llm::provider::Provider>,
+    model: &str,
+) {
+    let dir = super::team_memory_dir(project_root);
+    if !dir.is_dir() {
+        return;
+    }
+    let lock_path = match try_acquire_lock(&dir) {
+        Some(p) => p,
+        None => return,
+    };
+    run_consolidation(&dir, &lock_path, llm, model).await;
+}
+
 /// Run the full consolidation pipeline via LLM.
 pub async fn run_consolidation(
     memory_dir: &Path,
@@ -240,6 +261,8 @@ pub async fn run_consolidation(
                             name: name.to_string(),
                             description: description.to_string(),
                             memory_type,
+                            author: None,
+                            created_at: None,
                         };
 
                         match super::writer::write_memory(memory_dir, filename, &meta, content) {
