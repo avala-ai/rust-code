@@ -3,23 +3,39 @@ title: "Settings Migrations"
 description: "How to evolve the settings schema without breaking existing files"
 ---
 
-The settings file (`~/.config/agent-code/settings.json` and the project-level
-`<project>/.agent/settings.json`) is **versioned**. As the schema evolves we
-ship migrations that forward-upgrade older files automatically on load, so
-users never have to hand-edit JSON to keep up with a release.
+The settings files (user-level `~/.config/agent-code/config.toml` and
+project-level `<project>/.agent/settings.toml` plus the gitignored
+`<project>/.agent/settings.local.toml`) are **versioned**. As the schema
+evolves we ship migrations that forward-upgrade older files automatically
+on load, so users never have to hand-edit them to keep up with a release.
 
 This page covers what the framework guarantees and how to author a new
 migration when you change the schema.
+
+## On-disk format vs. migration shape
+
+Settings files are TOML on disk. Migration functions, however, are
+expressed against `serde_json::Value` — pure functions over a JSON
+shape make every step trivially testable in isolation. The runner
+crosses the boundary at the file edge: it parses TOML, converts to a
+`serde_json::Value`, drives the migration chain, then converts back to
+TOML before atomically rewriting the file.
+
+The conversion is **lossy for TOML datetimes**: any `datetime`,
+`local-date`, or `local-time` value is serialized to its RFC 3339
+string form on the way in and remains a string on the way out. No
+shipping field uses one — if a future field needs a datetime,
+declare it as a string in the schema first or extend the runner.
 
 ## Top-level shape
 
 Every settings file carries a `schema_version` integer at the root:
 
-```json
-{
-  "schema_version": 2,
-  "api": { "model": "gpt-5.4" }
-}
+```toml
+schema_version = 2
+
+[api]
+model = "gpt-5.4"
 ```
 
 A file with no `schema_version` field at all is treated as **version 0**
@@ -31,9 +47,12 @@ The current target version is exposed as
 
 ## What the runner does
 
-`load_and_migrate(path)` executes these steps in order:
+`load_and_migrate_toml(path)` is the entry point used by `Config::load`
+for TOML settings files. `load_and_migrate(path)` is the JSON twin
+exposed for tests and in-process callers that already speak JSON. Both
+execute these steps in order:
 
-1. Read and parse the JSON file.
+1. Read and parse the file (TOML or JSON, depending on the entry point).
 2. Read `schema_version` (defaulting to `0` when absent).
 3. If the file is **already current**, return immediately. **No rewrite,
    no backup.**
@@ -42,13 +61,15 @@ The current target version is exposed as
 5. Otherwise, apply each registered migration whose `from_version` is at
    or above the file's current version, in order, until we reach the
    current target version.
-6. Atomically rewrite the file: write to `settings.json.tmp`, fsync,
-   rename over `settings.json`. A crash mid-write leaves either the
+6. Atomically rewrite the file: write to `<settings>.tmp`, fsync,
+   rename over the live path. A crash mid-write leaves either the
    original file or the new file on disk — never a half-written body.
-7. Rotate backups before the rename: `settings.json.bak.2 →
-   settings.json.bak.3`, `settings.json.bak.1 → settings.json.bak.2`,
-   then write the pre-migration bytes to `settings.json.bak.1`. The
-   oldest slot beyond `MAX_BACKUPS` (3) is dropped.
+7. **After** the rename succeeds, rotate the backup chain:
+   `<settings>.bak.2 → <settings>.bak.3`,
+   `<settings>.bak.1 → <settings>.bak.2`, then archive the
+   pre-migration bytes to `<settings>.bak.1`. Doing rotation last
+   means a failed write never mutates a backup the user might be
+   relying on. The oldest slot beyond `MAX_BACKUPS` (3) is dropped.
 
 If any migration step returns `Err`, the on-disk file is left
 untouched, no backup is rotated, and the error propagates to the caller.
@@ -163,7 +184,7 @@ immediately before the most recent rewrite. To roll back a session
 that misbehaved after a migration:
 
 ```bash
-mv ~/.config/agent-code/settings.json.bak.1 ~/.config/agent-code/settings.json
+mv ~/.config/agent-code/config.toml.bak.1 ~/.config/agent-code/config.toml
 ```
 
 The next load will replay the migration chain from whatever version

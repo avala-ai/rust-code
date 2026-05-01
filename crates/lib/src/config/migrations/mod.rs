@@ -28,7 +28,7 @@
 //! spawn processes, or read environment variables — the runner relies
 //! on that purity for atomic-rollback semantics.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,10 @@ pub const MAX_BACKUPS: usize = 3;
 /// `Err`) and do nothing else. The runner will not call `migrate` if
 /// the file is already at or above `to_version`.
 pub trait Migration: Send + Sync {
+    // `from_version` reads as "the version this migration starts from",
+    // not as a fallible constructor — the wrong_self_convention lint
+    // misfires on accessor pairs like `from_version`/`to_version`.
+    #[allow(clippy::wrong_self_convention)]
     /// Schema version this migration starts from.
     fn from_version(&self) -> u32;
 
@@ -228,9 +232,10 @@ pub struct MigrationOutcome {
 ///   `<path>.tmp`, fsynced, then `rename`'d over the live path. Crashes
 ///   between steps leave either the original file untouched or the new
 ///   file in place — never a half-written body at `<path>`.
-/// - **Backup rotation** — before the rename, the old live file is
-///   moved to `<path>.bak.1`, with the previous `.bak.N` chain shifted
-///   one slot older. The oldest slot beyond [`MAX_BACKUPS`] is dropped.
+/// - **Backup rotation** — only after the temp file is renamed into
+///   place do we rotate the `.bak.N` chain and archive the old live
+///   file's bytes (snapshotted before the rename) into `<path>.bak.1`.
+///   Rotation never runs on a path where the new write failed.
 /// - **Migration rollback** — if any migration step returns `Err`, the
 ///   on-disk file is left untouched and no backup is rotated.
 /// - **No-op fast path** — if the file is already at
@@ -264,8 +269,15 @@ pub fn load_and_migrate_with(
             backup_path: None,
         }
     } else {
-        let backup_path = rotate_backups_and_archive(path, &raw)?;
+        // Order matters here: any failure between "open temp file" and
+        // "rename" must leave the live file *and* the backup chain
+        // exactly as we found them. So: write the new bytes to a temp
+        // file, fsync, rename over the live path, and only then archive
+        // the snapshot we took into `.bak.1` with rotation. If the
+        // archive step fails the live file is already up-to-date — we
+        // surface the error but the caller's data is not lost.
         atomic_write_json(path, &value)?;
+        let backup_path = rotate_backups_and_archive(path, &raw)?;
         MigrationOutcome {
             from_version,
             to_version,
@@ -278,8 +290,13 @@ pub fn load_and_migrate_with(
 }
 
 /// Rotate `.bak.1` → `.bak.2`, etc., dropping anything past
-/// [`MAX_BACKUPS`], then write the original file's bytes to `.bak.1`.
-/// Returns the path to the freshly-written `.bak.1`.
+/// [`MAX_BACKUPS`], then write the supplied pre-migration bytes to
+/// `.bak.1`. Returns the path to the freshly-written `.bak.1`.
+///
+/// Callers must invoke this **after** the new live file is safely in
+/// place. The rotation is not itself atomic across slots; a crash
+/// mid-rotation would leave the chain re-numbered but the live file
+/// already correctly migrated, which is the failure mode we prefer.
 fn rotate_backups_and_archive(path: &Path, original_contents: &str) -> Result<PathBuf> {
     // Drop the oldest slot if it exists. Ignore "not found" — first run
     // won't have any backups yet.
@@ -329,6 +346,18 @@ pub fn backup_path(path: &Path, n: usize) -> PathBuf {
 /// rename over `path`. Any error before the rename leaves the original
 /// `path` untouched.
 fn atomic_write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(value).context("serializing migrated settings")?;
+    atomic_write_bytes(path, &bytes, true)
+}
+
+/// Atomically replace `path` with `bytes`. Writes to `<path>.tmp`,
+/// fsyncs, then renames over `path`. Any error before the rename
+/// leaves the original `path` untouched.
+///
+/// `append_newline` controls whether a trailing newline is appended to
+/// the written body (matches existing JSON-write behavior; useful for
+/// TOML callers that already produce a trailing newline themselves).
+fn atomic_write_bytes(path: &Path, bytes: &[u8], append_newline: bool) -> Result<()> {
     let mut tmp = path.to_path_buf();
     let mut tmp_name = tmp
         .file_name()
@@ -337,8 +366,6 @@ fn atomic_write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
     tmp_name.push(".tmp");
     tmp.set_file_name(tmp_name);
 
-    let bytes = serde_json::to_vec_pretty(value).context("serializing migrated settings")?;
-
     {
         let mut f = fs::OpenOptions::new()
             .write(true)
@@ -346,21 +373,166 @@ fn atomic_write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
             .truncate(true)
             .open(&tmp)
             .with_context(|| format!("opening temp file {}", tmp.display()))?;
-        f.write_all(&bytes)
+        f.write_all(bytes)
             .with_context(|| format!("writing temp file {}", tmp.display()))?;
-        f.write_all(b"\n").ok();
+        if append_newline {
+            f.write_all(b"\n").ok();
+        }
         f.sync_all()
             .with_context(|| format!("fsyncing temp file {}", tmp.display()))?;
     }
 
-    fs::rename(&tmp, path).with_context(|| {
-        format!(
-            "renaming temp file {} → {}",
-            tmp.display(),
-            path.display()
-        )
-    })?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("renaming temp file {} → {}", tmp.display(), path.display()))?;
     Ok(())
+}
+
+/// Outcome of running migrations against a TOML settings file. Same
+/// shape as [`MigrationOutcome`] so callers can log uniformly.
+///
+/// # Format limitations
+///
+/// Migrations are expressed as pure mutations of `serde_json::Value`,
+/// so the TOML runner converts via `toml::Value` ↔ `serde_json::Value`
+/// before and after the migration chain. That conversion is **lossy
+/// for TOML datetime values**: any `datetime`/`local-date`/`local-time`
+/// in the file is serialized to its RFC 3339 string form on the way
+/// in and remains a string on the way out. The current settings
+/// schema has no datetime fields, so this is documented but not
+/// triggered by any shipping migration. If a future migration needs
+/// to round-trip a datetime, switch that field to a string in the
+/// schema first.
+///
+/// Comments are also lost on rewrite (the `toml` crate's default
+/// serializer emits canonical-form output without preserving the
+/// original token stream). This matches the existing `Config` loader,
+/// which already strips comments on every read-merge-write cycle.
+pub fn load_and_migrate_toml(path: &Path) -> Result<(toml::Value, MigrationOutcome)> {
+    load_and_migrate_toml_with(path, &registered_migrations())
+}
+
+/// Same as [`load_and_migrate_toml`] but with an explicit migration
+/// set, mirroring [`load_and_migrate_with`].
+pub fn load_and_migrate_toml_with(
+    path: &Path,
+    migrations: &[Box<dyn Migration>],
+) -> Result<(toml::Value, MigrationOutcome)> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading settings file {}", path.display()))?;
+    let toml_value: toml::Value = toml::from_str(&raw)
+        .with_context(|| format!("parsing settings file {} as TOML", path.display()))?;
+
+    // Convert to JSON for the migration chain. Pure migrations only
+    // see `serde_json::Value`, so the runner is format-agnostic above
+    // this boundary.
+    let mut json_value: serde_json::Value = toml_to_json(&toml_value)?;
+
+    let from_version = read_schema_version(&json_value)?;
+    let mutated = run_migrations(&mut json_value, migrations)?;
+    let to_version = read_schema_version(&json_value)?;
+
+    let migrated_toml = json_to_toml(&json_value)?;
+
+    let outcome = if !mutated {
+        MigrationOutcome {
+            from_version,
+            to_version,
+            rewrote: false,
+            backup_path: None,
+        }
+    } else {
+        let bytes = toml::to_string_pretty(&migrated_toml)
+            .context("serializing migrated settings as TOML")?
+            .into_bytes();
+        // toml::to_string_pretty already emits a trailing newline.
+        atomic_write_bytes(path, &bytes, false)?;
+        let backup_path = rotate_backups_and_archive(path, &raw)?;
+        MigrationOutcome {
+            from_version,
+            to_version,
+            rewrote: true,
+            backup_path: Some(backup_path),
+        }
+    };
+
+    Ok((migrated_toml, outcome))
+}
+
+/// Convert a `toml::Value` to a `serde_json::Value`, used as the
+/// crossing between the TOML on-disk format and the JSON-shaped
+/// migration runner. Lossy for TOML datetimes (see
+/// [`load_and_migrate_toml`] docs).
+fn toml_to_json(value: &toml::Value) -> Result<serde_json::Value> {
+    match value {
+        toml::Value::String(s) => Ok(serde_json::Value::String(s.clone())),
+        toml::Value::Integer(i) => Ok(serde_json::Value::from(*i)),
+        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| anyhow!("non-finite TOML float {f} cannot be represented as JSON")),
+        toml::Value::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
+        // TOML datetimes have no JSON counterpart; serialize to the
+        // RFC 3339 string form so the migration chain can still read
+        // and pass through the value. No current migration touches
+        // such a field.
+        toml::Value::Datetime(dt) => Ok(serde_json::Value::String(dt.to_string())),
+        toml::Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(toml_to_json(item)?);
+            }
+            Ok(serde_json::Value::Array(out))
+        }
+        toml::Value::Table(table) => {
+            let mut out = serde_json::Map::with_capacity(table.len());
+            for (k, v) in table {
+                out.insert(k.clone(), toml_to_json(v)?);
+            }
+            Ok(serde_json::Value::Object(out))
+        }
+    }
+}
+
+/// Convert a `serde_json::Value` produced by the migration chain back
+/// to a `toml::Value` for on-disk writing. The migration chain only
+/// produces objects/arrays/strings/numbers/bools, so the conversion
+/// is total for all values our migrations emit.
+fn json_to_toml(value: &serde_json::Value) -> Result<toml::Value> {
+    match value {
+        serde_json::Value::Null => Err(anyhow!(
+            "cannot represent JSON null in TOML; migrations must remove the key instead of \
+             writing a null value"
+        )),
+        serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(toml::Value::Integer(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(toml::Value::Float(f))
+            } else {
+                Err(anyhow!("JSON number {n} does not fit in TOML i64 or f64"))
+            }
+        }
+        serde_json::Value::String(s) => Ok(toml::Value::String(s.clone())),
+        serde_json::Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(json_to_toml(item)?);
+            }
+            Ok(toml::Value::Array(out))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut out = toml::value::Table::new();
+            for (k, v) in obj {
+                // Skip keys that ended up as JSON null after a
+                // migration — TOML cannot represent them.
+                if v.is_null() {
+                    continue;
+                }
+                out.insert(k.clone(), json_to_toml(v)?);
+            }
+            Ok(toml::Value::Table(out))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -401,7 +573,10 @@ mod tests {
     #[test]
     fn registered_chain_is_continuous_and_ends_at_current() {
         let migrations = registered_migrations();
-        assert!(!migrations.is_empty(), "registry must not be empty while CURRENT_SCHEMA_VERSION > 0");
+        assert!(
+            !migrations.is_empty(),
+            "registry must not be empty while CURRENT_SCHEMA_VERSION > 0"
+        );
         assert_registry_is_continuous(&migrations);
         // Lowest entry must start at 0 so a brand-new file (no
         // schema_version field) can be picked up.

@@ -14,11 +14,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use agent_code_lib::config::migrations::{
-    backup_path, load_and_migrate, load_and_migrate_with, registered_migrations, run_migrations,
-    Migration, CURRENT_SCHEMA_VERSION, MAX_BACKUPS, SCHEMA_VERSION_KEY,
+    CURRENT_SCHEMA_VERSION, MAX_BACKUPS, Migration, SCHEMA_VERSION_KEY, backup_path,
+    load_and_migrate, load_and_migrate_toml, load_and_migrate_with, registered_migrations,
+    run_migrations,
 };
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -30,8 +31,7 @@ fn fixture_path(name: &str) -> PathBuf {
 }
 
 fn read_fixture(name: &str) -> String {
-    fs::read_to_string(fixture_path(name))
-        .unwrap_or_else(|e| panic!("reading fixture {name}: {e}"))
+    fs::read_to_string(fixture_path(name)).unwrap_or_else(|e| panic!("reading fixture {name}: {e}"))
 }
 
 fn read_fixture_value(name: &str) -> Value {
@@ -113,7 +113,10 @@ fn current_version_file_is_not_rewritten_and_no_backup_is_created() {
 
     assert_eq!(outcome.from_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(outcome.to_version, CURRENT_SCHEMA_VERSION);
-    assert!(!outcome.rewrote, "current-version file must not be rewritten");
+    assert!(
+        !outcome.rewrote,
+        "current-version file must not be rewritten"
+    );
     assert!(outcome.backup_path.is_none());
 
     // No backup file should appear.
@@ -148,9 +151,7 @@ fn four_loads_keep_only_three_backups() {
     for i in 0..4 {
         // Force a v0 file each iteration so a rewrite + backup happens.
         // Vary one field so backups have distinguishable contents.
-        let body = format!(
-            "{{\n  \"api\": {{ \"model\": \"m-{i}\", \"token\": \"t-{i}\" }}\n}}\n"
-        );
+        let body = format!("{{\n  \"api\": {{ \"model\": \"m-{i}\", \"token\": \"t-{i}\" }}\n}}\n");
         fs::write(&path, &body).unwrap();
         let (_value, outcome) = load_and_migrate(&path).expect("migrate succeeds");
         assert!(outcome.rewrote);
@@ -173,12 +174,18 @@ fn four_loads_keep_only_three_backups() {
 
     // Slot 1 is freshest (the most recent pre-migration body, model "m-3").
     let bak1 = fs::read_to_string(backup_path(&path, 1)).unwrap();
-    assert!(bak1.contains("\"m-3\""), "bak.1 should hold the latest pre-migration body, got {bak1:?}");
+    assert!(
+        bak1.contains("\"m-3\""),
+        "bak.1 should hold the latest pre-migration body, got {bak1:?}"
+    );
 
     // Slot 3 is oldest survivor (model "m-1"). The original "m-0"
     // archive was rotated out and dropped.
     let bak3 = fs::read_to_string(backup_path(&path, 3)).unwrap();
-    assert!(bak3.contains("\"m-1\""), "bak.3 should hold the oldest survivor, got {bak3:?}");
+    assert!(
+        bak3.contains("\"m-1\""),
+        "bak.3 should hold the oldest survivor, got {bak3:?}"
+    );
 }
 
 #[test]
@@ -228,7 +235,10 @@ fn migration_failure_does_not_corrupt_file_or_create_backup() {
 
     // Original bytes intact.
     let after = fs::read_to_string(&path).unwrap();
-    assert_eq!(after, original, "file must not be touched on migration failure");
+    assert_eq!(
+        after, original,
+        "file must not be touched on migration failure"
+    );
 
     // No backups, no temp turds.
     for n in 1..=MAX_BACKUPS {
@@ -248,7 +258,10 @@ fn parse_failure_surfaces_error_without_touching_file() {
 
     let err = load_and_migrate(&path).unwrap_err();
     let msg = format!("{err:#}");
-    assert!(msg.contains("parsing settings file"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("parsing settings file"),
+        "unexpected error: {msg}"
+    );
 
     // File untouched on parse failure.
     let after = fs::read_to_string(&path).unwrap();
@@ -261,10 +274,7 @@ fn parse_failure_surfaces_error_without_touching_file() {
 #[test]
 fn higher_schema_version_is_rejected_with_clear_error() {
     let tmp = TempDir::new().unwrap();
-    let body = format!(
-        "{{ \"schema_version\": {} }}",
-        CURRENT_SCHEMA_VERSION + 7
-    );
+    let body = format!("{{ \"schema_version\": {} }}", CURRENT_SCHEMA_VERSION + 7);
     let path = stage_settings(tmp.path(), &body);
 
     let err = load_and_migrate(&path).unwrap_err();
@@ -298,4 +308,240 @@ fn run_migrations_pure_no_op_on_current_value() {
     let mutated = run_migrations(&mut v, &registered_migrations()).unwrap();
     assert!(!mutated);
     assert_eq!(v, before);
+}
+
+// ---- TOML runner ----
+
+#[test]
+fn toml_v0_file_migrates_to_current_and_rewrites_with_schema_version() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.toml");
+    fs::write(
+        &path,
+        "[api]\nbase_url = \"https://api.example.com/v1\"\nmodel = \"gpt-5.4\"\ntoken = \"sk-legacy\"\n",
+    )
+    .unwrap();
+
+    let (value, outcome) = load_and_migrate_toml(&path).expect("toml migrate succeeds");
+
+    assert_eq!(outcome.from_version, 0);
+    assert_eq!(outcome.to_version, CURRENT_SCHEMA_VERSION);
+    assert!(outcome.rewrote);
+    assert_eq!(
+        outcome.backup_path.as_deref(),
+        Some(backup_path(&path, 1).as_path())
+    );
+
+    // schema_version stamped in the rewritten file.
+    let schema_version_in_value = value
+        .get("schema_version")
+        .and_then(|v| v.as_integer())
+        .expect("schema_version present in migrated value");
+    assert_eq!(schema_version_in_value as u32, CURRENT_SCHEMA_VERSION);
+
+    // api.token renamed to api.api_key.
+    let api_key = value
+        .get("api")
+        .and_then(|v| v.get("api_key"))
+        .and_then(|v| v.as_str());
+    assert_eq!(api_key, Some("sk-legacy"));
+    let token_present = value.get("api").and_then(|v| v.get("token")).is_some();
+    assert!(!token_present);
+
+    // On disk also reflects the migration.
+    let on_disk: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        on_disk
+            .get("schema_version")
+            .and_then(|v| v.as_integer())
+            .unwrap() as u32,
+        CURRENT_SCHEMA_VERSION
+    );
+
+    // Backup was written with the original pre-migration TOML bytes.
+    let bak1 = fs::read_to_string(backup_path(&path, 1)).unwrap();
+    assert!(bak1.contains("token = \"sk-legacy\""));
+
+    // Atomic temp file does not survive a successful migration.
+    assert!(!path.with_file_name("settings.toml.tmp").exists());
+}
+
+#[test]
+fn toml_current_version_file_is_not_rewritten() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.toml");
+    let body = format!("schema_version = {CURRENT_SCHEMA_VERSION}\n\n[api]\nmodel = \"gpt-5.4\"\n");
+    fs::write(&path, &body).unwrap();
+
+    let (_value, outcome) = load_and_migrate_toml(&path).expect("noop succeeds");
+    assert!(!outcome.rewrote);
+    assert!(outcome.backup_path.is_none());
+
+    // No backup, original bytes intact.
+    assert!(!backup_path(&path, 1).exists());
+    assert_eq!(fs::read_to_string(&path).unwrap(), body);
+}
+
+// ---- Backup-rotation order: rotation must run AFTER successful write ----
+
+#[test]
+fn backup_rotation_does_not_run_when_atomic_write_fails() {
+    // Simulate an atomic-write failure by making the parent directory
+    // read-only after staging the live file. The temp-file open will
+    // fail with EACCES, the rename never happens, and crucially the
+    // backup chain must not have been touched.
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.toml");
+
+    // Stage a v0 file plus a pre-existing .bak.1 with known contents.
+    fs::write(
+        &path,
+        "[api]\nmodel = \"current-live\"\ntoken = \"sk-live\"\n",
+    )
+    .unwrap();
+    let bak1 = backup_path(&path, 1);
+    let prior_bak1_body = "[api]\nmodel = \"prior-backup\"\n";
+    fs::write(&bak1, prior_bak1_body).unwrap();
+
+    // Drop directory permissions so the runner can't create the temp
+    // file. The live file remains readable since we already opened it
+    // for read on the way in.
+    let dir_perms_before = fs::metadata(tmp.path()).unwrap().permissions();
+    let mut readonly = dir_perms_before.clone();
+    readonly.set_mode(0o555);
+    fs::set_permissions(tmp.path(), readonly).unwrap();
+
+    let res = load_and_migrate_toml(&path);
+
+    // Restore directory perms so the TempDir cleanup (and subsequent
+    // assertions) can proceed regardless of the test outcome.
+    fs::set_permissions(tmp.path(), dir_perms_before).unwrap();
+
+    let err = res.expect_err("write should have failed under read-only dir");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("opening temp file") || msg.contains("Permission denied"),
+        "expected temp-file write failure, got: {msg}"
+    );
+
+    // Live file untouched.
+    let live_after = fs::read_to_string(&path).unwrap();
+    assert!(live_after.contains("\"sk-live\""));
+
+    // Critical invariant: prior `.bak.1` must still hold its original
+    // bytes — the rotation must not have run.
+    let bak1_after = fs::read_to_string(&bak1).unwrap();
+    assert_eq!(
+        bak1_after, prior_bak1_body,
+        ".bak.1 should be untouched when the new write failed"
+    );
+
+    // No bak.2 should have been created from the rotation either.
+    assert!(
+        !backup_path(&path, 2).exists(),
+        ".bak.2 should not appear when rotation never ran"
+    );
+}
+
+// ---- Production wiring: Config::load picks up migrations ----
+
+#[test]
+fn config_load_runs_migrations_against_project_settings_toml() {
+    // This test exercises the full `Config::load` path against a v0
+    // `.agent/settings.toml` planted in a tempdir that we make the
+    // current working directory. The migration runner should rewrite
+    // the file with `schema_version = CURRENT_SCHEMA_VERSION` and the
+    // legacy `api.token` field should be picked up as `api.api_key`
+    // through the typed schema.
+    use agent_code_lib::config::Config;
+
+    // Serialize against any other test in this binary that might mess
+    // with cwd — we set/unset process-global state here.
+    static CWD_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = CWD_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+
+    let tmp = TempDir::new().unwrap();
+    let agent_dir = tmp.path().join(".agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+    let settings = agent_dir.join("settings.toml");
+    fs::write(
+        &settings,
+        "[api]\nmodel = \"legacy-gpt\"\ntoken = \"sk-from-token-field\"\n",
+    )
+    .unwrap();
+
+    let prev_cwd = std::env::current_dir().ok();
+    // Some env vars can override loaded settings; clear the relevant
+    // ones to avoid masking the migration behavior under test.
+    let saved_env: Vec<(&str, Option<String>)> = [
+        "AGENT_CODE_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "AGENT_CODE_MODEL",
+        "AGENT_CODE_API_BASE_URL",
+        "AGENT_CODE_AUTH_MODE",
+    ]
+    .into_iter()
+    .map(|k| (k, std::env::var(k).ok()))
+    .collect();
+    for (k, _) in &saved_env {
+        // SAFETY: protected by CWD_GUARD; other tests in this binary
+        // serialize on the same mutex so env-var writes don't race.
+        unsafe {
+            std::env::remove_var(k);
+        }
+    }
+
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let load_result = Config::load();
+
+    // Restore cwd and env vars before asserting.
+    if let Some(prev) = prev_cwd {
+        let _ = std::env::set_current_dir(prev);
+    }
+    for (k, v) in saved_env {
+        // SAFETY: protected by CWD_GUARD.
+        unsafe {
+            if let Some(val) = v {
+                std::env::set_var(k, val);
+            } else {
+                std::env::remove_var(k);
+            }
+        }
+    }
+
+    let cfg = load_result.expect("Config::load succeeds");
+    assert_eq!(cfg.api.model, "legacy-gpt", "model survived the migration");
+    assert_eq!(
+        cfg.api.api_key.as_deref(),
+        Some("sk-from-token-field"),
+        "v1→v2 migration should have moved api.token into api.api_key"
+    );
+
+    // The on-disk file was rewritten with the schema version stamp.
+    let after: toml::Value = toml::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(
+        after
+            .get("schema_version")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as u32),
+        Some(CURRENT_SCHEMA_VERSION),
+        "settings.toml should be rewritten with schema_version stamped"
+    );
+    let api_table = after.get("api").and_then(|v| v.as_table()).unwrap();
+    assert!(
+        !api_table.contains_key("token"),
+        "legacy token field should have been removed"
+    );
+    assert_eq!(
+        api_table.get("api_key").and_then(|v| v.as_str()),
+        Some("sk-from-token-field")
+    );
+
+    // `.bak.1` holds the pre-migration body.
+    let bak1 = fs::read_to_string(backup_path(&settings, 1)).unwrap();
+    assert!(bak1.contains("token = \"sk-from-token-field\""));
 }
