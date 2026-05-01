@@ -201,6 +201,13 @@ pub struct ToolContext {
     /// should treat `None` as "pass through unchanged". The main query
     /// loop populates this from [`crate::config::SandboxConfig`].
     pub sandbox: Option<Arc<crate::sandbox::SandboxExecutor>>,
+    /// Name of the active disk-loaded output style, if any.
+    ///
+    /// The `Agent` tool propagates this to spawned subagents via the
+    /// `AGENT_CODE_DISK_OUTPUT_STYLE` env var so a style with
+    /// `applies_to: [subagent]` actually reaches the child. `None` means
+    /// the parent has no active disk style (built-in or default).
+    pub active_disk_output_style: Option<String>,
 }
 
 /// Result of a tool execution.

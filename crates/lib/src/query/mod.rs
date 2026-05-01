@@ -880,6 +880,7 @@ impl QueryEngine {
                                                         session_allows: None,
                                                         permission_prompter: None,
                                                         sandbox: None,
+                                                        active_disk_output_style: None,
                                                     },
                                                 )
                                                 .await
@@ -1099,6 +1100,11 @@ impl QueryEngine {
                 sandbox: Some(std::sync::Arc::new(
                     crate::sandbox::SandboxExecutor::from_session_config(&self.state.config, &cwd),
                 )),
+                active_disk_output_style: self
+                    .state
+                    .disk_output_style
+                    .as_ref()
+                    .map(|s| s.name.clone()),
             };
 
             // Collect streaming tool results first.

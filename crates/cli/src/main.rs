@@ -601,7 +601,34 @@ async fn main() -> anyhow::Result<()> {
     ));
     let permission_checker = PermissionChecker::from_config(&config.permissions)
         .with_project_root(session_env.project_root.clone());
-    let app_state = AppState::new(config.clone());
+    let mut app_state = AppState::new(config.clone());
+
+    // Subagents spawned by the parent's `Agent` tool inherit the
+    // parent's active disk-loaded output style via
+    // `AGENT_CODE_DISK_OUTPUT_STYLE`. Resolve the named style against
+    // this child's own loaded registry. If the style is missing (e.g.
+    // the parent had a project-level style but this subagent is in a
+    // worktree without the file), log a warning and continue with no
+    // override — never crash the child for a style mismatch.
+    if let Ok(name) = std::env::var("AGENT_CODE_DISK_OUTPUT_STYLE") {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            let project_root = session_env.project_root.clone();
+            let registry =
+                agent_code_lib::output_styles::OutputStyleRegistry::load_all(Some(&project_root));
+            match registry.find(trimmed) {
+                Some(style) => {
+                    app_state.disk_output_style = Some(style.clone());
+                }
+                None => {
+                    tracing::warn!(
+                        "AGENT_CODE_DISK_OUTPUT_STYLE='{trimmed}' is not a known output style; \
+                         continuing with no override"
+                    );
+                }
+            }
+        }
+    }
 
     // Connect configured MCP servers and register their tools.
     for (name, entry) in &config.mcp_servers {

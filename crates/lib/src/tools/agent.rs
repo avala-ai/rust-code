@@ -150,6 +150,16 @@ impl Tool for AgentTool {
         // `applies_to` list excludes subagents.
         cmd.env("AGENT_CODE_SUBAGENT", "1");
 
+        // Propagate the active disk-loaded output style by name so a
+        // style with `applies_to: [subagent]` actually reaches the
+        // child. Without this the subagent boots with
+        // `disk_output_style: None` and the subagent half of
+        // `applies_to` is dead at the subprocess boundary. The child
+        // looks the name up against its own loaded registry.
+        if let Some(name) = ctx.active_disk_output_style.as_deref() {
+            cmd.env("AGENT_CODE_DISK_OUTPUT_STYLE", name);
+        }
+
         let timeout = std::time::Duration::from_secs(300); // 5 minute timeout.
 
         let result = tokio::select! {

@@ -119,6 +119,14 @@ impl OutputStyle {
     }
 }
 
+/// Whether `value` is a known `applies_to` kind. Case-sensitive on
+/// purpose: the docs say lowercase, and accepting `Main` would force
+/// every reader (including the matcher in `OutputStyle::applies_to_kind`)
+/// to grow case-insensitive logic for no real benefit.
+fn is_valid_applies_to(value: &str) -> bool {
+    matches!(value, "main" | "subagent")
+}
+
 /// 12-byte SHA256 prefix of `body` — long enough to detect any real
 /// edit, short enough to keep the cache key cheap.
 fn body_digest(body: &str) -> [u8; 12] {
@@ -156,6 +164,17 @@ impl OutputStyleRegistry {
     /// user directories. Disk styles override built-ins by id; a
     /// warning is logged on collision.
     pub fn load_all(project_root: Option<&Path>) -> Self {
+        Self::load_all_with_user_dir(project_root, user_output_styles_dir())
+    }
+
+    /// Variant of [`load_all`] that takes the user-level output-styles
+    /// directory explicitly. Tests pass a tempdir here so the assertions
+    /// don't depend on whatever happens to live in the developer's real
+    /// `~/.config/agent-code/output-styles/`. Production code should
+    /// keep using [`load_all`].
+    ///
+    /// `user_dir` of `None` skips the user lookup entirely.
+    pub fn load_all_with_user_dir(project_root: Option<&Path>, user_dir: Option<PathBuf>) -> Self {
         let mut registry = Self::new();
 
         // Built-ins go in first so that disk-loaded styles can override
@@ -165,7 +184,7 @@ impl OutputStyleRegistry {
         // Project-level styles take precedence over user-level styles
         // on collision (consistent with how skills resolve), so load
         // user first then project.
-        if let Some(dir) = user_output_styles_dir()
+        if let Some(dir) = user_dir
             && dir.is_dir()
         {
             registry.load_from_dir(&dir, OutputStyleSource::User);
@@ -306,7 +325,12 @@ fn load_style_file(path: &Path, source: OutputStyleSource) -> Result<OutputStyle
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "missing required `description` field in frontmatter".to_string())?;
 
-    let applies_to = frontmatter
+    // Reject unknown `applies_to` values at parse time. Without this a
+    // typo like `Main` or `mian` loads silently, applies to nothing,
+    // and the user has no signal that their style is dead. The set of
+    // valid kinds is the canonical lowercase ids from
+    // `AgentKind::as_str()` — keep it in lockstep with that enum.
+    let applies_to: Vec<String> = frontmatter
         .applies_to
         .unwrap_or_default()
         .into_iter()
@@ -319,6 +343,15 @@ fn load_style_file(path: &Path, source: OutputStyleSource) -> Result<OutputStyle
             }
         })
         .collect();
+
+    for entry in &applies_to {
+        if !is_valid_applies_to(entry) {
+            return Err(format!(
+                "invalid `applies_to` value {entry:?} — expected one of \
+                 \"main\" or \"subagent\" (lowercase)"
+            ));
+        }
+    }
 
     let body = body.trim().to_string();
     let content_hash = body_digest(&body);
@@ -499,7 +532,17 @@ fn parse_inline_list(value: &str) -> Result<Vec<String>, String> {
 
 /// User-level output-styles directory: `~/.config/agent-code/output-styles/`
 /// on Linux/macOS, the platform-equivalent on Windows.
+///
+/// The `AGENT_CODE_USER_OUTPUT_STYLES_DIR` env var overrides the
+/// resolved path. Tests use this to point at a tempdir so assertions
+/// don't depend on the developer's real config dir.
 fn user_output_styles_dir() -> Option<PathBuf> {
+    if let Ok(override_dir) = std::env::var("AGENT_CODE_USER_OUTPUT_STYLES_DIR") {
+        let trimmed = override_dir.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
     dirs::config_dir().map(|d| d.join("agent-code").join("output-styles"))
 }
 
@@ -658,7 +701,7 @@ mod tests {
              Speak warmly. Acknowledge ambiguity.",
         );
 
-        let registry = OutputStyleRegistry::load_all(Some(project_root));
+        let registry = OutputStyleRegistry::load_all_with_user_dir(Some(project_root), None);
         let style = registry
             .find("friendly")
             .expect("project style should be picked up");
@@ -687,7 +730,7 @@ mod tests {
              Custom concise prompt.",
         );
 
-        let registry = OutputStyleRegistry::load_all(Some(project_root));
+        let registry = OutputStyleRegistry::load_all_with_user_dir(Some(project_root), None);
         let style = registry.find("concise").expect("style should exist");
         assert_eq!(style.source, OutputStyleSource::Project);
         assert_eq!(style.description, "Project override of concise");
@@ -746,7 +789,7 @@ mod tests {
              body",
         );
 
-        let registry = OutputStyleRegistry::load_all(Some(project_root));
+        let registry = OutputStyleRegistry::load_all_with_user_dir(Some(project_root), None);
         assert!(registry.find("good").is_some(), "valid file must load");
         assert!(
             registry.find("broken").is_none(),
@@ -761,6 +804,88 @@ mod tests {
     }
 
     #[test]
+    fn invalid_applies_to_value_rejects_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path();
+        let styles_dir = project_root.join(".agent").join("output-styles");
+        std::fs::create_dir_all(&styles_dir).unwrap();
+
+        // Typo — "mian" instead of "main".
+        write_file(
+            &styles_dir,
+            "typo.md",
+            "---\n\
+             name: typo\n\
+             description: typo style\n\
+             applies_to: [mian]\n\
+             ---\n\
+             body",
+        );
+
+        // Wrong case — docs specify lowercase.
+        write_file(
+            &styles_dir,
+            "case.md",
+            "---\n\
+             name: case\n\
+             description: capitalised\n\
+             applies_to: [Main]\n\
+             ---\n\
+             body",
+        );
+
+        // Valid neighbour — proves the loader keeps going.
+        write_file(
+            &styles_dir,
+            "ok.md",
+            "---\n\
+             name: ok\n\
+             description: clean\n\
+             applies_to: [main, subagent]\n\
+             ---\n\
+             body",
+        );
+
+        let registry = OutputStyleRegistry::load_all_with_user_dir(Some(project_root), None);
+        assert!(
+            registry.find("typo").is_none(),
+            "unknown applies_to value must be rejected at parse time"
+        );
+        assert!(
+            registry.find("case").is_none(),
+            "non-canonical case must be rejected — docs say lowercase"
+        );
+        assert!(
+            registry.find("ok").is_some(),
+            "valid neighbouring style must still load"
+        );
+    }
+
+    #[test]
+    fn applies_to_omitted_is_still_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path();
+        let styles_dir = project_root.join(".agent").join("output-styles");
+        std::fs::create_dir_all(&styles_dir).unwrap();
+
+        write_file(
+            &styles_dir,
+            "all.md",
+            "---\n\
+             name: all\n\
+             description: applies to everything\n\
+             ---\n\
+             body",
+        );
+
+        let registry = OutputStyleRegistry::load_all_with_user_dir(Some(project_root), None);
+        let style = registry.find("all").expect("style should load");
+        assert!(style.applies_to.is_empty());
+        assert!(style.applies_to_kind(AgentKind::Main));
+        assert!(style.applies_to_kind(AgentKind::Subagent));
+    }
+
+    #[test]
     fn non_md_files_are_ignored() {
         let dir = tempfile::tempdir().unwrap();
         let project_root = dir.path();
@@ -768,7 +893,7 @@ mod tests {
         std::fs::create_dir_all(&styles_dir).unwrap();
         write_file(&styles_dir, "notes.txt", "name: ignored");
 
-        let registry = OutputStyleRegistry::load_all(Some(project_root));
+        let registry = OutputStyleRegistry::load_all_with_user_dir(Some(project_root), None);
         assert!(registry.find("ignored").is_none());
     }
 }

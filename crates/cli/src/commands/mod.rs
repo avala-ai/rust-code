@@ -4212,7 +4212,7 @@ fn execute_output_style(args: Option<&str>, engine: &mut QueryEngine) {
     if raw.is_empty() {
         // Listing always shows the currently active id regardless of
         // `applies_to` — the user wants to see what they picked.
-        let active_name = active_output_style_name_for_listing(engine.state());
+        let active = active_output_style_for_listing(engine.state());
 
         println!("Available response styles:");
         // Sort: built-ins first (in canonical order), then disk styles
@@ -4230,17 +4230,17 @@ fn execute_output_style(args: Option<&str>, engine: &mut QueryEngine) {
         });
 
         for style in entries {
-            let active = if style.name == active_name {
-                "  (active)"
-            } else {
-                ""
-            };
+            let is_active = active
+                .as_ref()
+                .map(|(name, source)| style.name == *name && style.source == *source)
+                .unwrap_or(false);
+            let marker = if is_active { "  (active)" } else { "" };
             println!(
                 "  {:<14} ({}) — {}{}",
                 style.name,
                 style.source.label(),
                 style.description,
-                active
+                marker
             );
         }
         println!();
@@ -4303,17 +4303,81 @@ fn resolve_output_style_selection(
     OutputStyleSelection::Unknown
 }
 
-/// Display name of the active style for the `/output-style` listing.
+/// `(name, source)` of the active style for the `/output-style` listing.
+///
+/// Identity is `(name, source)` because disk styles can shadow built-ins
+/// by id — comparing on `name` alone marks the disk version active even
+/// when the built-in is the one in use. Returns `None` only if both the
+/// disk slot and the response style produce no entry, which never
+/// happens in practice (response_style is always at least `default`).
 ///
 /// Differs from `AppState::active_output_style_name(kind)` in that the
 /// listing wants to show whatever the user picked, even if the disk
 /// style's `applies_to` filters it out for the current role — the
 /// user needs feedback that their selection is in effect.
-fn active_output_style_name_for_listing(state: &agent_code_lib::state::AppState) -> String {
+fn active_output_style_for_listing(
+    state: &agent_code_lib::state::AppState,
+) -> Option<(String, agent_code_lib::output_styles::OutputStyleSource)> {
     if let Some(style) = state.disk_output_style.as_ref() {
-        return style.name.clone();
+        return Some((style.name.clone(), style.source));
     }
-    state.response_style.name().to_string()
+    Some((
+        state.response_style.name().to_string(),
+        agent_code_lib::output_styles::OutputStyleSource::BuiltIn,
+    ))
+}
+
+/// Human-readable label for the active style, suitable for `/status`
+/// and other one-line summaries. Includes the source so a disk style
+/// shadowing a built-in id is distinguishable from the built-in.
+fn active_output_style_label(state: &agent_code_lib::state::AppState) -> String {
+    match active_output_style_for_listing(state) {
+        Some((name, source)) => match source {
+            agent_code_lib::output_styles::OutputStyleSource::BuiltIn => name,
+            other => format!("{name} ({})", other.label()),
+        },
+        None => "default".to_string(),
+    }
+}
+
+/// Re-read the active disk-loaded output style from its source file
+/// (best-effort) so `/reload` actually picks up edits to the file.
+///
+/// If the file was deleted, moved, or has become invalid (parse error,
+/// renamed style id, etc.), the active override is cleared and a log
+/// line records why. The caller (currently `/reload`) treats this as
+/// best-effort — never error out.
+fn refresh_active_disk_output_style_in_state(
+    state: &mut agent_code_lib::state::AppState,
+    project_root: &std::path::Path,
+) {
+    let Some(active) = state.disk_output_style.as_ref() else {
+        return;
+    };
+    // Only files have a path to refresh from. Built-ins are cloned
+    // into `disk_output_style` only when a project/user file shadows
+    // them, so this branch is conservative — without a `source_path`
+    // there's nothing to re-read.
+    if active.source_path.is_none() {
+        return;
+    }
+
+    let active_name = active.name.clone();
+    let registry = agent_code_lib::output_styles::OutputStyleRegistry::load_all(Some(project_root));
+    match registry.find(&active_name) {
+        Some(reloaded)
+            if reloaded.source != agent_code_lib::output_styles::OutputStyleSource::BuiltIn =>
+        {
+            state.disk_output_style = Some(reloaded.clone());
+        }
+        _ => {
+            tracing::warn!(
+                "Active output style '{active_name}' is no longer present on disk; \
+                 clearing override"
+            );
+            state.disk_output_style = None;
+        }
+    }
 }
 
 /// Execute `/reload` — rescan on-disk extensions and invalidate the
@@ -4321,7 +4385,9 @@ fn active_output_style_name_for_listing(state: &agent_code_lib::state::AppState)
 ///
 /// Counts are computed by re-reading the same files the system-prompt
 /// builder and coordinator read at startup. Nothing persistent is
-/// mutated — `/reload` is idempotent and safe to run any time.
+/// mutated — `/reload` is idempotent and safe to run any time. The
+/// active disk-loaded output style (if any) is also re-read from its
+/// source file so in-session edits to the style body take effect.
 fn execute_reload(engine: &mut QueryEngine) {
     let cwd = std::path::PathBuf::from(&engine.state().cwd);
 
@@ -4339,6 +4405,13 @@ fn execute_reload(engine: &mut QueryEngine) {
     // Clear the cached system prompt so new skills appear on the very
     // next turn.
     engine.reset_system_prompt_cache();
+
+    // Refresh the active disk-loaded output style if any. Without
+    // this, edits to the on-disk style file don't surface until the
+    // next session even though the `/reload` user mental model says
+    // "rescan everything from disk." Best-effort: if the file is gone
+    // or unreadable, clear the override and log; never error out.
+    refresh_active_disk_output_style_in_state(engine.state_mut(), &cwd);
 
     println!(
         "Reloaded: {skill_count} skill(s) · {agent_count} agent(s) \
@@ -4960,12 +5033,13 @@ fn execute_info(engine: &QueryEngine) {
     println!("  messages : {}", state.messages.len());
 
     println!("Modes");
+    let style_label = active_output_style_label(state);
     println!(
         "  {}",
         info_modes_line(
             state.plan_mode,
             state.brief_mode,
-            state.response_style.name(),
+            &style_label,
             cfg.sandbox.enabled,
             state.pre_fast_model.is_some(),
         )
@@ -6852,6 +6926,179 @@ mod tests {
                 Self::Unknown => write!(f, "Unknown"),
             }
         }
+    }
+
+    /// Active marker carries `(name, source)`, not just `name`. A disk
+    /// style that shadows a built-in by id (e.g. project `default.md`)
+    /// must NOT mark the built-in active when it isn't the one in
+    /// effect. Regression test for the codex finding: comparing on
+    /// name alone falsely activates the disk version.
+    #[test]
+    fn active_marker_distinguishes_disk_from_builtin_with_same_name() {
+        use agent_code_lib::output_styles::OutputStyleSource;
+        use agent_code_lib::state::{AppState, ResponseStyle};
+
+        // No disk style active, response_style = Default. The built-in
+        // `default` is active; a hypothetical disk `default.md` is NOT.
+        let mut state = AppState::new(agent_code_lib::config::Config::default());
+        state.response_style = ResponseStyle::Default;
+        state.disk_output_style = None;
+        let active = active_output_style_for_listing(&state).unwrap();
+        assert_eq!(active.0, "default");
+        assert_eq!(active.1, OutputStyleSource::BuiltIn);
+    }
+
+    #[test]
+    fn active_marker_reports_disk_source_when_disk_style_in_use() {
+        use agent_code_lib::output_styles::{OutputStyle, OutputStyleSource};
+        use agent_code_lib::state::AppState;
+
+        let mut state = AppState::new(agent_code_lib::config::Config::default());
+        state.disk_output_style = Some(OutputStyle {
+            name: "default".into(),
+            description: "project override of default".into(),
+            body: "Custom".into(),
+            applies_to: Vec::new(),
+            source: OutputStyleSource::Project,
+            source_path: Some(std::path::PathBuf::from("/tmp/fake.md")),
+            content_hash: [0u8; 12],
+        });
+        let active = active_output_style_for_listing(&state).unwrap();
+        assert_eq!(active.0, "default");
+        assert_eq!(active.1, OutputStyleSource::Project);
+    }
+
+    /// `/status`-style label must include the source for non-built-in
+    /// active styles so a disk override is visible at a glance.
+    #[test]
+    fn active_output_style_label_includes_source_for_disk_styles() {
+        use agent_code_lib::output_styles::{OutputStyle, OutputStyleSource};
+        use agent_code_lib::state::AppState;
+
+        let mut state = AppState::new(agent_code_lib::config::Config::default());
+        state.disk_output_style = Some(OutputStyle {
+            name: "default".into(),
+            description: "d".into(),
+            body: "b".into(),
+            applies_to: Vec::new(),
+            source: OutputStyleSource::Project,
+            source_path: Some(std::path::PathBuf::from("/tmp/fake.md")),
+            content_hash: [0u8; 12],
+        });
+        let label = active_output_style_label(&state);
+        assert_eq!(label, "default (project)");
+    }
+
+    /// Built-in active styles render bare — no `(built-in)` clutter.
+    #[test]
+    fn active_output_style_label_omits_source_for_builtins() {
+        use agent_code_lib::state::{AppState, ResponseStyle};
+
+        let mut state = AppState::new(agent_code_lib::config::Config::default());
+        state.response_style = ResponseStyle::Concise;
+        state.disk_output_style = None;
+        assert_eq!(active_output_style_label(&state), "concise");
+    }
+
+    /// `/reload` re-reads the active disk style so in-session edits
+    /// to the body land on the next turn instead of next session.
+    /// Without this fix the cloned style stays stale.
+    #[test]
+    fn reload_refreshes_active_disk_output_style_body() {
+        use agent_code_lib::output_styles::OutputStyleRegistry;
+        use agent_code_lib::state::AppState;
+
+        let project = tempfile::tempdir().unwrap();
+        let styles_dir = project.path().join(".agent").join("output-styles");
+        std::fs::create_dir_all(&styles_dir).unwrap();
+        let style_path = styles_dir.join("custom.md");
+        std::fs::write(
+            &style_path,
+            "---\n\
+             name: refresh-test-target-do-not-collide\n\
+             description: refresh test\n\
+             ---\n\
+             ORIGINAL_BODY",
+        )
+        .unwrap();
+
+        let registry = OutputStyleRegistry::load_all_with_user_dir(Some(project.path()), None);
+        let initial = registry
+            .find("refresh-test-target-do-not-collide")
+            .unwrap()
+            .clone();
+        let mut state = AppState::new(agent_code_lib::config::Config::default());
+        state.disk_output_style = Some(initial);
+        assert!(
+            state
+                .disk_output_style
+                .as_ref()
+                .unwrap()
+                .body
+                .contains("ORIGINAL_BODY")
+        );
+
+        // Edit the file on disk.
+        std::fs::write(
+            &style_path,
+            "---\n\
+             name: refresh-test-target-do-not-collide\n\
+             description: refresh test\n\
+             ---\n\
+             EDITED_BODY",
+        )
+        .unwrap();
+
+        refresh_active_disk_output_style_in_state(&mut state, project.path());
+
+        let body = &state.disk_output_style.as_ref().unwrap().body;
+        assert!(
+            body.contains("EDITED_BODY"),
+            "body should be re-read from disk; got: {body:?}"
+        );
+        assert!(
+            !body.contains("ORIGINAL_BODY"),
+            "stale body must not survive a refresh; got: {body:?}"
+        );
+    }
+
+    /// If the file backing the active disk style is deleted, `/reload`
+    /// must clear the override (best-effort) instead of carrying a
+    /// stale clone or erroring out.
+    #[test]
+    fn reload_clears_active_disk_output_style_when_file_deleted() {
+        use agent_code_lib::output_styles::OutputStyleRegistry;
+        use agent_code_lib::state::AppState;
+
+        let project = tempfile::tempdir().unwrap();
+        let styles_dir = project.path().join(".agent").join("output-styles");
+        std::fs::create_dir_all(&styles_dir).unwrap();
+        let style_path = styles_dir.join("ephemeral.md");
+        std::fs::write(
+            &style_path,
+            "---\n\
+             name: ephemeral-test-target-do-not-collide\n\
+             description: will be deleted\n\
+             ---\n\
+             body",
+        )
+        .unwrap();
+
+        let registry = OutputStyleRegistry::load_all_with_user_dir(Some(project.path()), None);
+        let style = registry
+            .find("ephemeral-test-target-do-not-collide")
+            .unwrap()
+            .clone();
+        let mut state = AppState::new(agent_code_lib::config::Config::default());
+        state.disk_output_style = Some(style);
+
+        std::fs::remove_file(&style_path).unwrap();
+
+        refresh_active_disk_output_style_in_state(&mut state, project.path());
+        assert!(
+            state.disk_output_style.is_none(),
+            "deleted file must clear the active override"
+        );
     }
 
     // ---- /rewind helpers ----
