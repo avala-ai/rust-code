@@ -245,9 +245,18 @@ async fn run_with_timeout(
 
     // Capture the pid early — once we've called `wait`, `child.id()`
     // returns None on some platforms and we need the pgid for
-    // signaling.
-    #[cfg(unix)]
-    let child_pid = child.id().map(|id| id as i32);
+    // signaling. On non-unix targets we never use the value but the
+    // binding still has to exist so the timeout/cancel arms compile.
+    let child_pid: Option<i32> = {
+        #[cfg(unix)]
+        {
+            child.id().map(|id| id as i32)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    };
 
     let stdout_handle = child.stdout.take().expect("stdout piped at spawn");
     let stderr_handle = child.stderr.take().expect("stderr piped at spawn");
@@ -278,7 +287,7 @@ async fn run_with_timeout(
         _ = tokio::time::sleep(timeout) => {
             // Reap the entire process group so grandchildren can't
             // keep consuming API budget after we've returned.
-            kill_process_group(&mut child, _to_pid_for_unix(child_pid));
+            kill_process_group(&mut child, child_pid);
             // Drains will see EOF as soon as the child's stdio is
             // closed; bound them with a short deadline so a stuck
             // pipe can't keep us here forever.
@@ -289,7 +298,7 @@ async fn run_with_timeout(
             Err(RunError::Timeout(timeout.as_millis() as u64))
         }
         _ = cancel.cancelled() => {
-            kill_process_group(&mut child, _to_pid_for_unix(child_pid));
+            kill_process_group(&mut child, child_pid);
             join_drain(stdout_drain).await;
             join_drain(stderr_drain).await;
             let _ = child.wait().await;
@@ -298,18 +307,6 @@ async fn run_with_timeout(
     };
 
     outcome
-}
-
-/// Helper that ignores the pid arg on non-unix targets without
-/// emitting an "unused" lint there.
-#[cfg(unix)]
-fn _to_pid_for_unix(pid: Option<i32>) -> Option<i32> {
-    pid
-}
-
-#[cfg(not(unix))]
-fn _to_pid_for_unix(_pid: Option<i32>) -> Option<i32> {
-    None
 }
 
 fn take_buf(buf: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
