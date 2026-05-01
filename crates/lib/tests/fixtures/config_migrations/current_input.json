@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "api": {
+    "api_key": "sk-current",
+    "base_url": "https://api.example.com/v1",
+    "model": "gpt-5.4"
+  },
+  "ui": {
+    "theme": "dark"
+  }
+}
