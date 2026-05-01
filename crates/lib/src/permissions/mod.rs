@@ -259,7 +259,14 @@ fn glob_match_inner(pattern: &[char], text: &[char]) -> bool {
 }
 
 /// Directories that should never be written to by the agent.
-const PROTECTED_DIRS: &[&str] = &[
+///
+/// Crate-visible so the Bash tool can apply the same gate to shell
+/// invocations that route around the FileEdit/FileWrite/MultiEdit/
+/// NotebookEdit tools (e.g. `cp src .git/config`, `printf evil >
+/// .git/config`, `bash -c '... > .git/config'`). Keep the constant in
+/// a single place so adding a new protected directory updates every
+/// surface at once.
+pub(crate) const PROTECTED_DIRS: &[&str] = &[
     ".git/",
     ".git\\",
     ".husky/",
