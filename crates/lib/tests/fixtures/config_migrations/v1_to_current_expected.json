@@ -1,0 +1,11 @@
+{
+  "api": {
+    "api_key": "sk-legacy-xyz",
+    "base_url": "https://api.example.com/v1",
+    "model": "gpt-5.4"
+  },
+  "schema_version": 2,
+  "ui": {
+    "theme": "dark"
+  }
+}

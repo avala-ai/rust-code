@@ -13,6 +13,7 @@
 //! that shouldn't be committed (e.g. a personal API base URL while keeping
 //! the team's shared `settings.toml` intact).
 
+pub mod migrations;
 mod schema;
 
 pub use schema::*;
@@ -42,18 +43,12 @@ impl Config {
         if let Some(path) = user_config_path()
             && path.exists()
         {
-            layers.push(
-                std::fs::read_to_string(&path)
-                    .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?,
-            );
+            layers.push(read_layer_through_migrations(&path)?);
         }
 
         // Layer 2: Project-level config (overrides user config).
         if let Some(path) = find_project_config() {
-            layers.push(
-                std::fs::read_to_string(&path)
-                    .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?,
-            );
+            layers.push(read_layer_through_migrations(&path)?);
         }
 
         // Layer 2.5: Project-local overrides (gitignored, overrides
@@ -62,10 +57,7 @@ impl Config {
         // the one closest to cwd is used, matching the project-config
         // walk so sub-packages inherit the repo-root settings.local.
         if let Some(path) = find_project_local_config() {
-            layers.push(
-                std::fs::read_to_string(&path)
-                    .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?,
-            );
+            layers.push(read_layer_through_migrations(&path)?);
         }
 
         let layer_refs: Vec<&str> = layers.iter().map(String::as_str).collect();
@@ -126,6 +118,29 @@ impl Config {
 
         Ok(config)
     }
+}
+
+/// Read one config-file layer, routing it through the schema-version
+/// migration runner before handing the bytes to the TOML merge stage.
+///
+/// Production config files are TOML, so we drive the
+/// [`migrations::load_and_migrate_toml`] entry point: it parses the
+/// TOML, converts to the JSON shape the migration chain expects, runs
+/// any pending migrations, atomically rewrites the file when the chain
+/// mutated it (rotating `.bak.N` slots after a successful rename), and
+/// hands back the migrated `toml::Value`. We then re-serialize to a
+/// String so the rest of `load_inner` keeps its current "merge raw
+/// TOML strings" pipeline unchanged.
+///
+/// The on-disk format is TOML; migrations are pure functions over
+/// `serde_json::Value`. The conversion at the boundary is loss-bearing
+/// only for TOML datetimes (no settings field uses one today) — see
+/// `migrations::load_and_migrate_toml` docs.
+fn read_layer_through_migrations(path: &Path) -> Result<String, ConfigError> {
+    let (migrated, _outcome) = migrations::load_and_migrate_toml(path)
+        .map_err(|e| ConfigError::FileError(format!("{path:?}: migration failed: {e:#}")))?;
+    toml::to_string_pretty(&migrated)
+        .map_err(|e| ConfigError::FileError(format!("{path:?}: re-serializing TOML: {e}")))
 }
 
 /// Why an `api_key_helper` invocation failed. Deliberately coarse so
