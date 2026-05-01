@@ -2367,8 +2367,12 @@ fn format_task_list(
             desc_line.to_string()
         };
         out.push_str(&format!(
-            "  {:>10}  {:>6}s  {}  {}\n",
-            info.id, runtime_s, status, desc
+            "  {:>10}  {:<13}  {:>6}s  {}  {}\n",
+            info.id,
+            info.kind.as_str(),
+            runtime_s,
+            status,
+            desc,
         ));
     }
     out.push_str("\nUse TaskOutput to read output; TaskStop to cancel a running task.\n");
@@ -7218,6 +7222,8 @@ mod tests {
             description: desc.to_string(),
             status,
             output_file: std::path::PathBuf::from("/tmp/x"),
+            kind: agent_code_lib::services::background::TaskKind::LocalShell,
+            payload: None,
             started_at: now - std::time::Duration::from_secs(started_secs_ago),
             finished_at: finished_secs_ago.map(|s| now - std::time::Duration::from_secs(s)),
         }

@@ -1,17 +1,38 @@
 //! Task management tools.
 //!
-//! Full task lifecycle: create, update, get, list, stop, and read output.
-//! Tasks are tracked in the background task manager and persisted to
-//! the cache directory for retrieval.
+//! Full task lifecycle: create, update, get, list, stop, and read
+//! output. Tasks are tracked in the background task manager and
+//! persisted to the cache directory for retrieval.
+//!
+//! Each task carries a [`TaskKind`](crate::services::background::TaskKind)
+//! so the model can distinguish a backgrounded shell command from a
+//! subagent run, an MCP monitor, etc. `TaskCreate` accepts an optional
+//! `kind` argument; `TaskList` and `TaskGet` surface it on every entry.
 
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{Tool, ToolContext, ToolResult};
 use crate::error::ToolError;
+use crate::services::background::TaskKind;
+use crate::tools::{Tool, ToolContext, ToolResult};
 
 static TASK_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Pull a `kind` field out of tool input. Defaults to `LocalShell`
+/// for back-compat with the pre-8.13 schema, where the tool only
+/// understood shell-style tasks.
+fn parse_kind(input: &serde_json::Value) -> Result<TaskKind, ToolError> {
+    match input.get("kind").and_then(|v| v.as_str()) {
+        None => Ok(TaskKind::LocalShell),
+        Some(s) => TaskKind::parse(s).ok_or_else(|| {
+            ToolError::InvalidInput(format!(
+                "unknown task kind '{s}'. Expected one of: \
+                 LocalShell, LocalAgent, LocalWorkflow, MonitorMcp, RemoteAgent, Dream"
+            ))
+        }),
+    }
+}
 
 pub struct TaskCreateTool;
 
@@ -38,6 +59,20 @@ impl Tool for TaskCreateTool {
                     "type": "string",
                     "enum": ["pending", "in_progress", "completed"],
                     "default": "pending"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "LocalShell",
+                        "LocalAgent",
+                        "LocalWorkflow",
+                        "MonitorMcp",
+                        "RemoteAgent",
+                        "Dream"
+                    ],
+                    "default": "LocalShell",
+                    "description": "What kind of work this task represents. \
+                                    Defaults to LocalShell for backward compat."
                 }
             }
         })
@@ -66,10 +101,12 @@ impl Tool for TaskCreateTool {
             .and_then(|v| v.as_str())
             .unwrap_or("pending");
 
+        let kind = parse_kind(&input)?;
         let id = TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
 
         Ok(ToolResult::success(format!(
-            "Task #{id} created: {description} [{status}]"
+            "Task #{id} created [kind: {}]: {description} [{status}]",
+            kind.as_str()
         )))
     }
 }
@@ -162,17 +199,28 @@ impl Tool for TaskGetTool {
     async fn call(
         &self,
         input: serde_json::Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let id = input
             .get("id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidInput("'id' is required".into()))?;
 
-        // In a full implementation this would query the TaskManager.
+        if let Some(mgr) = ctx.task_manager.as_ref()
+            && let Some(info) = mgr.get_status(id).await
+        {
+            return Ok(ToolResult::success(format!(
+                "Task #{id} [kind: {}] status: {:?}\n  description: {}\n  output_file: {}",
+                info.kind.as_str(),
+                info.status,
+                info.description,
+                info.output_file.display(),
+            )));
+        }
+
         Ok(ToolResult::success(format!(
-            "Task #{id}: status and details would be shown here. \
-             Use the background task manager for active task tracking."
+            "Task #{id}: not found in the active task manager. \
+             It may have been created by an older binary or already pruned."
         )))
     }
 }
@@ -207,12 +255,26 @@ impl Tool for TaskListTool {
     async fn call(
         &self,
         _input: serde_json::Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let count = TASK_COUNTER.load(Ordering::Relaxed) - 1;
-        Ok(ToolResult::success(format!(
-            "{count} task(s) created this session."
-        )))
+        let mut out = format!("{count} task(s) created this session.");
+        if let Some(mgr) = ctx.task_manager.as_ref() {
+            let tasks = mgr.list().await;
+            if !tasks.is_empty() {
+                out.push_str("\n\nActive tasks:\n");
+                for info in tasks {
+                    out.push_str(&format!(
+                        "  {} [kind: {}] {:?}: {}\n",
+                        info.id,
+                        info.kind.as_str(),
+                        info.status,
+                        info.description,
+                    ));
+                }
+            }
+        }
+        Ok(ToolResult::success(out))
     }
 }
 
@@ -316,5 +378,69 @@ impl Tool for TaskOutputTool {
                 "No output file found for task #{id}. It may still be running."
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_ctx() -> ToolContext {
+        use std::sync::Arc;
+        ToolContext {
+            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp")),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            permission_checker: Arc::new(crate::permissions::PermissionChecker::allow_all()),
+            verbose: false,
+            plan_mode: false,
+            file_cache: None,
+            denial_tracker: None,
+            task_manager: None,
+            session_allows: None,
+            permission_prompter: None,
+            sandbox: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn task_create_defaults_to_local_shell() {
+        let res = TaskCreateTool
+            .call(json!({ "description": "do a thing" }), &empty_ctx())
+            .await
+            .unwrap();
+        assert!(res.content.contains("[kind: LocalShell]"));
+    }
+
+    #[tokio::test]
+    async fn task_create_accepts_explicit_kind() {
+        let res = TaskCreateTool
+            .call(
+                json!({ "description": "spawn helper", "kind": "LocalAgent" }),
+                &empty_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(res.content.contains("[kind: LocalAgent]"));
+    }
+
+    #[tokio::test]
+    async fn task_create_accepts_snake_case_kind() {
+        let res = TaskCreateTool
+            .call(
+                json!({ "description": "watch", "kind": "monitor_mcp" }),
+                &empty_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(res.content.contains("[kind: MonitorMcp]"));
+    }
+
+    #[tokio::test]
+    async fn task_create_rejects_unknown_kind() {
+        let err = TaskCreateTool
+            .call(json!({ "description": "x", "kind": "Bogus" }), &empty_ctx())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput(_)));
     }
 }
