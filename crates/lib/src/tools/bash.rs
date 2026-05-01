@@ -87,8 +87,21 @@ const DESTRUCTIVE_PATTERNS: &[&str] = &[
 ];
 
 /// Paths that should never be written to.
+///
+/// Includes system directories (data loss risk) and the project's
+/// team-memory directory (`.agent/team-memory/`), which is read-only
+/// to the agent — only the `/team-remember` slash command may add
+/// entries. Bash redirection / `tee` / `mv` against any of these is
+/// blocked at validation time.
 const BLOCKED_WRITE_PATHS: &[&str] = &[
-    "/etc/", "/usr/", "/bin/", "/sbin/", "/boot/", "/sys/", "/proc/",
+    "/etc/",
+    "/usr/",
+    "/bin/",
+    "/sbin/",
+    "/boot/",
+    "/sys/",
+    "/proc/",
+    ".agent/team-memory/",
 ];
 
 pub struct BashTool;
@@ -200,15 +213,16 @@ impl Tool for BashTool {
         // Advanced security checks (inspired by TS bashSecurity.ts).
         check_shell_injection(command)?;
 
-        // Block writes to system paths.
+        // Block writes to protected paths. Includes both system
+        // directories and the project's team-memory directory.
         for path in BLOCKED_WRITE_PATHS {
             if cmd_lower.contains(&format!(">{path}"))
                 || cmd_lower.contains(&format!("tee {path}"))
                 || cmd_lower.contains(&"mv ".to_string()) && cmd_lower.contains(path)
             {
                 return Err(format!(
-                    "Cannot write to system path '{path}'. \
-                     Operations on system directories are not allowed."
+                    "Cannot write to protected path '{path}'. \
+                     This directory is not writable by the agent."
                 ));
             }
         }
@@ -690,6 +704,32 @@ mod tests {
         assert!(
             tool.validate_input(&serde_json::json!({"command": "git status"}))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_blocks_redirection_to_team_memory() {
+        let tool = BashTool;
+        // Direct redirection.
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "echo hi >.agent/team-memory/foo.md"
+            }))
+            .is_err()
+        );
+        // tee.
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "echo hi | tee .agent/team-memory/foo.md"
+            }))
+            .is_err()
+        );
+        // mv into team-memory dir.
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "mv /tmp/x.md .agent/team-memory/x.md"
+            }))
+            .is_err()
         );
     }
 }

@@ -3116,7 +3116,10 @@ fn team_remember_add(project_root: &std::path::Path, text: &str, force: bool) {
 
     let stamp_compact = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let slug = slugify_note(text);
-    let filename = if slug.is_empty() {
+    // Slugs that collide with the index file (`memory`, `readme`) or
+    // Windows device names (`con`, `nul`, etc.) get the timestamped
+    // fallback so the filename is always valid on every filesystem.
+    let filename = if slug.is_empty() || is_reserved_team_slug(&slug) {
         format!("team-{stamp_compact}.md")
     } else {
         format!("{slug}.md")
@@ -3208,6 +3211,20 @@ fn git_user_email() -> Option<String> {
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() { None } else { Some(s) }
+}
+
+/// True when a slug would collide with a reserved name on a
+/// case-folding filesystem or a Windows checkout. The team-memory
+/// writer would refuse the resulting filename — we catch it earlier
+/// so the user gets a timestamped fallback instead of an error.
+fn is_reserved_team_slug(slug: &str) -> bool {
+    const RESERVED: &[&str] = &[
+        "memory", "readme", "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5",
+        "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7",
+        "lpt8", "lpt9",
+    ];
+    let lower = slug.to_ascii_lowercase();
+    RESERVED.iter().any(|r| *r == lower)
 }
 
 /// Slugify a note for use in a filename (ASCII lowercase, hyphen-separated,
@@ -6894,5 +6911,24 @@ mod tests {
         let out = format_task_list(&tasks, now);
         assert!(out.contains("first-line"));
         assert!(!out.contains("second-line"));
+    }
+
+    #[test]
+    fn is_reserved_team_slug_catches_index_and_devices() {
+        // Index-name collisions on case-folding filesystems.
+        assert!(super::is_reserved_team_slug("memory"));
+        assert!(super::is_reserved_team_slug("Memory"));
+        assert!(super::is_reserved_team_slug("MEMORY"));
+        assert!(super::is_reserved_team_slug("readme"));
+        // Windows device names.
+        assert!(super::is_reserved_team_slug("con"));
+        assert!(super::is_reserved_team_slug("CON"));
+        assert!(super::is_reserved_team_slug("nul"));
+        assert!(super::is_reserved_team_slug("com1"));
+        assert!(super::is_reserved_team_slug("LPT9"));
+        // Lookalikes pass through.
+        assert!(!super::is_reserved_team_slug("console"));
+        assert!(!super::is_reserved_team_slug("memorize"));
+        assert!(!super::is_reserved_team_slug("deploy"));
     }
 }

@@ -19,6 +19,19 @@ const MAX_INDEX_LINES: usize = 200;
 /// Maximum allowed length for a memory filename (including the `.md` suffix).
 const MAX_FILENAME_LEN: usize = 128;
 
+/// Reserved index filename. Rejected case-insensitively so the slug
+/// `memory.md` cannot collide with `MEMORY.md` on case-folding
+/// filesystems (default macOS, Windows).
+const RESERVED_INDEX_NAMES: &[&str] = &["memory.md", "readme.md"];
+
+/// Windows-reserved device names. Refused as bare stems
+/// case-insensitively (with or without an extension) so a slug like
+/// `con.md` cannot land on a Windows checkout.
+const WINDOWS_RESERVED_STEMS: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
 /// Validate a memory filename. Rejects anything that could escape the
 /// memory directory or smuggle control characters into the index.
 ///
@@ -29,6 +42,15 @@ const MAX_FILENAME_LEN: usize = 128;
 /// - No `..` segments (rejects `..`, `foo/..`, etc.).
 /// - No NUL, newline, carriage return, or other ASCII control characters.
 /// - ASCII-printable only — keeps cross-platform behavior predictable.
+/// - No trailing `.` or whitespace (Windows strips these silently,
+///   creating two filenames that look distinct but resolve to the same
+///   file).
+/// - Case-insensitive reject of the index file (`MEMORY.md`) and
+///   `README.md` to avoid silent collisions on case-folding
+///   filesystems.
+/// - Case-insensitive reject of Windows-reserved device names
+///   (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`),
+///   with or without an extension.
 fn validate_memory_filename(filename: &str) -> Result<(), String> {
     if filename.is_empty() {
         return Err("memory filename must not be empty".into());
@@ -67,6 +89,27 @@ fn validate_memory_filename(filename: &str) -> Result<(), String> {
             "memory filename '{filename}' must not contain '..' segments"
         ));
     }
+    if filename.ends_with('.') || filename.ends_with(' ') || filename.ends_with('\t') {
+        // Trailing dots/whitespace are silently stripped on Windows,
+        // so `MEMORY.md.` and `MEMORY.md` resolve to the same file.
+        return Err(format!(
+            "memory filename '{filename}' must not end with '.' or whitespace"
+        ));
+    }
+    let lower = filename.to_ascii_lowercase();
+    if RESERVED_INDEX_NAMES.contains(&lower.as_str()) {
+        return Err(format!(
+            "memory filename '{filename}' collides with a reserved index file"
+        ));
+    }
+    // Stem before the first dot — Windows treats `con.anything` as the
+    // CON device.
+    let stem = lower.split('.').next().unwrap_or(&lower);
+    if WINDOWS_RESERVED_STEMS.contains(&stem) {
+        return Err(format!(
+            "memory filename '{filename}' uses a Windows-reserved device name"
+        ));
+    }
     Ok(())
 }
 
@@ -74,6 +117,10 @@ fn validate_memory_filename(filename: &str) -> Result<(), String> {
 /// inside `memory_dir`. Tolerates either the parent or the file not
 /// existing yet by canonicalizing the directory and checking that the
 /// would-be file's parent matches.
+///
+/// Also rejects when the leaf itself is a symlink — `std::fs::write`
+/// would otherwise dereference it and overwrite a file outside the
+/// memory dir even when both the dir and the parent are clean.
 fn ensure_path_within(memory_dir: &Path, file_path: &Path) -> Result<(), String> {
     let dir_canon = std::fs::canonicalize(memory_dir)
         .map_err(|e| format!("Failed to canonicalize memory dir: {e}"))?;
@@ -85,6 +132,19 @@ fn ensure_path_within(memory_dir: &Path, file_path: &Path) -> Result<(), String>
     if !parent_canon.starts_with(&dir_canon) {
         return Err(format!(
             "memory file path escapes memory directory: {}",
+            file_path.display()
+        ));
+    }
+
+    // Refuse a symlink leaf: `std::fs::write` follows it and would
+    // overwrite the link target, which can sit outside `memory_dir`.
+    // `symlink_metadata` does not traverse, so this catches the
+    // pre-planted-symlink case.
+    if let Ok(meta) = std::fs::symlink_metadata(file_path)
+        && meta.file_type().is_symlink()
+    {
+        return Err(format!(
+            "memory file path is a symlink: {}",
             file_path.display()
         ));
     }
@@ -291,8 +351,16 @@ pub fn delete_memory(memory_dir: &Path, filename: &str) -> Result<(), String> {
 /// Rebuild MEMORY.md from the actual files in the memory directory.
 /// Scans all .md files (except MEMORY.md itself), reads their frontmatter,
 /// and regenerates the index.
+///
+/// The on-disk output is byte-stable: headers are sorted
+/// lexicographically by filename before emitting, so two reindex runs
+/// over the same set of files produce identical bytes regardless of
+/// mtime drift across checkouts or filesystems. Without this the
+/// scanner's mtime-first ordering would shuffle the index between
+/// users on the same team.
 pub fn rebuild_index(memory_dir: &Path) -> Result<(), String> {
-    let headers = super::scanner::scan_memory_files(memory_dir);
+    let mut headers = super::scanner::scan_memory_files(memory_dir);
+    headers.sort_by(|a, b| a.filename.cmp(&b.filename));
     let index_path = memory_dir.join("MEMORY.md");
 
     let mut lines = Vec::new();
@@ -423,6 +491,55 @@ mod tests {
         assert!(index.contains("two.md"));
     }
 
+    #[test]
+    fn rebuild_index_is_byte_stable_across_runs() {
+        // Same directory, write two entries, then bump the mtime of
+        // one of them. mtime-driven ordering would shuffle output;
+        // lexicographic ordering keeps it byte-stable.
+        let dir = tempfile::tempdir().unwrap();
+        let meta_a = MemoryMeta {
+            name: "Alpha".into(),
+            description: "alpha".into(),
+            memory_type: Some(MemoryType::User),
+            author: None,
+            created_at: None,
+        };
+        let meta_b = MemoryMeta {
+            name: "Beta".into(),
+            description: "beta".into(),
+            memory_type: Some(MemoryType::User),
+            author: None,
+            created_at: None,
+        };
+        write_memory(dir.path(), "alpha.md", &meta_a, "alpha-body").unwrap();
+        write_memory(dir.path(), "beta.md", &meta_b, "beta-body").unwrap();
+
+        rebuild_index(dir.path()).unwrap();
+        let first = std::fs::read(dir.path().join("MEMORY.md")).unwrap();
+
+        // Touch beta.md so its mtime sorts ahead of alpha.md. An
+        // mtime-ordered reindex would emit beta before alpha; the
+        // lexicographic ordering must override that.
+        let beta_path = dir.path().join("beta.md");
+        let body = std::fs::read_to_string(&beta_path).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&beta_path, body).unwrap();
+
+        rebuild_index(dir.path()).unwrap();
+        let second = std::fs::read(dir.path().join("MEMORY.md")).unwrap();
+
+        assert_eq!(
+            first, second,
+            "rebuild_index must be byte-stable across mtime drift"
+        );
+
+        // And the order is lexicographic — alpha before beta.
+        let s = String::from_utf8(second).unwrap();
+        let alpha_pos = s.find("alpha.md").unwrap();
+        let beta_pos = s.find("beta.md").unwrap();
+        assert!(alpha_pos < beta_pos, "alpha must come before beta");
+    }
+
     fn team_meta() -> MemoryMeta {
         MemoryMeta {
             name: "Deploy".into(),
@@ -545,6 +662,42 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_index_collisions_case_insensitive() {
+        assert!(validate_memory_filename("MEMORY.md").is_err());
+        assert!(validate_memory_filename("memory.md").is_err());
+        assert!(validate_memory_filename("Memory.md").is_err());
+        assert!(validate_memory_filename("README.md").is_err());
+        assert!(validate_memory_filename("readme.md").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_trailing_dot_or_whitespace() {
+        assert!(validate_memory_filename("deploy.md.").is_err());
+        assert!(validate_memory_filename("deploy.md ").is_err());
+        assert!(validate_memory_filename("deploy.md\t").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_windows_reserved_names() {
+        // Bare device names.
+        assert!(validate_memory_filename("CON").is_err());
+        assert!(validate_memory_filename("con").is_err());
+        assert!(validate_memory_filename("PRN").is_err());
+        assert!(validate_memory_filename("AUX").is_err());
+        assert!(validate_memory_filename("NUL").is_err());
+        // With extension — Windows still treats these as the device.
+        assert!(validate_memory_filename("con.md").is_err());
+        assert!(validate_memory_filename("aux.md").is_err());
+        assert!(validate_memory_filename("COM1.md").is_err());
+        assert!(validate_memory_filename("com9.md").is_err());
+        assert!(validate_memory_filename("lpt1.md").is_err());
+        assert!(validate_memory_filename("LPT9.md").is_err());
+        // Sanity: similar names that aren't reserved still pass.
+        assert!(validate_memory_filename("console.md").is_ok());
+        assert!(validate_memory_filename("comma.md").is_ok());
+    }
+
+    #[test]
     fn delete_team_memory_rejects_traversal() {
         let dir = tempfile::tempdir().unwrap();
         // Plant a sibling file we want to confirm survives the attempt.
@@ -621,6 +774,54 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(outside.exists());
+        let _ = std::fs::remove_file(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_memory_refuses_symlink_leaf() {
+        // Pre-plant a symlink at the target file path that points to
+        // a file outside the memory dir. Writing must be refused so
+        // the link target stays untouched.
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().parent().unwrap().join("SYMLINK_VICTIM.md");
+        std::fs::write(&outside, "untouched").unwrap();
+        let link = dir.path().join("victim.md");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        let err = write_memory(dir.path(), "victim.md", &test_meta(), "evil").unwrap_err();
+        assert!(
+            err.to_lowercase().contains("symlink"),
+            "unexpected error: {err}"
+        );
+        // Outside file content unchanged.
+        let body = std::fs::read_to_string(&outside).unwrap();
+        assert_eq!(body, "untouched");
+        // Symlink itself unchanged (still points at OUTSIDE.md).
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink());
+        let _ = std::fs::remove_file(link);
+        let _ = std::fs::remove_file(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_team_memory_refuses_symlink_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().parent().unwrap().join("TEAM_SYMLINK_VICTIM.md");
+        std::fs::write(&outside, "untouched").unwrap();
+        let link = dir.path().join("link.md");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        // `force=true` makes the writer willing to overwrite — but the
+        // symlink-leaf guard must still refuse.
+        let err = write_team_memory(dir.path(), "link.md", &team_meta(), "evil", true).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("symlink"),
+            "unexpected error: {err}"
+        );
+        let body = std::fs::read_to_string(&outside).unwrap();
+        assert_eq!(body, "untouched");
+        let _ = std::fs::remove_file(link);
         let _ = std::fs::remove_file(outside);
     }
 

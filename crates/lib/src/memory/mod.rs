@@ -439,7 +439,20 @@ fn load_referenced_files(index: &str, base_dir: &Path, scope: types::Scope) -> V
         if filename.is_empty() || !filename.ends_with(".md") {
             continue;
         }
-        let path = base_dir.join(filename);
+        // Refuse anything that could escape `base_dir`. A poisoned
+        // index (especially the version-controlled team-memory one)
+        // could otherwise point at `../../home/user/.ssh/id_rsa.md`
+        // and pull arbitrary files into the system prompt.
+        let path = match resolve_index_link_target(base_dir, filename) {
+            Some(p) => p,
+            None => {
+                debug!(
+                    "memory index link rejected: '{}' escapes base dir or is a symlink",
+                    filename
+                );
+                continue;
+            }
+        };
         if let Some(mut file) = load_memory_file_with_staleness(&path) {
             file.name = name.to_string();
             file.scope = scope;
@@ -447,6 +460,75 @@ fn load_referenced_files(index: &str, base_dir: &Path, scope: types::Scope) -> V
         }
     }
     files
+}
+
+/// Resolve a `[name](path)` link target into a concrete absolute path
+/// inside `base_dir`. Returns `None` for any of:
+///
+/// - empty / non-`.md` paths (caller already filtered, defensive),
+/// - absolute paths (must be relative to the index),
+/// - paths containing `..` segments,
+/// - paths whose canonical form lands outside `base_dir`,
+/// - paths whose final component is a symlink (anti-confusion).
+///
+/// Applied uniformly to user, team, and project memory loads.
+fn resolve_index_link_target(base_dir: &Path, filename: &str) -> Option<PathBuf> {
+    if filename.is_empty() || !filename.ends_with(".md") {
+        return None;
+    }
+    let candidate = Path::new(filename);
+    if candidate.is_absolute() {
+        return None;
+    }
+    for comp in candidate.components() {
+        match comp {
+            std::path::Component::ParentDir | std::path::Component::RootDir => return None,
+            _ => {}
+        }
+    }
+
+    let joined = base_dir.join(candidate);
+
+    // Refuse symlink leaves so a poisoned index can't dereference into
+    // an arbitrary file just because the symlink itself sits inside
+    // the memory dir.
+    if let Ok(meta) = std::fs::symlink_metadata(&joined)
+        && meta.file_type().is_symlink()
+    {
+        return None;
+    }
+
+    // Canonical containment: when the file already exists, the
+    // canonical path must start with the canonical base dir.
+    if joined.exists() {
+        let base_canon = base_dir.canonicalize().ok()?;
+        let target_canon = joined.canonicalize().ok()?;
+        if !target_canon.starts_with(&base_canon) {
+            return None;
+        }
+        return Some(target_canon);
+    }
+
+    // File doesn't exist yet (caller will skip-load anyway). Lexically
+    // verify the joined path stays inside base_dir.
+    let base_canon = base_dir
+        .canonicalize()
+        .unwrap_or_else(|_| base_dir.to_path_buf());
+    let mut normalized = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    if normalized.starts_with(&base_canon) || normalized.starts_with(base_dir) {
+        Some(joined)
+    } else {
+        None
+    }
 }
 
 /// Merge memory entries from multiple scopes, applying the
@@ -602,6 +684,52 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "Preferences");
         assert_eq!(files[0].scope, types::Scope::User);
+    }
+
+    #[test]
+    fn load_referenced_files_rejects_traversal_links() {
+        let dir = tempfile::tempdir().unwrap();
+        // Plant a victim file outside the memory dir.
+        let outside = dir.path().parent().unwrap().join("VICTIM.md");
+        std::fs::write(&outside, "secrets").unwrap();
+        // And a normal entry that should still load.
+        std::fs::write(dir.path().join("ok.md"), "ok").unwrap();
+
+        let index = "- [Bad](../VICTIM.md) — bad\n\
+                     - [BadAbs](/etc/passwd.md) — abs\n\
+                     - [Nested](sub/../../VICTIM.md) — nested\n\
+                     - [Ok](ok.md) — ok";
+        let files = load_referenced_files(index, dir.path(), types::Scope::User);
+        // Only the safe entry survives.
+        assert_eq!(
+            files.len(),
+            1,
+            "got {:?}",
+            files.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert_eq!(files[0].name, "Ok");
+        let _ = std::fs::remove_file(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_referenced_files_rejects_symlink_leaf() {
+        // A symlink whose name is `evil.md` and target is outside the
+        // memory dir must not be followed.
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().parent().unwrap().join("OUTSIDE.md");
+        std::fs::write(&outside, "secret").unwrap();
+        let link = dir.path().join("evil.md");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        let index = "- [Evil](evil.md) — evil";
+        let files = load_referenced_files(index, dir.path(), types::Scope::Team);
+        assert!(
+            files.is_empty(),
+            "symlink leaf should be refused; got {:?}",
+            files.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_file(outside);
     }
 
     // ---- hierarchical_project_files ----

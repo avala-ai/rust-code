@@ -12,6 +12,8 @@
 
 pub mod tracking;
 
+use std::path::{Path, PathBuf};
+
 use crate::config::{PermissionMode, PermissionRule, PermissionsConfig};
 
 /// Decision from a permission check.
@@ -29,6 +31,10 @@ pub enum PermissionDecision {
 pub struct PermissionChecker {
     default_mode: PermissionMode,
     rules: Vec<PermissionRule>,
+    /// Project root used for runtime checks (e.g. team-memory).
+    /// `None` means "no project root known" — runtime checks that
+    /// require it become best-effort.
+    project_root: Option<PathBuf>,
 }
 
 impl PermissionChecker {
@@ -37,6 +43,7 @@ impl PermissionChecker {
         Self {
             default_mode: config.default_mode,
             rules: config.rules.clone(),
+            project_root: None,
         }
     }
 
@@ -45,7 +52,18 @@ impl PermissionChecker {
         Self {
             default_mode: PermissionMode::Allow,
             rules: Vec::new(),
+            project_root: None,
         }
+    }
+
+    /// Builder: pin the project root used for runtime path checks
+    /// (currently the team-memory write protection). The model's
+    /// write tools refuse any path that resolves inside
+    /// `<project_root>/.agent/team-memory/`.
+    #[must_use]
+    pub fn with_project_root(mut self, project_root: PathBuf) -> Self {
+        self.project_root = Some(project_root);
+        self
     }
 
     /// Check whether a tool operation is permitted.
@@ -54,10 +72,13 @@ impl PermissionChecker {
     /// The first match wins.
     pub fn check(&self, tool_name: &str, input: &serde_json::Value) -> PermissionDecision {
         // Block writes to protected directories regardless of rules.
-        if is_write_tool(tool_name)
-            && let Some(reason) = check_protected_path(input)
-        {
-            return PermissionDecision::Deny(reason);
+        if is_write_tool(tool_name) {
+            if let Some(reason) = check_protected_path(input) {
+                return PermissionDecision::Deny(reason);
+            }
+            if let Some(reason) = self.check_team_memory_target(input) {
+                return PermissionDecision::Deny(reason);
+            }
         }
 
         // Check explicit rules.
@@ -97,6 +118,107 @@ impl PermissionChecker {
         }
         PermissionDecision::Allow
     }
+
+    /// If this write targets `<project_root>/.agent/team-memory/...`,
+    /// return a denial reason. Team memory is shared, version-controlled
+    /// state — only the `/team-remember` slash command may add entries.
+    /// The model's own write tools must never silently mutate it.
+    fn check_team_memory_target(&self, input: &serde_json::Value) -> Option<String> {
+        let raw = input.get("file_path").and_then(|v| v.as_str())?;
+        if raw.is_empty() {
+            return None;
+        }
+        if is_team_memory_write_target(Path::new(raw), self.project_root.as_deref()) {
+            return Some(
+                "Write to team-memory is blocked. The `.agent/team-memory/` directory \
+                 is read-only to the agent — use the `/team-remember` slash command \
+                 to add entries."
+                    .into(),
+            );
+        }
+        None
+    }
+}
+
+/// True if `target` resolves inside any project's team-memory directory
+/// (`<project_root>/.agent/team-memory/`).
+///
+/// Two-pronged: when `project_root` is provided, canonicalize and
+/// compare prefixes (handles symlinks and `..`). Independently, do a
+/// component-aware substring check on the raw path so we still refuse
+/// obvious team-memory writes when the project root is unknown
+/// (test environments, scheduled executors, allow-all checker).
+pub fn is_team_memory_write_target(target: &Path, project_root: Option<&Path>) -> bool {
+    if let Some(root) = project_root {
+        let team_dir = root.join(".agent").join("team-memory");
+        if path_is_inside(target, &team_dir) {
+            return true;
+        }
+    }
+    // Component check on the raw input as a fallback. Catches the
+    // common path shape `.../.agent/team-memory/...` regardless of
+    // whether the parent dirs exist on disk.
+    contains_team_memory_components(target)
+}
+
+/// Returns true when `path`, after light normalization, lives under
+/// `dir`. Tries the canonical form first (resolves symlinks); falls
+/// back to lexical comparison when canonicalization fails — e.g. the
+/// target file does not exist yet, which is the common case for a
+/// would-be `FileWrite`.
+fn path_is_inside(path: &Path, dir: &Path) -> bool {
+    if let (Ok(p), Ok(d)) = (path.canonicalize(), dir.canonicalize())
+        && p.starts_with(&d)
+    {
+        return true;
+    }
+
+    // Lexical fallback. Anchor relative paths against the dir's parent so
+    // a relative `.agent/team-memory/foo.md` still resolves against the
+    // project root.
+    let abs_path: PathBuf = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(parent) = dir.parent().and_then(|p| p.parent()) {
+        // dir is `<root>/.agent/team-memory`; parent.parent() is `<root>`.
+        parent.join(path)
+    } else {
+        path.to_path_buf()
+    };
+    let normalized = lexical_normalize(&abs_path);
+    let dir_norm = lexical_normalize(dir);
+    normalized.starts_with(&dir_norm)
+}
+
+/// Lexically normalize a path: collapse `.` and `..` components without
+/// touching the filesystem. Sufficient for prefix comparisons against a
+/// known directory.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// True when `path`'s components contain `.agent` immediately followed
+/// by `team-memory`. Used as the project-root-less fallback so the
+/// invariant holds in test environments and for `allow_all` checkers.
+fn contains_team_memory_components(path: &Path) -> bool {
+    let mut prev_was_dot_agent = false;
+    for comp in path.components() {
+        let s = comp.as_os_str().to_string_lossy();
+        if prev_was_dot_agent && s == "team-memory" {
+            return true;
+        }
+        prev_was_dot_agent = s == ".agent";
+    }
+    false
 }
 
 fn matches_tool(rule_tool: &str, tool_name: &str) -> bool {
@@ -450,5 +572,105 @@ mod tests {
             check_protected_path(&serde_json::json!({"file_path": "some/path/.git/objects/foo"}))
                 .is_some()
         );
+    }
+
+    // ---- team-memory write protection ----
+
+    fn assert_write_denied(checker: &PermissionChecker, tool: &str, file_path: &str) {
+        let dec = checker.check(tool, &serde_json::json!({"file_path": file_path}));
+        match dec {
+            PermissionDecision::Deny(msg) => {
+                assert!(
+                    msg.contains("team-memory"),
+                    "expected team-memory denial for {tool} {file_path}, got: {msg}"
+                );
+            }
+            other => panic!("expected Deny for {tool} {file_path} (team-memory), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn team_memory_blocks_all_write_tools_with_project_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".agent").join("team-memory")).unwrap();
+
+        let checker = PermissionChecker::allow_all().with_project_root(root.to_path_buf());
+
+        // Absolute path to a team-memory file.
+        let target = root
+            .join(".agent")
+            .join("team-memory")
+            .join("foo.md")
+            .to_string_lossy()
+            .to_string();
+        assert_write_denied(&checker, "FileWrite", &target);
+        assert_write_denied(&checker, "FileEdit", &target);
+        assert_write_denied(&checker, "MultiEdit", &target);
+        assert_write_denied(&checker, "NotebookEdit", &target);
+
+        // Relative path — same answer.
+        assert_write_denied(&checker, "FileWrite", ".agent/team-memory/relative.md");
+    }
+
+    #[test]
+    fn team_memory_block_holds_without_project_root() {
+        // Even without a project root pinned (test envs, allow_all
+        // checker), the component-aware fallback still refuses the
+        // obvious team-memory path shape.
+        let checker = PermissionChecker::allow_all();
+        assert_write_denied(&checker, "FileWrite", ".agent/team-memory/foo.md");
+        assert_write_denied(
+            &checker,
+            "FileEdit",
+            "/work/myproj/.agent/team-memory/deploy.md",
+        );
+    }
+
+    #[test]
+    fn team_memory_block_does_not_match_lookalikes() {
+        let checker = PermissionChecker::allow_all();
+        // `team-memory` outside `.agent/` is NOT team memory.
+        let dec = checker.check(
+            "FileWrite",
+            &serde_json::json!({"file_path": "team-memory/foo.md"}),
+        );
+        assert!(matches!(dec, PermissionDecision::Allow));
+        // `.agent` without a `team-memory` child is normal config.
+        let dec = checker.check(
+            "FileWrite",
+            &serde_json::json!({"file_path": ".agent/memory/foo.md"}),
+        );
+        assert!(matches!(dec, PermissionDecision::Allow));
+    }
+
+    #[test]
+    fn team_memory_block_rejects_traversal_with_project_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".agent").join("team-memory")).unwrap();
+        let checker = PermissionChecker::allow_all().with_project_root(root.to_path_buf());
+
+        // `<root>/foo/../.agent/team-memory/x.md` lexically normalizes
+        // to a team-memory write — must be denied.
+        let traversal = root
+            .join("foo")
+            .join("..")
+            .join(".agent")
+            .join("team-memory")
+            .join("x.md")
+            .to_string_lossy()
+            .to_string();
+        assert_write_denied(&checker, "FileWrite", &traversal);
+    }
+
+    #[test]
+    fn team_memory_block_does_not_affect_reads() {
+        let checker = PermissionChecker::allow_all();
+        let dec = checker.check_read(
+            "FileRead",
+            &serde_json::json!({"file_path": ".agent/team-memory/foo.md"}),
+        );
+        assert!(matches!(dec, PermissionDecision::Allow));
     }
 }
