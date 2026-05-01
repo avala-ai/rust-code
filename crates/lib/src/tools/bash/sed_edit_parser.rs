@@ -101,6 +101,30 @@ pub fn parse_sed_segment(segment: &str) -> Option<SedEdit> {
             script_consumed = true;
             continue;
         }
+        // Long-option attached forms: `--expression=...` / `--file=...`.
+        // The script/filename is glued to the flag with `=`; no
+        // following positional should be consumed as the script.
+        if tok.starts_with("--expression=") || tok.starts_with("--file=") {
+            script_consumed = true;
+            continue;
+        }
+        // Short-option attached forms: `-eSCRIPT` / `-fFILE`. These
+        // must be detected BEFORE the generic short-cluster decomposer
+        // — otherwise `-eSCRIPT` would be interpreted as a cluster of
+        // boolean flags `e`, `S`, `C`, ... and the script characters
+        // would silently be discarded.
+        if let Some(rest) = tok.strip_prefix("-e")
+            && !rest.is_empty()
+        {
+            script_consumed = true;
+            continue;
+        }
+        if let Some(rest) = tok.strip_prefix("-f")
+            && !rest.is_empty()
+        {
+            script_consumed = true;
+            continue;
+        }
         if let Some(parsed) = parse_short_option_cluster(tok) {
             if parsed.has_inplace {
                 in_place = true;
@@ -446,5 +470,36 @@ mod tests {
     fn cluster_without_i_does_not_trigger() {
         // `-nE` has no `i` — must not be treated as in-place.
         assert!(parse_sed_edits(&parse("sed -nE 's/x/y/' file.txt")).is_empty());
+    }
+
+    #[test]
+    fn long_inplace_with_value_and_long_expression_with_value() {
+        // `--in-place=.bak` paired with `--expression=...`. Neither the
+        // backup suffix nor the script is a file argument — only the
+        // trailing positional is.
+        let edits = parse_sed_edits(&parse(
+            "sed --in-place=.bak --expression=s/a/b/ .git/config",
+        ));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from(".git/config")]);
+    }
+
+    #[test]
+    fn short_attached_expression_is_not_a_cluster() {
+        // `-e's/a/b/'` would historically have been parsed by the
+        // short-cluster decomposer, swallowing the script characters as
+        // if they were boolean flags. The attached script must not
+        // consume the following positional as the sed script.
+        let edits = parse_sed_edits(&parse("sed -i -e's/a/b/' .git/config"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from(".git/config")]);
+    }
+
+    #[test]
+    fn short_attached_script_file() {
+        // `-fscript.sed` is the attached form of `-f script.sed`.
+        let edits = parse_sed_edits(&parse("sed -i -fscript.sed target"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from("target")]);
     }
 }

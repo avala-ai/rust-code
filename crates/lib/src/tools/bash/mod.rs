@@ -24,6 +24,7 @@
 
 pub mod bash_security;
 pub mod command_semantics;
+pub mod protected_paths;
 pub mod read_only_validation;
 pub mod sandbox_decision;
 pub mod sed_edit_parser;
@@ -50,22 +51,20 @@ pub use sed_validation::{FileEditPermission, SedViolation, validate_sed_edits};
 /// Maximum output size before truncation (256KB).
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 
-/// Paths that should never be written to.
+/// System paths that should never be written to from the bash tool.
 ///
-/// Includes system directories (data loss risk) and the project's
-/// team-memory directory (`.agent/team-memory/`), which is read-only
-/// to the agent — only the `/team-remember` slash command may add
-/// entries. Bash redirection / `tee` / `mv` against any of these is
-/// blocked at validation time.
-const BLOCKED_WRITE_PATHS: &[&str] = &[
-    "/etc/",
-    "/usr/",
-    "/bin/",
-    "/sbin/",
-    "/boot/",
-    "/sys/",
-    "/proc/",
-    ".agent/team-memory/",
+/// Mirrors the protected-directories concept from
+/// [`crate::permissions`] but for absolute system paths that no agent
+/// command should ever modify regardless of cwd. Crate-visible so the
+/// shared `protected_paths` helper can match against it without
+/// duplicating the list.
+///
+/// The project's team-memory directory (`.agent/team-memory/`) is
+/// blocked separately by [`protected_paths`], which delegates to
+/// [`crate::permissions::is_team_memory_write_target`] so the same
+/// predicate is used by every write surface.
+pub(crate) const BLOCKED_WRITE_PATHS: &[&str] = &[
+    "/etc/", "/usr/", "/bin/", "/sbin/", "/boot/", "/sys/", "/proc/",
 ];
 
 pub struct BashTool;
@@ -124,14 +123,12 @@ impl Tool for BashTool {
     fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
         let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Skip all safety checks if dangerouslyDisableSandbox is set.
-        if input
-            .get("dangerouslyDisableSandbox")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            return Ok(());
-        }
+        // `dangerouslyDisableSandbox` only affects whether the command
+        // runs INSIDE the sandbox or outside it — it does NOT skip
+        // destructive-pattern or protected-path validation. The bypass
+        // exists for tooling that legitimately needs network or full
+        // host access; it must never let `rm -rf /` or a write into
+        // `.git/` slip through.
 
         // Build a parsed view of the command so the classifier modules
         // can reason about it. If the parser fails we fall back to a
@@ -161,19 +158,14 @@ impl Tool for BashTool {
         // patterns; flagged as "obfuscation" rather than "destruction").
         check_shell_injection(command)?;
 
-        // Block writes to protected paths. Includes both system
-        // directories and the project's team-memory directory.
-        let cmd_lower = command.to_lowercase();
-        for path in BLOCKED_WRITE_PATHS {
-            if cmd_lower.contains(&format!(">{path}"))
-                || cmd_lower.contains(&format!("tee {path}"))
-                || cmd_lower.contains(&"mv ".to_string()) && cmd_lower.contains(path)
-            {
-                return Err(format!(
-                    "Cannot write to protected path '{path}'. \
-                     This directory is not writable by the agent."
-                ));
-            }
+        // Unified protected-path check: covers redirections, writer
+        // commands (cp/mv/tee/dd/install/ln/rsync/truncate),
+        // recursive shell payloads (`bash -c '…'`, `eval '…'`), and a
+        // heuristic scan of inline interpreter source (`python -c`,
+        // `node -e`, etc.) for `PROTECTED_DIRS`, the system path list
+        // `BLOCKED_WRITE_PATHS`, and the team-memory directory.
+        if let Err(violation) = protected_paths::check(command) {
+            return Err(violation.reason);
         }
 
         // Tree-sitter AST analysis (catches obfuscation that regex misses).
@@ -696,5 +688,85 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn dangerously_disable_sandbox_does_not_skip_destructive_check() {
+        let tool = BashTool;
+        // The flag must NOT short-circuit destructive validation.
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "rm -rf /",
+                "dangerouslyDisableSandbox": true,
+            }))
+            .is_err()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "git push --force",
+                "dangerouslyDisableSandbox": true,
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn dangerously_disable_sandbox_does_not_skip_protected_path_check() {
+        let tool = BashTool;
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "cp src .git/config",
+                "dangerouslyDisableSandbox": true,
+            }))
+            .is_err()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "printf evil > .git/config",
+                "dangerouslyDisableSandbox": true,
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn protected_dir_writes_via_writers_refused() {
+        let tool = BashTool;
+        for cmd in [
+            "cat foo > .git/config",
+            "tee -a .git/config",
+            "printf evil >> .git/config",
+            "cp src .git/config",
+            "mv x .git/config",
+            "install -m 644 src .git/config",
+            "ln -sf evil .git/config",
+            "rsync src .git/config",
+            "dd of=.git/config",
+            "bash -c 'printf evil > .git/config'",
+            "python -c \"open('.git/config','w').write('evil')\"",
+        ] {
+            assert!(
+                tool.validate_input(&serde_json::json!({"command": cmd}))
+                    .is_err(),
+                "expected refusal for {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn system_path_writes_via_writers_refused() {
+        let tool = BashTool;
+        for cmd in [
+            "cp src /etc/passwd",
+            "printf x > /boot/grub/grub.cfg",
+            "dd of=/sys/something",
+            "tee /etc/foo",
+        ] {
+            assert!(
+                tool.validate_input(&serde_json::json!({"command": cmd}))
+                    .is_err(),
+                "expected refusal for {cmd}"
+            );
+        }
     }
 }

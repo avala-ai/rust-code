@@ -60,26 +60,89 @@ pub fn validate_read_only(
         return Ok(());
     }
 
-    let effects = classify(cmd);
-    let blocking: Vec<Effect> = effects
-        .iter()
-        .copied()
+    let mut effects: Vec<Effect> = classify(cmd)
+        .into_iter()
         .filter(|e| !matches!(e, Effect::ReadOnly))
         .collect();
 
-    if blocking.is_empty() {
+    // Any output redirection or process substitution is mutating
+    // regardless of the underlying command name. Without this
+    // adjustment `echo foo > file` and `awk '{}' > out` would be
+    // classified as read-only because `echo` and `awk` are on the
+    // read-only list.
+    if has_output_redirection(cmd) && !effects.contains(&Effect::Mutating) {
+        effects.push(Effect::Mutating);
+    }
+
+    if effects.is_empty() {
         return Ok(());
     }
 
-    let names: Vec<String> = blocking.iter().map(|e| format!("{e:?}")).collect();
+    let names: Vec<String> = effects.iter().map(|e| format!("{e:?}")).collect();
     Err(ReadOnlyViolation {
-        effects: blocking,
+        effects,
         message: format!(
             "Read-only profile refuses command with effects: {}. \
              Switch to a more permissive profile to run mutating commands.",
             names.join(", ")
         ),
     })
+}
+
+/// Detect any output redirection (`>`, `>>`, `&>`, `2>`, heredoc-to-file
+/// from `<<<`, or process substitution `>(…)`) in the parsed command.
+///
+/// File-descriptor duplications such as `2>&1` are NOT output
+/// redirections to a path and must not be flagged here.
+fn has_output_redirection(cmd: &ParsedCommand) -> bool {
+    if cmd.has_process_substitution {
+        return true;
+    }
+    contains_unquoted_output_redirect(&cmd.raw)
+}
+
+/// True if `raw` contains a `>` outside of single/double quotes that
+/// is acting as an output redirection (i.e. not part of `2>&1`,
+/// arrows, comparison operators, etc.).
+fn contains_unquoted_output_redirect(raw: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut prev: Option<char> = None;
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            prev = Some(c);
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '>' => {
+                // Skip `2>&1`-style merges: `>` followed by `&` and a
+                // digit is a duplication, not a file write.
+                if prev == Some('-') {
+                    // Heredoc bodies, arrows in conditionals (`->`),
+                    // etc. — not a redirect.
+                    prev = Some(c);
+                    continue;
+                }
+                if let Some(&next) = chars.peek()
+                    && next == '&'
+                {
+                    // `>&` (file descriptor duplication, e.g. `2>&1`).
+                    // Not a write to a path.
+                    chars.next();
+                    prev = Some('&');
+                    continue;
+                }
+                return true;
+            }
+            _ => {}
+        }
+        prev = Some(c);
+    }
+    false
 }
 
 #[cfg(test)]
@@ -160,5 +223,50 @@ mod tests {
         let cmd = parse("ls && rm foo");
         let err = validate_read_only(&cmd, &PermissionProfile::ReadOnly).unwrap_err();
         assert!(err.effects.contains(&Effect::Mutating));
+    }
+
+    #[test]
+    fn read_only_profile_rejects_output_redirection() {
+        // `echo` is on the read-only list, but `echo foo > file` writes
+        // to the filesystem and must be classified as mutating.
+        let cmd = parse("echo foo > file");
+        let err = validate_read_only(&cmd, &PermissionProfile::ReadOnly).unwrap_err();
+        assert!(err.effects.contains(&Effect::Mutating));
+    }
+
+    #[test]
+    fn read_only_profile_rejects_append_redirection() {
+        let cmd = parse("printf x >> log.txt");
+        let err = validate_read_only(&cmd, &PermissionProfile::ReadOnly).unwrap_err();
+        assert!(err.effects.contains(&Effect::Mutating));
+    }
+
+    #[test]
+    fn read_only_profile_rejects_cat_to_file() {
+        let cmd = parse("cat src > dst");
+        let err = validate_read_only(&cmd, &PermissionProfile::ReadOnly).unwrap_err();
+        assert!(err.effects.contains(&Effect::Mutating));
+    }
+
+    #[test]
+    fn read_only_profile_rejects_awk_to_file() {
+        let cmd = parse("awk '{}' > out");
+        let err = validate_read_only(&cmd, &PermissionProfile::ReadOnly).unwrap_err();
+        assert!(err.effects.contains(&Effect::Mutating));
+    }
+
+    #[test]
+    fn read_only_profile_rejects_process_substitution() {
+        // `>(...)` is an output process substitution.
+        let cmd = parse("tee >(cat) < input");
+        let err = validate_read_only(&cmd, &PermissionProfile::ReadOnly).unwrap_err();
+        assert!(err.effects.contains(&Effect::Mutating));
+    }
+
+    #[test]
+    fn read_only_profile_allows_stderr_merge() {
+        // `2>&1` is a file-descriptor duplication, not a path write.
+        let cmd = parse("ls 2>&1");
+        assert!(validate_read_only(&cmd, &PermissionProfile::ReadOnly).is_ok());
     }
 }

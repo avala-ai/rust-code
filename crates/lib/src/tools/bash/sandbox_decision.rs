@@ -47,17 +47,20 @@ impl Default for ExecutionContext {
 ///
 /// The decision flow is:
 ///
-/// 1. If `dangerouslyDisableSandbox` is set and the policy allows
-///    bypass, run freely (the model has explicit clearance).
+/// 1. Destructive validation runs unconditionally. The
+///    `dangerouslyDisableSandbox` flag does not weaken this gate; it
+///    only chooses between "sandbox-wrapped" and "raw-host" execution
+///    once the command has been judged safe.
 /// 2. If the destructive-command classifier flags the command, refuse.
-/// 3. If a sandbox is available, sandbox the call.
-/// 4. If the command is read-only, run freely.
-/// 5. Otherwise prompt.
+/// 3. If `dangerouslyDisableSandbox` is set and the policy allows
+///    bypass, run freely (the model has explicit clearance).
+/// 4. If a sandbox is available, sandbox the call.
+/// 5. If the command is read-only, run freely.
+/// 6. Otherwise prompt.
 pub fn decide(cmd: &ParsedCommand, ctx: &ExecutionContext) -> SandboxDecision {
-    if ctx.dangerously_disable_sandbox && ctx.allow_bypass {
-        return SandboxDecision::RunFreely;
-    }
-
+    // Destructive-pattern check always runs. Skipping it on the
+    // `dangerouslyDisableSandbox` path historically allowed `rm -rf /`
+    // to bypass validation entirely.
     match classify_destructive(cmd) {
         DestructivenessLevel::Destructive => {
             return SandboxDecision::Refuse(
@@ -68,6 +71,10 @@ pub fn decide(cmd: &ParsedCommand, ctx: &ExecutionContext) -> SandboxDecision {
             return SandboxDecision::Prompt("Command is risky; ask the user to confirm.".into());
         }
         DestructivenessLevel::Safe => {}
+    }
+
+    if ctx.dangerously_disable_sandbox && ctx.allow_bypass {
+        return SandboxDecision::RunFreely;
     }
 
     if ctx.sandbox_available {
@@ -151,5 +158,21 @@ mod tests {
         let cmd = parse("git push --force origin main");
         let decision = decide(&cmd, &ctx(true));
         assert!(matches!(decision, SandboxDecision::Refuse(_)));
+    }
+
+    #[test]
+    fn dangerously_disable_does_not_skip_destructive_check() {
+        // `dangerouslyDisableSandbox` must NOT bypass the destructive
+        // validator. Skipping the check here would let `rm -rf /` slip
+        // through the bypass path historically.
+        let cmd = parse("rm -rf /");
+        let mut c = ctx(true);
+        c.dangerously_disable_sandbox = true;
+        c.allow_bypass = true;
+        let decision = decide(&cmd, &c);
+        assert!(
+            matches!(decision, SandboxDecision::Refuse(_)),
+            "expected Refuse, got {decision:?}"
+        );
     }
 }
