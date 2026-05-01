@@ -465,10 +465,24 @@ async fn main() -> anyhow::Result<()> {
         config.api.auth_mode = auth_mode;
     }
 
+    // `--dump-system-prompt` is a diagnostic that builds the prompt
+    // from tools+state without contacting any LLM, so it must not
+    // require an API key. CI environments and the e2e test in
+    // `output_styles_subagent.rs` strip all key env vars precisely
+    // because none should be necessary on this path. Fall through
+    // with an empty placeholder so provider construction below still
+    // type-checks; the provider is never used before the early
+    // return at the `dump_system_prompt` branch.
     let api_key = if config.api.auth_mode == ApiAuthMode::ApiKey {
-        Some(config.api.api_key.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("API key required. Set AGENT_CODE_API_KEY or pass --api-key.")
-        })?)
+        if let Some(key) = config.api.api_key.as_deref() {
+            Some(key)
+        } else if cli.dump_system_prompt {
+            Some("")
+        } else {
+            return Err(anyhow::anyhow!(
+                "API key required. Set AGENT_CODE_API_KEY or pass --api-key."
+            ));
+        }
     } else {
         None
     };
