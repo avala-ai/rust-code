@@ -1129,17 +1129,60 @@ impl QueryEngine {
                 }
             }
 
+            let mut vetoed_ids: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let mut vetoed_results: Vec<crate::tools::executor::ToolCallResult> = Vec::new();
+
+            // Step 8a: Engine-level input validation. Tools override
+            // `Tool::validate_input` to reject obviously-malformed or
+            // allow-list-violating inputs at the engine boundary.
+            // We run it BEFORE PreToolUse hooks and BEFORE permission
+            // checks so audit hooks never see disallowed inputs (e.g.
+            // a `Config set permissions.default_mode allow` that the
+            // tool would reject anyway). Streaming tools already
+            // started executing — we leave them alone; they'll surface
+            // the same `InvalidInput` error from inside `call`.
+            for call in &tool_calls {
+                if streaming_ids.contains(&call.id) {
+                    continue;
+                }
+                let Some(tool) = self.tools.get(&call.name) else {
+                    // Unknown tool — the executor's "Tool not found"
+                    // path handles the error message; don't pre-empt
+                    // it here.
+                    continue;
+                };
+                if let Err(err) = tool.validate_input(&call.input) {
+                    let reason = format!("{err}");
+                    let short_reason = reason.lines().next().unwrap_or(&reason).to_string();
+                    self.denial_tracker.lock().await.record(
+                        &call.name,
+                        &call.id,
+                        &format!("rejected at validation: {short_reason}"),
+                        &call.input,
+                    );
+                    vetoed_ids.insert(call.id.clone());
+                    vetoed_results.push(crate::tools::executor::ToolCallResult {
+                        tool_use_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        result: crate::tools::ToolResult::error(reason),
+                    });
+                }
+            }
+
             // Fire pre-tool-use hooks. If any hook exits non-zero,
             // the tool call is vetoed — the tool does not execute and
             // the model receives a synthetic error result carrying
             // the hook's stderr as the reason. Lets operators plug in
             // policy guards (content scanning, destructive-command
             // blocks, compliance checks) without having to extend the
-            // permission rule grammar.
-            let mut vetoed_ids: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            let mut vetoed_results: Vec<crate::tools::executor::ToolCallResult> = Vec::new();
+            // permission rule grammar. Calls that already failed
+            // engine-level validation are skipped so the hook never
+            // sees disallowed inputs.
             for call in &tool_calls {
+                if vetoed_ids.contains(&call.id) {
+                    continue;
+                }
                 let hook_results = self
                     .hooks
                     .run_hooks(&HookEvent::PreToolUse, Some(&call.name), &call.input)

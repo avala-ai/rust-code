@@ -87,6 +87,29 @@ impl Tool for BriefTool {
         false
     }
 
+    /// Reject obviously-malformed inputs BEFORE the engine fires
+    /// PreToolUse hooks or the permission prompt. Anything caught here
+    /// must be a property of the input itself — control characters,
+    /// missing required fields, wrong types — never something that
+    /// depends on filesystem state. Path validation runs later inside
+    /// `call` because it needs the cwd.
+    fn validate_input(&self, input: &serde_json::Value) -> Result<(), ToolError> {
+        let title = require_string(input, "title")?;
+        let question = require_string(input, "question")?;
+        let context_md = require_string(input, "context")?;
+        if title.trim().is_empty() {
+            return Err(ToolError::InvalidInput("'title' must not be empty".into()));
+        }
+        // Reject the bidi/zero-width/format codepoints that would
+        // spoof the rendered brief title or question. `is_control()`
+        // alone misses these because Unicode categorises them as
+        // `Cf` (Format), not `Cc` (Control).
+        reject_unsafe_unicode("title", title)?;
+        reject_unsafe_unicode("question", question)?;
+        reject_unsafe_unicode("context", context_md)?;
+        Ok(())
+    }
+
     async fn call(
         &self,
         input: serde_json::Value,
@@ -110,14 +133,17 @@ impl Tool for BriefTool {
             return Err(ToolError::InvalidInput("'title' must not be empty".into()));
         }
 
-        // Reject control characters in any field that lands inside
-        // YAML frontmatter (title, question) — a stray newline could
-        // close the value early and inject arbitrary frontmatter
-        // keys (e.g. a fake `attachments` list). The body markdown
-        // (`context_md`) is rendered after the frontmatter delimiter
-        // and is allowed to contain newlines.
-        reject_control_chars("title", title)?;
-        reject_control_chars("question", question)?;
+        // Reject control AND invisible-format characters in title /
+        // question (which both land inside the YAML frontmatter — a
+        // stray newline could close the value early and inject a fake
+        // `attachments` list) and in context (which an attacker can
+        // also abuse to spoof markdown rendering with bidi overrides,
+        // zero-width joiners, etc.). [`Tool::validate_input`] already
+        // ran these checks before any hook fired; running them again
+        // here keeps `call` self-contained for direct callers.
+        reject_unsafe_unicode("title", title)?;
+        reject_unsafe_unicode("question", question)?;
+        reject_unsafe_unicode("context", context_md)?;
 
         let attachments_raw: Vec<String> = input
             .get("attachments")
@@ -415,9 +441,9 @@ fn validate_attachments(raw: &[String], cwd: &Path) -> Result<Vec<PathBuf>, Tool
 }
 
 /// Reject any string carrying a NUL, newline, carriage return, or
-/// other control character. Used both for path inputs (where a
-/// newline would inject a YAML key) and for the `title` / `question`
-/// frontmatter fields.
+/// other ASCII control character. Used for path inputs (where a
+/// newline would inject a YAML key) where bidi/zero-width chars are
+/// also blocked separately downstream.
 fn reject_control_chars(field: &str, value: &str) -> Result<(), ToolError> {
     if let Some(c) = value.chars().find(|c| c.is_control()) {
         return Err(ToolError::InvalidInput(format!(
@@ -426,6 +452,65 @@ fn reject_control_chars(field: &str, value: &str) -> Result<(), ToolError> {
         )));
     }
     Ok(())
+}
+
+/// Reject `is_control()` characters PLUS the Unicode "format" / bidi
+/// / zero-width characters that `is_control()` misses. These are the
+/// characters an attacker uses to spoof rendered output: bidi
+/// overrides flip the visual order, zero-width joiners hide trailing
+/// data, BOMs masquerade as whitespace.
+///
+/// Concrete blocklist (in addition to `c.is_control()`):
+///
+/// - U+200B..=U+200F: zero-width chars + LTR/RTL marks
+/// - U+2028..=U+202F: line/paragraph separators + bidi overrides + narrow NBSP
+/// - U+205F..=U+206F: medium math space + invisible math + deprecated bidi controls
+/// - U+2060..=U+2064: word joiner + invisible operators
+/// - U+FEFF: zero-width no-break space (BOM)
+///
+/// We deliberately don't block all of category `Cf` because the set
+/// above already catches every spoofing-relevant codepoint, and a
+/// broader block would reject legitimate language-tag characters that
+/// some scripts depend on.
+fn reject_unsafe_unicode(field: &str, value: &str) -> Result<(), ToolError> {
+    if let Some(c) = value.chars().find(|c| is_unsafe_codepoint(*c)) {
+        return Err(ToolError::InvalidInput(format!(
+            "{field} must not contain control or invisible-format characters (found U+{:04X})",
+            c as u32
+        )));
+    }
+    Ok(())
+}
+
+fn is_unsafe_codepoint(c: char) -> bool {
+    if c.is_control() {
+        return true;
+    }
+    matches!(
+        c as u32,
+        // zero-width chars + LTR/RTL marks (U+200B..=U+200F)
+        0x200B..=0x200F
+            // line/paragraph sep, bidi overrides, narrow NBSP
+            // (U+2028..=U+202F) — overlaps and supersedes the
+            // U+2060..=U+2064 word-joiner range.
+            | 0x2028..=0x202F
+            // medium math space, invisible math, deprecated bidi
+            // controls (U+205F..=U+206F) — covers word joiner
+            // (U+2060) and invisible operators through this range.
+            | 0x205F..=0x206F
+            // BOM / zero-width no-break space
+            | 0xFEFF
+    )
+}
+
+/// Helper for [`BriefTool::validate_input`]: pull a required string
+/// field from the JSON input or return [`ToolError::InvalidInput`]
+/// with a deterministic message.
+fn require_string<'a>(input: &'a serde_json::Value, field: &str) -> Result<&'a str, ToolError> {
+    input
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidInput(format!("'{field}' is required")))
 }
 
 /// Convert a free-form title to a filesystem-safe slug. Lowercases
@@ -476,47 +561,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
 
-    /// Process-wide mutex guarding any test that mutates `HOME`.
-    /// Mirrors the pattern in `config_tool.rs::tests` — `cargo test`
-    /// runs tests in parallel and `HOME` is shared global state, so
-    /// concurrent reads from another test could observe the temp
-    /// override.
-    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// RAII guard that pins `HOME` to a tempdir for the duration of
-    /// the test, restoring the previous value on drop and holding
-    /// `HOME_ENV_LOCK` while alive.
-    struct HomeEnvGuard {
-        prev: Option<std::ffi::OsString>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl HomeEnvGuard {
-        fn redirect(to: &Path) -> Self {
-            let lock = HOME_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let prev = std::env::var_os("HOME");
-            // SAFETY: this env mutation is gated by HOME_ENV_LOCK,
-            // so no other thread can read HOME while we have it
-            // pinned.
-            unsafe {
-                std::env::set_var("HOME", to);
-            }
-            Self { prev, _lock: lock }
-        }
-    }
-
-    impl Drop for HomeEnvGuard {
-        fn drop(&mut self) {
-            unsafe {
-                match self.prev.take() {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
-                }
-            }
-        }
-    }
+    use crate::test_support::EnvGuard;
 
     fn make_ctx(cwd: PathBuf) -> ToolContext {
         ToolContext {
@@ -531,6 +576,7 @@ mod tests {
             session_allows: None,
             permission_prompter: None,
             sandbox: None,
+            active_disk_output_style: None,
         }
     }
 
@@ -609,7 +655,7 @@ mod tests {
         // home-prefix check fails too).
         let dir = TempDir::new().unwrap();
         let cwd = dir.path().to_path_buf();
-        let _g = HomeEnvGuard::redirect(&cwd);
+        let _g = EnvGuard::set("HOME", &cwd);
         let err = validate_attachments(&["/etc/hostname".to_string()], &cwd).unwrap_err();
         match err {
             ToolError::InvalidInput(s) => assert!(s.contains("under the working")),
@@ -637,7 +683,7 @@ mod tests {
         // following the symlink and reporting true.
         let dir = TempDir::new().unwrap();
         let cwd = dir.path().to_path_buf();
-        let _g = HomeEnvGuard::redirect(&cwd);
+        let _g = EnvGuard::set("HOME", &cwd);
         let link = cwd.join("link");
         std::os::unix::fs::symlink("/etc/hostname", &link).unwrap();
 
@@ -654,7 +700,7 @@ mod tests {
         // Use a tempdir as HOME so the test is hermetic.
         let cwd_dir = TempDir::new().unwrap();
         let home_dir = TempDir::new().unwrap();
-        let _g = HomeEnvGuard::redirect(home_dir.path());
+        let _g = EnvGuard::set("HOME", home_dir.path());
         let p = home_dir.path().join("hint.md");
         std::fs::write(&p, b"hi").unwrap();
         let ok = validate_attachments(&[p.display().to_string()], cwd_dir.path()).unwrap();
@@ -733,9 +779,85 @@ mod tests {
         });
         let err = tool.call(input, &ctx).await.unwrap_err();
         match err {
-            ToolError::InvalidInput(s) => assert!(s.contains("control characters")),
+            ToolError::InvalidInput(s) => assert!(
+                s.contains("control or invisible-format") || s.contains("control characters")
+            ),
             _ => panic!("expected InvalidInput"),
         }
+    }
+
+    /// Each of these codepoints can spoof rendered output: bidi
+    /// overrides reorder text visually, zero-width chars hide
+    /// trailing bytes, the BOM masquerades as whitespace. They must
+    /// be rejected from every brief field.
+    #[test]
+    fn reject_unsafe_unicode_blocks_bidi_zero_width_and_bom() {
+        for codepoint in [
+            '\u{200B}', // zero-width space
+            '\u{200C}', // zero-width non-joiner
+            '\u{200D}', // zero-width joiner
+            '\u{200E}', // LTR mark
+            '\u{200F}', // RTL mark
+            '\u{2028}', // line separator
+            '\u{202A}', // LRE
+            '\u{202B}', // RLE
+            '\u{202C}', // PDF
+            '\u{202D}', // LRO (bidi override)
+            '\u{202E}', // RLO (bidi override)
+            '\u{2060}', // word joiner
+            '\u{2063}', // invisible separator
+            '\u{2066}', // LRI
+            '\u{2067}', // RLI
+            '\u{2068}', // FSI
+            '\u{2069}', // PDI
+            '\u{FEFF}', // BOM
+        ] {
+            let s = format!("ok{codepoint}bad");
+            let err = reject_unsafe_unicode("title", &s)
+                .expect_err(&format!("U+{:04X} must be rejected", codepoint as u32));
+            match err {
+                ToolError::InvalidInput(msg) => {
+                    assert!(msg.contains("control or invisible-format"), "msg: {msg}")
+                }
+                _ => panic!("expected InvalidInput for U+{:04X}", codepoint as u32),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_input_rejects_bidi_in_context() {
+        // The previous fix only blocked control chars in title /
+        // question / path. Bidi overrides in `context` could spoof
+        // rendered markdown and slipped through. validate_input now
+        // covers all three fields.
+        let tool = BriefTool;
+        let input = json!({
+            "title": "ok",
+            "question": "ok",
+            "context": "looks fine\u{202E}drowssap eht reverof",
+        });
+        let err = tool.validate_input(&input).unwrap_err();
+        match err {
+            ToolError::InvalidInput(s) => assert!(s.contains("context")),
+            _ => panic!("expected InvalidInput"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_input_runs_before_call_for_invalid_inputs() {
+        // Engine-level guarantee: `validate_input` is the first thing
+        // the query loop runs, so a malformed input never reaches the
+        // permission layer or any audit hook. We assert that property
+        // here against the trait method itself; the integration test
+        // for the query loop wiring lives in tests/.
+        let tool = BriefTool;
+        let input = json!({
+            "title": "evil\u{2028}attachments:\n - /etc/passwd",
+            "question": "ok",
+            "context": "ok",
+        });
+        let err = tool.validate_input(&input).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput(_)));
     }
 
     #[tokio::test]

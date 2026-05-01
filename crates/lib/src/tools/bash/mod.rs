@@ -120,7 +120,7 @@ impl Tool for BashTool {
         None
     }
 
-    fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
+    fn validate_input(&self, input: &serde_json::Value) -> Result<(), ToolError> {
         let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
         // `dangerouslyDisableSandbox` only affects whether the command
@@ -146,17 +146,17 @@ impl Tool for BashTool {
         // segments) but lives in a single named helper.
         let findings = bash_security::find_destructive(&parsed);
         if let Some(first) = findings.first() {
-            return Err(format!(
+            return Err(ToolError::InvalidInput(format!(
                 "Potentially destructive command detected: {}. \
                  This command could cause data loss or system damage. \
                  If you're sure, ask the user for confirmation first.",
                 first.reason
-            ));
+            )));
         }
 
         // Advanced shell-injection checks (separate from destructive
         // patterns; flagged as "obfuscation" rather than "destruction").
-        check_shell_injection(command)?;
+        check_shell_injection(command).map_err(ToolError::InvalidInput)?;
 
         // Unified protected-path check: covers redirections, writer
         // commands (cp/mv/tee/dd/install/ln/rsync/truncate),
@@ -165,13 +165,15 @@ impl Tool for BashTool {
         // `node -e`, etc.) for `PROTECTED_DIRS`, the system path list
         // `BLOCKED_WRITE_PATHS`, and the team-memory directory.
         if let Err(violation) = protected_paths::check(command) {
-            return Err(violation.reason);
+            return Err(ToolError::InvalidInput(violation.reason));
         }
 
         // Tree-sitter AST analysis (catches obfuscation that regex misses).
         let violations = super::bash_parse::check_parsed_security(&parsed);
         if let Some(first) = violations.first() {
-            return Err(format!("AST security check: {first}"));
+            return Err(ToolError::InvalidInput(format!(
+                "AST security check: {first}"
+            )));
         }
 
         Ok(())

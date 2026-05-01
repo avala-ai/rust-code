@@ -33,6 +33,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use super::{PermissionDecision, Tool, ToolContext, ToolResult};
+use crate::config::atomic::atomic_write_secret;
 use crate::config::supported_settings::{self, Scope, SettingKind, SupportedSetting};
 use crate::error::ToolError;
 use crate::permissions::PermissionChecker;
@@ -82,6 +83,24 @@ impl Tool for ConfigTool {
         // action: read-only actions auto-allow, `set` runs through
         // the configured permission rule.
         false
+    }
+
+    /// Reject disallowed `set` keys at the engine boundary — before
+    /// PreToolUse hooks fire, before the permission prompt, before
+    /// the audit log records anything. The same allow-list / tripwire
+    /// logic also runs from `check_permissions` (so the permission
+    /// layer's decision matches what we'd reject anyway) and from
+    /// inside `call` (defence in depth for direct callers); putting
+    /// it here is what keeps audit hooks from observing rejected
+    /// inputs.
+    fn validate_input(&self, input: &serde_json::Value) -> Result<(), ToolError> {
+        match input.get("action").and_then(|v| v.as_str()) {
+            Some("set") => preflight_set_key(input).map_err(ToolError::InvalidInput),
+            // get / list_supported / unknown actions surface their
+            // errors inside `call`. We only short-circuit the path
+            // where rejection has security significance.
+            _ => Ok(()),
+        }
     }
 
     async fn check_permissions(
@@ -160,22 +179,12 @@ impl Tool for ConfigTool {
                 let coerced = supported_settings::coerce_value(setting, value)
                     .map_err(ToolError::InvalidInput)?;
 
-                // Honour any prompter installed on the context — only
-                // *after* the key has been validated — so the user
-                // sees prompts only for legitimate, allow-listed
-                // settings. If the user denies, we abort before
-                // mutating disk.
-                if let Some(prompter) = &ctx.permission_prompter {
-                    use super::PermissionResponse;
-                    match prompter.ask(self.name(), self.description(), Some(&input.to_string())) {
-                        PermissionResponse::AllowOnce | PermissionResponse::AllowSession => {}
-                        PermissionResponse::Deny => {
-                            return Err(ToolError::PermissionDenied(
-                                "user denied Config set request".into(),
-                            ));
-                        }
-                    }
-                }
+                // The executor's permission layer is the *only* place
+                // we prompt for `set`. Doing it here as well would
+                // double-prompt the user, override any "Allow for
+                // session" choice they already made, and bypass
+                // rule-based grants — permission decisions belong to
+                // `check_permissions` / executor, not to the tool body.
 
                 write_setting(setting, &ctx.cwd, coerced.clone())?;
 
@@ -277,8 +286,15 @@ fn read_setting(setting: &SupportedSetting, cwd: &Path) -> Result<Option<toml::V
 
 /// Write a coerced [`toml::Value`] into the scope's TOML file,
 /// creating intermediate tables and the file itself as needed. The
-/// file is read, mutated, and rewritten atomically (write-then-rename
-/// is overkill for a config we don't fsync).
+/// whole read-modify-write critical section runs under an exclusive
+/// advisory lock on a sibling `.lock` file, so two agent processes
+/// (or two threads) racing different keys can't both read the same
+/// baseline and silently drop one of the writes.
+///
+/// The actual filesystem mutation goes through
+/// [`crate::config::atomic::atomic_write_secret`], which preserves the
+/// destination's mode (or defaults to `0600` for new files — these
+/// can hold secrets).
 fn write_setting(
     setting: &SupportedSetting,
     cwd: &Path,
@@ -294,6 +310,14 @@ fn write_setting(
             .map_err(|e| ToolError::ExecutionFailed(format!("create {parent:?}: {e}")))?;
     }
 
+    // Sibling lockfile — avoids contending the on-disk settings file
+    // itself (which would prevent a clean `rename` over the top of an
+    // open handle on Windows). The lockfile is created on demand and
+    // left in place; an empty lockfile is harmless and lets future
+    // writers reuse it without a recreate-race.
+    let lock_path = path.with_extension("toml.lock");
+    let _guard = SettingsLockGuard::acquire(&lock_path)?;
+
     let mut doc: toml::Value = if path.exists() {
         let raw = std::fs::read_to_string(&path)
             .map_err(|e| ToolError::ExecutionFailed(format!("read {path:?}: {e}")))?;
@@ -307,64 +331,53 @@ fn write_setting(
 
     let serialized = toml::to_string_pretty(&doc)
         .map_err(|e| ToolError::ExecutionFailed(format!("serialize: {e}")))?;
-    atomic_write(&path, serialized.as_bytes())?;
+    atomic_write_secret(&path, serialized.as_bytes())
+        .map_err(|e| ToolError::ExecutionFailed(format!("atomic write {path:?}: {e}")))?;
     Ok(())
 }
 
-/// Write `bytes` to `path` atomically: serialize to a sibling temp
-/// file in the same directory, fsync the contents, then rename over
-/// the destination. A crash, ENOSPC, or process kill mid-write
-/// leaves the original settings file untouched — without this dance
-/// `std::fs::write`'s in-place truncate-and-write would corrupt the
-/// whole file. POSIX guarantees `rename` is atomic; on Windows the
-/// underlying `MoveFileEx` is atomic on local filesystems, which is
-/// the only place the user's settings live.
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
-    use std::io::Write as _;
+/// RAII handle to the per-settings-file advisory lock. Drop releases
+/// the OS-level `flock` (POSIX) / `LockFile` (Windows) via `fs2`,
+/// which means a panic inside the read-modify-write section never
+/// leaves a stale lock behind.
+///
+/// We deliberately use `fs2::FileExt::lock_exclusive` rather than a
+/// custom PID file: the OS-managed advisory lock is automatically
+/// released by the kernel if the holding process dies, so there is
+/// no stale-lock cleanup story to write. The lockfile itself is just
+/// the inode `flock` is associated with — its contents are unused.
+struct SettingsLockGuard {
+    _file: std::fs::File,
+}
 
-    let parent = path.parent().ok_or_else(|| {
-        ToolError::ExecutionFailed(format!("settings path has no parent: {path:?}"))
-    })?;
-    if !parent.exists() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| ToolError::ExecutionFailed(format!("create {parent:?}: {e}")))?;
+impl SettingsLockGuard {
+    fn acquire(lock_path: &Path) -> Result<Self, ToolError> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .map_err(|e| ToolError::ExecutionFailed(format!("open lockfile {lock_path:?}: {e}")))?;
+        // Blocking acquire: short read-modify-write, no deadline. If
+        // a stuck holder were ever a real concern we'd swap to
+        // `try_lock_exclusive` with a timeout — but for two-agent
+        // contention on the same settings file the wait is bounded
+        // by the other writer's own (fast) atomic write.
+        fs2::FileExt::lock_exclusive(&file)
+            .map_err(|e| ToolError::ExecutionFailed(format!("lock {lock_path:?}: {e}")))?;
+        Ok(Self { _file: file })
     }
+}
 
-    // Compose a temp path next to the destination so the final rename
-    // stays on the same filesystem and is atomic. Including the pid
-    // and a nanosecond timestamp prevents two concurrent writers (in
-    // different processes) from clobbering each other's temp file.
-    let stem = path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "settings".to_string());
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = parent.join(format!(".{stem}.tmp.{pid}.{nanos}"));
-
-    let write_result = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        Ok(())
-    })();
-    if let Err(e) = write_result {
-        // Best-effort cleanup of the partial temp file; the rename
-        // would be unsafe to attempt now anyway.
-        let _ = std::fs::remove_file(&tmp);
-        return Err(ToolError::ExecutionFailed(format!("write {tmp:?}: {e}")));
+impl Drop for SettingsLockGuard {
+    fn drop(&mut self) {
+        // `unlock` may fail if e.g. the file descriptor is already
+        // closed by the OS — there's nothing useful to do with the
+        // error at drop time, and the kernel will release the lock
+        // on process exit regardless.
+        let _ = fs2::FileExt::unlock(&self._file);
     }
-
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(ToolError::ExecutionFailed(format!(
-            "rename {tmp:?} -> {path:?}: {e}"
-        )));
-    }
-    Ok(())
 }
 
 /// Insert `value` at the dotted `key` path inside a TOML document,
@@ -471,49 +484,11 @@ mod tests {
             session_allows: None,
             permission_prompter: None,
             sandbox: None,
+            active_disk_output_style: None,
         }
     }
 
-    /// Override the user config dir to a temp path for the duration of
-    /// a test. Returns a guard that restores the previous value on
-    /// drop. Holds a process-wide mutex while alive — `cargo test`
-    /// runs tests in parallel by default, and `XDG_CONFIG_HOME` is
-    /// shared global state that any other test reading the user
-    /// config could observe mid-flight.
-    struct UserConfigDirGuard {
-        prev: Option<std::ffi::OsString>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    static USER_CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    impl UserConfigDirGuard {
-        fn redirect(to: &Path) -> Self {
-            let lock = USER_CONFIG_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            // `dirs::config_dir()` reads `$XDG_CONFIG_HOME` on Linux.
-            let prev = std::env::var_os("XDG_CONFIG_HOME");
-            // SAFETY: this env mutation is gated by USER_CONFIG_LOCK,
-            // so no other thread can read XDG_CONFIG_HOME while we
-            // have it pinned.
-            unsafe {
-                std::env::set_var("XDG_CONFIG_HOME", to);
-            }
-            Self { prev, _lock: lock }
-        }
-    }
-
-    impl Drop for UserConfigDirGuard {
-        fn drop(&mut self) {
-            unsafe {
-                match self.prev.take() {
-                    Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-                    None => std::env::remove_var("XDG_CONFIG_HOME"),
-                }
-            }
-        }
-    }
+    use crate::test_support::EnvGuard;
 
     #[tokio::test]
     async fn list_supported_returns_known_keys() {
@@ -664,7 +639,7 @@ mod tests {
     #[tokio::test]
     async fn set_user_scope_writes_to_xdg_config_home() {
         let xdg = TempDir::new().unwrap();
-        let _g = UserConfigDirGuard::redirect(xdg.path());
+        let _g = EnvGuard::set("XDG_CONFIG_HOME", xdg.path());
         let dir = TempDir::new().unwrap();
         let ctx = make_ctx(dir.path().to_path_buf());
 
@@ -813,9 +788,12 @@ mod tests {
 
     #[tokio::test]
     async fn set_disallowed_key_does_not_invoke_prompter() {
-        // Even via the `call` path (which mirrors what the executor
-        // does under `Allow`), a disallowed key must never reach the
-        // prompter. This exercises the in-`call` preflight check.
+        // Defence-in-depth: even via the `call` path (which mirrors
+        // what the executor does under `Allow`), a disallowed key must
+        // never reach a prompter. The tool body no longer prompts
+        // (the executor owns prompting), but a future regression that
+        // re-introduces an in-tool prompt would still need to skip
+        // disallowed keys — this test would catch that.
         let dir = TempDir::new().unwrap();
         let prompter = Arc::new(RecordingPrompter::new());
         let mut ctx = make_ctx(dir.path().to_path_buf());
@@ -840,6 +818,127 @@ mod tests {
             prompter.invocations().is_empty(),
             "prompter must not be invoked for a disallowed key, got: {:?}",
             prompter.invocations()
+        );
+    }
+
+    /// The tool body must NEVER invoke the permission prompter — that
+    /// responsibility lives with the executor's permission layer.
+    /// Calling the prompter from inside `call` would double-prompt,
+    /// override session-level "Allow for session" decisions, and
+    /// bypass rule-based grants. A successful set on a legitimate
+    /// project-scope key must complete without ever asking.
+    #[tokio::test]
+    async fn set_legitimate_key_does_not_invoke_prompter_from_tool_body() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agent")).unwrap();
+        let prompter = Arc::new(RecordingPrompter::new());
+        let mut ctx = make_ctx(dir.path().to_path_buf());
+        ctx.permission_prompter = Some(prompter.clone());
+
+        let res = ConfigTool
+            .call(
+                json!({
+                    "action": "set",
+                    "key": "api.model",
+                    "value": "gpt-5.4",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!res.is_error);
+        assert!(
+            prompter.invocations().is_empty(),
+            "tool body must defer prompting to the executor, got: {:?}",
+            prompter.invocations()
+        );
+    }
+
+    /// `validate_input` is the engine-level rejection point: it runs
+    /// before PreToolUse hooks fire and before the permission prompt.
+    /// Disallowed keys must surface here so audit hooks never see
+    /// them.
+    #[test]
+    fn validate_input_rejects_security_sensitive_set() {
+        let tool = ConfigTool;
+        let err = tool
+            .validate_input(&json!({
+                "action": "set",
+                "key": "permissions.default_mode",
+                "value": "allow",
+            }))
+            .unwrap_err();
+        match err {
+            ToolError::InvalidInput(s) => assert!(s.contains("security-sensitive")),
+            _ => panic!("expected InvalidInput"),
+        }
+    }
+
+    #[test]
+    fn validate_input_allows_get_and_list_supported() {
+        let tool = ConfigTool;
+        // Read-only actions are not interesting at validate_input
+        // time — any per-action checks happen inside `call`.
+        assert!(tool.validate_input(&json!({ "action": "get" })).is_ok());
+        assert!(
+            tool.validate_input(&json!({ "action": "list_supported" }))
+                .is_ok()
+        );
+    }
+
+    /// Two writers racing different keys against the same user-scope
+    /// settings file must NOT clobber each other. Without the per-file
+    /// advisory lock both threads would read the same baseline, both
+    /// would compute their own mutated `doc`, and the loser's key
+    /// would disappear. The lock around the read-modify-write critical
+    /// section serialises them so both writes land.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_set_calls_persist_both_keys() {
+        // Both writers target distinct user-scope keys against the
+        // same on-disk settings file. EnvGuard pins XDG_CONFIG_HOME
+        // for the duration of the test (and its mutex prevents any
+        // other test from reading user config mid-flight).
+        let xdg = TempDir::new().unwrap();
+        let _g = EnvGuard::set("XDG_CONFIG_HOME", xdg.path());
+        let cwd_dir = TempDir::new().unwrap();
+        let cwd: PathBuf = cwd_dir.path().to_path_buf();
+
+        let cwd_a = cwd.clone();
+        let cwd_b = cwd.clone();
+        let a = tokio::spawn(async move {
+            let ctx = make_ctx(cwd_a);
+            ConfigTool
+                .call(
+                    json!({ "action": "set", "key": "ui.theme", "value": "light" }),
+                    &ctx,
+                )
+                .await
+        });
+        let b = tokio::spawn(async move {
+            let ctx = make_ctx(cwd_b);
+            ConfigTool
+                .call(
+                    json!({
+                        "action": "set",
+                        "key": "features.commit_attribution",
+                        "value": true,
+                    }),
+                    &ctx,
+                )
+                .await
+        });
+        a.await.unwrap().unwrap();
+        b.await.unwrap().unwrap();
+
+        let path = xdg.path().join("agent-code").join("config.toml");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.contains("theme = \"light\""),
+            "writer A's key was lost: {contents}"
+        );
+        assert!(
+            contents.contains("commit_attribution = true"),
+            "writer B's key was lost: {contents}"
         );
     }
 
