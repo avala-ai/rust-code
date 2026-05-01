@@ -75,7 +75,8 @@ impl ScheduleExecutor {
         }
 
         let tool_registry = ToolRegistry::default_tools();
-        let permission_checker = PermissionChecker::from_config(&config.permissions);
+        let permission_checker = PermissionChecker::from_config(&config.permissions)
+            .with_project_root(std::path::PathBuf::from(&schedule.cwd));
         let app_state = AppState::new(config.clone());
         let session_id = app_state.session_id.clone();
 

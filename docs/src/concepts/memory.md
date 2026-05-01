@@ -1,5 +1,5 @@
 
-Memory gives the agent context that persists across sessions. There are two layers:
+Memory gives the agent context that persists across sessions. There are three layers: project memory (`AGENTS.md`), team memory (shared, version-controlled), and user memory (per-user).
 
 ## Project memory
 
@@ -15,6 +15,16 @@ Always run `cargo fmt` before committing.
 ```
 
 This is loaded automatically at the start of every session in that project directory. Use it for project-specific instructions, conventions, and context that every session needs.
+
+## Team memory
+
+Team memory is project-shared memory that lives in version control under `<project>/.agent/team-memory/`. It is loaded by every session that opens the project, but the only sanctioned write path is the `/team-remember` slash command — background extraction and the model's own file-write tools cannot mutate this directory. Entries carry an `author` and `created_at` stamp, and writes are append-only by default (collisions require `--force`). On id collision across scopes, precedence is **project > team > user**.
+
+```
+> /team-remember the canary check is in dashboards/canary.tsx
+> /team-remember list
+> /team-remember remove <name>
+```
 
 ## User memory
 

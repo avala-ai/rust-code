@@ -3,7 +3,7 @@ title: "Memory"
 description: "Persistent context across sessions"
 ---
 
-Memory gives the agent context that persists across sessions. There are two layers:
+Memory gives the agent context that persists across sessions. There are three layers: project memory (`AGENTS.md`), team memory (shared, version-controlled), and user memory (per-user).
 
 ## Project memory
 
@@ -19,6 +19,59 @@ Always run `cargo fmt` before committing.
 ```
 
 This is loaded automatically at the start of every session in that project directory. Use it for project-specific instructions, conventions, and context that every session needs.
+
+## Team memory
+
+Team memory is project-shared memory that lives in version control, so every collaborator sees the same set of entries. Entries live under:
+
+```
+<project>/.agent/team-memory/
+  MEMORY.md        index of pointers
+  <topic>.md       individual entries
+```
+
+The format mirrors user memory exactly — frontmatter (`name`, `description`, `type`) followed by markdown body — so the same loader reads both. Team-memory entries also carry an `author` and `created_at` stamp so the file history stays meaningful when committed.
+
+```markdown
+<!-- .agent/team-memory/deploy.md -->
+---
+name: Deploy
+description: how we ship the service
+type: project
+author: alice@example.com
+created_at: 2025-01-02T03:04:05Z
+---
+
+`make ship` runs the migration check, builds the image, and rolls the
+canary. Wait for the dashboard to clear before promoting.
+```
+
+### Read-only from the agent
+
+Team memory is **loaded by every session** that opens the project, but it is **never written to silently**. Background memory extraction and the model's own file-write tools cannot create or modify entries inside `.agent/team-memory/`. The only sanctioned write path is the `/team-remember` slash command:
+
+```
+> /team-remember the canary check is in dashboards/canary.tsx
+About to write team-memory entry to:
+  /work/proj/.agent/team-memory/the-canary-check-is-in-dashboards-canary-tsx.md
+This file enters version control and will be visible to every session
+that opens this project.
+Proceed? [y/N] y
+Saved team-memory entry to /work/proj/.agent/team-memory/...
+
+> /team-remember list
+Team memory (/work/proj/.agent/team-memory):
+  - the-canary-check-is-in-dashboards-canary-tsx.md
+
+> /team-remember remove the-canary-check-is-in-dashboards-canary-tsx
+Removed team-memory entry 'the-canary-check-is-in-dashboards-canary-tsx'.
+```
+
+By default new entries are append-only: writing on top of an existing filename is rejected with a hint to either pick a new name or pass `--force` (`/team-remember <text> --force`).
+
+### Collision precedence
+
+When the same id (filename stem) appears in multiple scopes, the loader keeps the most-specific entry: **project &gt; team &gt; user**. Other entries are dropped with a debug log.
 
 ## User memory
 
@@ -51,8 +104,9 @@ type: user
 Memory files are injected into the system prompt at session start:
 
 1. Project `AGENTS.md` → appears under "# Project Context"
-2. User `MEMORY.md` index → appears under "# User Memory"
-3. Individual memory files linked from the index → loaded and appended
+2. Team `MEMORY.md` index → appears under "# Team Memory Index"
+3. User `MEMORY.md` index → appears under "# Memory Index"
+4. Individual memory files linked from each index → loaded and appended (with their scope tracked internally)
 
 The agent sees this context on every turn, so it can follow your conventions and understand your project without being told every time.
 
@@ -70,5 +124,11 @@ Files exceeding these limits are truncated with a `(truncated)` marker.
 ```
 > /memory
 Project context: loaded
+Team memory: loaded (3 files)
 User memory: loaded (2 files)
+
+> /team-remember <text>          Add an entry to project team-memory
+> /team-remember list            List current team-memory entries
+> /team-remember remove <name>   Remove an entry
+> /btw <note>                    Append a quick note to user memory
 ```

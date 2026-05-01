@@ -42,6 +42,11 @@ impl ExtractionState {
 
 /// Check if the main agent already wrote to memory files this turn.
 /// If so, skip extraction to avoid duplication.
+///
+/// Also returns `true` if any tool call attempted to write to a path
+/// inside a `*/.agent/team-memory/` directory. The extraction loop
+/// must not piggyback off such a write — team memory is a privileged
+/// surface that only the `/team-remember` slash command may touch.
 fn main_agent_wrote_memory(messages: &[Message], since_index: usize) -> bool {
     let memory_dir = super::ensure_memory_dir()
         .map(|d| d.display().to_string())
@@ -56,10 +61,9 @@ fn main_agent_wrote_memory(messages: &[Message], since_index: usize) -> bool {
             for block in &a.content {
                 if let ContentBlock::ToolUse { name, input, .. } = block
                     && (name == "FileWrite" || name == "FileEdit")
-                    && input
-                        .get("file_path")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|p| p.contains("memory/"))
+                    && let Some(p) = input.get("file_path").and_then(|v| v.as_str())
+                    && (p.contains("memory/")
+                        || super::is_team_memory_path(std::path::Path::new(p)))
                 {
                     return true;
                 }
@@ -290,6 +294,8 @@ pub async fn extract_memories_background(
                 name: name.to_string(),
                 description: description.to_string(),
                 memory_type,
+                author: None,
+                created_at: None,
             };
 
             match super::writer::write_memory(&memory_dir, filename, &meta, content) {

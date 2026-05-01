@@ -130,6 +130,27 @@ pub fn build_consolidation_prompt(memory_dir: &Path) -> String {
     prompt
 }
 
+/// Convenience wrapper: run consolidation on the team-memory directory
+/// for `project_root`. Same pipeline as [`run_consolidation`] — only
+/// the target directory differs. Callers are responsible for first
+/// confirming with the user, since team-memory writes enter version
+/// control.
+pub async fn run_team_consolidation(
+    project_root: &Path,
+    llm: Arc<dyn crate::llm::provider::Provider>,
+    model: &str,
+) {
+    let dir = super::team_memory_dir(project_root);
+    if !dir.is_dir() {
+        return;
+    }
+    let lock_path = match try_acquire_lock(&dir) {
+        Some(p) => p,
+        None => return,
+    };
+    run_consolidation(&dir, &lock_path, llm, model).await;
+}
+
 /// Run the full consolidation pipeline via LLM.
 pub async fn run_consolidation(
     memory_dir: &Path,
@@ -195,75 +216,10 @@ pub async fn run_consolidation(
             continue;
         }
 
-        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-            let action = entry.get("action").and_then(|v| v.as_str()).unwrap_or("");
-
-            match action {
-                "delete" => {
-                    if let Some(filename) = entry.get("filename").and_then(|v| v.as_str()) {
-                        let path = memory_dir.join(filename);
-                        if path.exists() {
-                            if let Err(e) = std::fs::remove_file(&path) {
-                                warn!("Failed to delete memory file {filename}: {e}");
-                            } else {
-                                info!("Consolidation: deleted {filename}");
-                                actions_taken += 1;
-                            }
-                        }
-                    }
-                }
-                "update" => {
-                    let filename = entry
-                        .get("filename")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown.md");
-                    let name = entry
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unknown");
-                    let description = entry
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let mem_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("user");
-                    let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
-
-                    if !content.is_empty() {
-                        let memory_type = match mem_type {
-                            "feedback" => Some(super::types::MemoryType::Feedback),
-                            "project" => Some(super::types::MemoryType::Project),
-                            "reference" => Some(super::types::MemoryType::Reference),
-                            _ => Some(super::types::MemoryType::User),
-                        };
-
-                        let meta = super::types::MemoryMeta {
-                            name: name.to_string(),
-                            description: description.to_string(),
-                            memory_type,
-                        };
-
-                        match super::writer::write_memory(memory_dir, filename, &meta, content) {
-                            Ok(_) => {
-                                info!("Consolidation: updated {filename}");
-                                actions_taken += 1;
-                            }
-                            Err(e) => {
-                                warn!("Failed to update memory file {filename}: {e}");
-                            }
-                        }
-                    }
-                }
-                "reindex" => {
-                    // Rebuild the index from existing files.
-                    if let Err(e) = super::writer::rebuild_index(memory_dir) {
-                        warn!("Failed to rebuild memory index: {e}");
-                    } else {
-                        info!("Consolidation: reindexed MEMORY.md");
-                        actions_taken += 1;
-                    }
-                }
-                _ => {}
-            }
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line)
+            && apply_consolidation_action(memory_dir, &entry)
+        {
+            actions_taken += 1;
         }
     }
 
@@ -276,6 +232,91 @@ pub async fn run_consolidation(
     release_lock(lock_path);
 }
 
+/// Apply a single consolidation action (`delete`, `update`, `reindex`)
+/// to `memory_dir`. Returns true when an action ran successfully.
+///
+/// Pulled out of the streaming loop so the safety property — the
+/// LLM cannot direct the consolidator to touch files outside the
+/// memory dir — has a unit test surface that doesn't need a mock LLM.
+fn apply_consolidation_action(memory_dir: &Path, entry: &serde_json::Value) -> bool {
+    let action = entry.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    match action {
+        "delete" => {
+            let Some(filename) = entry.get("filename").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            // Route through `delete_memory` so the same filename
+            // validation + `ensure_path_within` guards apply. A
+            // consolidation reply with `../../README.md` would
+            // otherwise unlink arbitrary files.
+            match super::writer::delete_memory(memory_dir, filename) {
+                Ok(()) => {
+                    info!("Consolidation: deleted {filename}");
+                    true
+                }
+                Err(e) => {
+                    warn!("Refused to delete memory file {filename}: {e}");
+                    false
+                }
+            }
+        }
+        "update" => {
+            let filename = entry
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown.md");
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown");
+            let description = entry
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let mem_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("user");
+            let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
+
+            if content.is_empty() {
+                return false;
+            }
+            let memory_type = match mem_type {
+                "feedback" => Some(super::types::MemoryType::Feedback),
+                "project" => Some(super::types::MemoryType::Project),
+                "reference" => Some(super::types::MemoryType::Reference),
+                _ => Some(super::types::MemoryType::User),
+            };
+            let meta = super::types::MemoryMeta {
+                name: name.to_string(),
+                description: description.to_string(),
+                memory_type,
+                author: None,
+                created_at: None,
+            };
+            match super::writer::write_memory(memory_dir, filename, &meta, content) {
+                Ok(_) => {
+                    info!("Consolidation: updated {filename}");
+                    true
+                }
+                Err(e) => {
+                    warn!("Failed to update memory file {filename}: {e}");
+                    false
+                }
+            }
+        }
+        "reindex" => match super::writer::rebuild_index(memory_dir) {
+            Ok(()) => {
+                info!("Consolidation: reindexed MEMORY.md");
+                true
+            }
+            Err(e) => {
+                warn!("Failed to rebuild memory index: {e}");
+                false
+            }
+        },
+        _ => false,
+    }
+}
+
 fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -286,5 +327,70 @@ fn is_process_alive(pid: u32) -> bool {
     {
         let _ = pid; // Suppress unused variable warning on non-Unix.
         true // Assume alive on non-Unix.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_action_rejects_traversal_filename() {
+        // A consolidation reply that names `../../README.md` must not
+        // unlink anything outside the memory dir.
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().parent().unwrap().join("CONSOLIDATE_VICTIM.md");
+        std::fs::write(&outside, "do not delete").unwrap();
+
+        let memory_dir = dir.path().join("memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+
+        let entry = serde_json::json!({
+            "action": "delete",
+            "filename": "../CONSOLIDATE_VICTIM.md"
+        });
+        let took_action = apply_consolidation_action(&memory_dir, &entry);
+        assert!(!took_action, "traversal delete must be refused");
+        assert!(outside.exists(), "victim file must survive");
+        let _ = std::fs::remove_file(outside);
+    }
+
+    #[test]
+    fn delete_action_with_safe_filename_unlinks_in_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("safe.md"), "content").unwrap();
+        let entry = serde_json::json!({
+            "action": "delete",
+            "filename": "safe.md"
+        });
+        let took_action = apply_consolidation_action(dir.path(), &entry);
+        assert!(took_action);
+        assert!(!dir.path().join("safe.md").exists());
+    }
+
+    #[test]
+    fn update_action_rejects_traversal_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        // Plant a file that a successful traversal would overwrite.
+        let outside = dir
+            .path()
+            .parent()
+            .unwrap()
+            .join("CONSOLIDATE_OVERWRITE.md");
+        std::fs::write(&outside, "original").unwrap();
+
+        let entry = serde_json::json!({
+            "action": "update",
+            "filename": "../CONSOLIDATE_OVERWRITE.md",
+            "name": "x",
+            "description": "x",
+            "type": "user",
+            "content": "evil"
+        });
+        let took_action = apply_consolidation_action(dir.path(), &entry);
+        assert!(!took_action, "traversal update must be refused");
+        let body = std::fs::read_to_string(&outside).unwrap();
+        assert_eq!(body, "original");
+        let _ = std::fs::remove_file(outside);
     }
 }

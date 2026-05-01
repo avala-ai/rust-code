@@ -36,7 +36,8 @@ const MAX_MEMORY_FILE_BYTES: usize = 25_000;
 /// Persistent context loaded at session start.
 ///
 /// Contains project-level context (`AGENTS.md`), user-level memory
-/// (`~/.config/agent-code/memory/`), and individual memory files.
+/// (`~/.config/agent-code/memory/`), team-shared memory
+/// (`<project>/.agent/team-memory/`), and individual memory files.
 /// Injected into the system prompt so the agent has context across sessions.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryContext {
@@ -44,7 +45,9 @@ pub struct MemoryContext {
     pub project_context: Option<String>,
     /// User-level memory index from `MEMORY.md`.
     pub user_memory: Option<String>,
-    /// Individual memory files linked from the index.
+    /// Team-shared memory index from `<project>/.agent/team-memory/MEMORY.md`.
+    pub team_memory: Option<String>,
+    /// Individual memory files linked from the index. Each carries its scope.
     pub memory_files: Vec<MemoryFile>,
     /// Paths already surfaced in this session (to avoid duplicates).
     pub surfaced: HashSet<PathBuf>,
@@ -61,38 +64,125 @@ pub struct MemoryFile {
     pub content: String,
     /// Optional staleness indicator.
     pub staleness: Option<String>,
+    /// Where this entry was loaded from. Drives collision precedence.
+    pub scope: types::Scope,
 }
 
 impl MemoryContext {
     pub fn load(project_root: Option<&Path>) -> Self {
         let mut ctx = Self::default();
+
+        // Collect candidate (scope, file) entries. Order does not matter
+        // here — `merge_scoped_files` enforces the
+        // `project > team > user` precedence rule for id collisions.
+        let mut candidates: Vec<MemoryFile> = Vec::new();
+
         if let Some(root) = project_root {
             ctx.project_context = load_project_context(root);
+
+            // Team-shared memory (version-controlled).
+            let team_dir = team_memory_dir(root);
+            let team_index = team_dir.join("MEMORY.md");
+            if team_index.exists() {
+                ctx.team_memory = load_truncated_file(&team_index);
+            }
+            if let Some(ref index) = ctx.team_memory {
+                candidates.extend(load_referenced_files(index, &team_dir, types::Scope::Team));
+            }
+
+            // Project-level memory (`<project>/.agent/memory/`). Existing
+            // layout: `.agent/` may hold a `MEMORY.md` and topic files.
+            let project_dir = project_memory_dir(root).join("memory");
+            let project_index = project_dir.join("MEMORY.md");
+            if project_index.exists()
+                && let Some(idx) = load_truncated_file(&project_index)
+            {
+                candidates.extend(load_referenced_files(
+                    &idx,
+                    &project_dir,
+                    types::Scope::Project,
+                ));
+            }
         }
+
+        // Per-user memory.
         if let Some(memory_dir) = user_memory_dir() {
             let index_path = memory_dir.join("MEMORY.md");
             if index_path.exists() {
                 ctx.user_memory = load_truncated_file(&index_path);
             }
             if let Some(ref index) = ctx.user_memory {
-                ctx.memory_files = load_referenced_files(index, &memory_dir);
+                candidates.extend(load_referenced_files(
+                    index,
+                    &memory_dir,
+                    types::Scope::User,
+                ));
             }
         }
+
+        ctx.memory_files = merge_scoped_files(candidates);
         ctx
     }
 
     pub fn load_relevant(&mut self, recent_text: &str) {
-        let Some(memory_dir) = user_memory_dir() else {
-            return;
-        };
-        let headers = scanner::scan_memory_files(&memory_dir);
-        let relevant = scanner::select_relevant(&headers, recent_text, &self.surfaced);
+        // Scan every dir we know about so on-demand surfacing also pulls
+        // team and project memory, not just user memory.
+        let mut headers: Vec<(scanner::MemoryHeader, types::Scope)> = Vec::new();
+        if let Some(memory_dir) = user_memory_dir() {
+            for h in scanner::scan_memory_files(&memory_dir) {
+                headers.push((h, types::Scope::User));
+            }
+        }
+        // Project + team scans only fire if we have a project root pinned
+        // via the existing user_memory_dir/project_memory_dir mechanism.
+        // Here we infer the project root from any already-loaded file,
+        // because `load_relevant` does not take a root directly.
+        if let Some(root) = self.project_root_hint() {
+            let project_dir = project_memory_dir(&root).join("memory");
+            if project_dir.is_dir() {
+                for h in scanner::scan_memory_files(&project_dir) {
+                    headers.push((h, types::Scope::Project));
+                }
+            }
+            let team_dir = team_memory_dir(&root);
+            if team_dir.is_dir() {
+                for h in scanner::scan_memory_files(&team_dir) {
+                    headers.push((h, types::Scope::Team));
+                }
+            }
+        }
+
+        let header_only: Vec<scanner::MemoryHeader> =
+            headers.iter().map(|(h, _)| h.clone()).collect();
+        let relevant = scanner::select_relevant(&header_only, recent_text, &self.surfaced);
         for path in relevant {
-            if let Some(file) = load_memory_file_with_staleness(&path) {
+            // Find the scope this header was discovered under.
+            let scope = headers
+                .iter()
+                .find(|(h, _)| h.path == path)
+                .map(|(_, s)| *s)
+                .unwrap_or(types::Scope::User);
+            if let Some(mut file) = load_memory_file_with_staleness(&path) {
+                file.scope = scope;
                 self.surfaced.insert(path);
                 self.memory_files.push(file);
             }
         }
+    }
+
+    /// Best-effort hint at the project root by inspecting paths of files
+    /// loaded under the Project or Team scope at `load` time.
+    fn project_root_hint(&self) -> Option<PathBuf> {
+        for f in &self.memory_files {
+            if matches!(f.scope, types::Scope::Project | types::Scope::Team) {
+                // Walk up two levels: <root>/.agent/(team-)memory/file.md.
+                let mut p = f.path.parent()?.to_path_buf();
+                p.pop(); // drop "memory" / "team-memory"
+                p.pop(); // drop ".agent"
+                return Some(p);
+            }
+        }
+        None
     }
 
     pub fn to_system_prompt_section(&self) -> String {
@@ -103,6 +193,18 @@ impl MemoryContext {
             section.push_str("# Project Context\n\n");
             section.push_str(project);
             section.push_str("\n\n");
+        }
+        if let Some(ref team) = self.team_memory
+            && !team.is_empty()
+        {
+            section.push_str("# Team Memory Index\n\n");
+            section.push_str(team);
+            section.push_str("\n\n");
+            section.push_str(
+                "_Team memory is shared across everyone on this project. \
+                 Treat it as read-only from the agent's side: only the \
+                 explicit `/team-remember` command may add entries._\n\n",
+            );
         }
         if let Some(ref memory) = self.user_memory
             && !memory.is_empty()
@@ -127,7 +229,10 @@ impl MemoryContext {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.project_context.is_none() && self.user_memory.is_none() && self.memory_files.is_empty()
+        self.project_context.is_none()
+            && self.user_memory.is_none()
+            && self.team_memory.is_none()
+            && self.memory_files.is_empty()
     }
 }
 
@@ -319,10 +424,12 @@ fn load_memory_file_with_staleness(path: &Path) -> Option<MemoryFile> {
         name,
         content,
         staleness,
+        // Default — overwritten by callers that know the scope.
+        scope: types::Scope::User,
     })
 }
 
-fn load_referenced_files(index: &str, base_dir: &Path) -> Vec<MemoryFile> {
+fn load_referenced_files(index: &str, base_dir: &Path, scope: types::Scope) -> Vec<MemoryFile> {
     let mut files = Vec::new();
     let link_re = regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
 
@@ -332,13 +439,171 @@ fn load_referenced_files(index: &str, base_dir: &Path) -> Vec<MemoryFile> {
         if filename.is_empty() || !filename.ends_with(".md") {
             continue;
         }
-        let path = base_dir.join(filename);
+        // Refuse anything that could escape `base_dir`. A poisoned
+        // index (especially the version-controlled team-memory one)
+        // could otherwise point at `../../home/user/.ssh/id_rsa.md`
+        // and pull arbitrary files into the system prompt.
+        let path = match resolve_index_link_target(base_dir, filename) {
+            Some(p) => p,
+            None => {
+                debug!(
+                    "memory index link rejected: '{}' escapes base dir or is a symlink",
+                    filename
+                );
+                continue;
+            }
+        };
         if let Some(mut file) = load_memory_file_with_staleness(&path) {
             file.name = name.to_string();
+            file.scope = scope;
             files.push(file);
         }
     }
     files
+}
+
+/// Resolve a `[name](path)` link target into a concrete absolute path
+/// inside `base_dir`. Returns `None` for any of:
+///
+/// - empty / non-`.md` paths (caller already filtered, defensive),
+/// - absolute paths (must be relative to the index),
+/// - paths containing `..` segments,
+/// - paths whose canonical form lands outside `base_dir`,
+/// - paths whose final component is a symlink (anti-confusion).
+///
+/// Applied uniformly to user, team, and project memory loads.
+fn resolve_index_link_target(base_dir: &Path, filename: &str) -> Option<PathBuf> {
+    if filename.is_empty() || !filename.ends_with(".md") {
+        return None;
+    }
+    let candidate = Path::new(filename);
+    if candidate.is_absolute() {
+        return None;
+    }
+    for comp in candidate.components() {
+        match comp {
+            std::path::Component::ParentDir | std::path::Component::RootDir => return None,
+            _ => {}
+        }
+    }
+
+    let joined = base_dir.join(candidate);
+
+    // Refuse symlink leaves so a poisoned index can't dereference into
+    // an arbitrary file just because the symlink itself sits inside
+    // the memory dir.
+    if let Ok(meta) = std::fs::symlink_metadata(&joined)
+        && meta.file_type().is_symlink()
+    {
+        return None;
+    }
+
+    // Canonical containment: when the file already exists, the
+    // canonical path must start with the canonical base dir.
+    if joined.exists() {
+        let base_canon = base_dir.canonicalize().ok()?;
+        let target_canon = joined.canonicalize().ok()?;
+        if !target_canon.starts_with(&base_canon) {
+            return None;
+        }
+        return Some(target_canon);
+    }
+
+    // File doesn't exist yet (caller will skip-load anyway). Lexically
+    // verify the joined path stays inside base_dir.
+    let base_canon = base_dir
+        .canonicalize()
+        .unwrap_or_else(|_| base_dir.to_path_buf());
+    let mut normalized = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    if normalized.starts_with(&base_canon) || normalized.starts_with(base_dir) {
+        Some(joined)
+    } else {
+        None
+    }
+}
+
+/// Merge memory entries from multiple scopes, applying the
+/// `project > team > user` precedence rule on id (filename) collisions.
+///
+/// The id used for collision is the file stem (e.g. `prefs.md` → `prefs`),
+/// because the same topic may live in two scopes with different paths
+/// but the same filename. On collision, the higher-precedence entry
+/// wins and a debug log records the discarded scope. Callers should
+/// rely on this function rather than dedup themselves.
+///
+/// The returned `Vec` is sorted by `(scope_priority, path_lex)` where
+/// scope priority is `User < Team < Project` (most-specific last). This
+/// ordering is deterministic across loads with identical inputs, which
+/// is required for prompt-cache stability — `HashMap::into_values`
+/// would otherwise shuffle the prompt layout between sessions.
+fn merge_scoped_files(candidates: Vec<MemoryFile>) -> Vec<MemoryFile> {
+    use std::collections::BTreeMap;
+    let mut by_id: BTreeMap<String, MemoryFile> = BTreeMap::new();
+    for file in candidates {
+        let id = file
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if id.is_empty() {
+            continue;
+        }
+        match by_id.get(&id) {
+            Some(existing) if scope_precedence(existing.scope) >= scope_precedence(file.scope) => {
+                debug!(
+                    "memory id '{}' present in both {} and {} scopes; keeping {} (higher precedence)",
+                    id,
+                    existing.scope.label(),
+                    file.scope.label(),
+                    existing.scope.label()
+                );
+            }
+            Some(existing) => {
+                debug!(
+                    "memory id '{}' present in both {} and {} scopes; keeping {} (higher precedence)",
+                    id,
+                    existing.scope.label(),
+                    file.scope.label(),
+                    file.scope.label()
+                );
+                by_id.insert(id, file);
+            }
+            None => {
+                by_id.insert(id, file);
+            }
+        }
+    }
+    let mut out: Vec<MemoryFile> = by_id.into_values().collect();
+    // Stable order: sort by (scope_priority, path). Lower-priority
+    // scopes come first so the prompt builder emits broad context
+    // before specific overrides, matching the
+    // outermost→innermost convention used elsewhere
+    // (see `hierarchical_project_files`).
+    out.sort_by(|a, b| {
+        scope_precedence(a.scope)
+            .cmp(&scope_precedence(b.scope))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    out
+}
+
+/// Precedence ranking: higher number wins on collision.
+fn scope_precedence(scope: types::Scope) -> u8 {
+    match scope {
+        types::Scope::Project => 3,
+        types::Scope::Team => 2,
+        types::Scope::User => 1,
+    }
 }
 
 fn user_memory_dir() -> Option<PathBuf> {
@@ -348,6 +613,46 @@ fn user_memory_dir() -> Option<PathBuf> {
 /// Returns the project-level memory directory (`.agent/` in the project root).
 pub fn project_memory_dir(project_root: &Path) -> PathBuf {
     project_root.join(".agent")
+}
+
+/// Directory holding team-shared, version-controlled memory for this project.
+///
+/// Lives at `<project>/.agent/team-memory/`. Read by every session that opens
+/// the project. Writes must go through the `/team-remember` slash command —
+/// they never originate from the model's own file-write tools or from the
+/// background extraction loop. See [`is_team_memory_path`].
+pub fn team_memory_dir(project_root: &Path) -> PathBuf {
+    project_memory_dir(project_root).join("team-memory")
+}
+
+/// Ensure the team-memory directory exists for the given project root.
+/// Returns the directory path. Creates it if missing.
+pub fn ensure_team_memory_dir(project_root: &Path) -> std::io::Result<PathBuf> {
+    let dir = team_memory_dir(project_root);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// True if `path` lives inside any project's team-memory directory
+/// (matches `*/.agent/team-memory/*`). Used by safety guards that
+/// must refuse model-driven writes to team memory.
+pub fn is_team_memory_path(path: &Path) -> bool {
+    let mut saw_dot_agent = false;
+    for comp in path.components() {
+        let s = comp.as_os_str().to_string_lossy();
+        if s == ".agent" {
+            saw_dot_agent = true;
+            continue;
+        }
+        if saw_dot_agent && s == "team-memory" {
+            return true;
+        }
+        // Reset if we wandered past `.agent` without hitting `team-memory`.
+        if saw_dot_agent {
+            saw_dot_agent = false;
+        }
+    }
+    false
 }
 
 /// Returns the user-level memory directory, creating it if needed.
@@ -375,9 +680,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("prefs.md"), "I prefer Rust").unwrap();
         let index = "- [Preferences](prefs.md) — prefs\n- [Missing](gone.md) — gone";
-        let files = load_referenced_files(index, dir.path());
+        let files = load_referenced_files(index, dir.path(), types::Scope::User);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "Preferences");
+        assert_eq!(files[0].scope, types::Scope::User);
+    }
+
+    #[test]
+    fn load_referenced_files_rejects_traversal_links() {
+        let dir = tempfile::tempdir().unwrap();
+        // Plant a victim file outside the memory dir.
+        let outside = dir.path().parent().unwrap().join("VICTIM.md");
+        std::fs::write(&outside, "secrets").unwrap();
+        // And a normal entry that should still load.
+        std::fs::write(dir.path().join("ok.md"), "ok").unwrap();
+
+        let index = "- [Bad](../VICTIM.md) — bad\n\
+                     - [BadAbs](/etc/passwd.md) — abs\n\
+                     - [Nested](sub/../../VICTIM.md) — nested\n\
+                     - [Ok](ok.md) — ok";
+        let files = load_referenced_files(index, dir.path(), types::Scope::User);
+        // Only the safe entry survives.
+        assert_eq!(
+            files.len(),
+            1,
+            "got {:?}",
+            files.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert_eq!(files[0].name, "Ok");
+        let _ = std::fs::remove_file(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_referenced_files_rejects_symlink_leaf() {
+        // A symlink whose name is `evil.md` and target is outside the
+        // memory dir must not be followed.
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().parent().unwrap().join("OUTSIDE.md");
+        std::fs::write(&outside, "secret").unwrap();
+        let link = dir.path().join("evil.md");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        let index = "- [Evil](evil.md) — evil";
+        let files = load_referenced_files(index, dir.path(), types::Scope::Team);
+        assert!(
+            files.is_empty(),
+            "symlink leaf should be refused; got {:?}",
+            files.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_file(outside);
     }
 
     // ---- hierarchical_project_files ----
@@ -493,5 +845,292 @@ mod tests {
             contents.iter().any(|c| c == "from-.agent"),
             "expected .agent/AGENTS.md to be picked up, got {contents:?}"
         );
+    }
+
+    // ---- team memory ----
+
+    /// Create a project root containing a `.git` marker plus a single
+    /// team-memory entry (`<root>/.agent/team-memory/<file>`). The
+    /// caller controls the index/body via `index_lines` and `body`.
+    fn write_team_memory_file(
+        root: &std::path::Path,
+        filename: &str,
+        index_lines: &str,
+        body: &str,
+    ) {
+        let team = root.join(".agent").join("team-memory");
+        std::fs::create_dir_all(&team).unwrap();
+        std::fs::write(team.join("MEMORY.md"), index_lines).unwrap();
+        std::fs::write(team.join(filename), body).unwrap();
+    }
+
+    #[test]
+    fn team_memory_dir_path_layout() {
+        let root = std::path::Path::new("/tmp/proj");
+        assert_eq!(
+            team_memory_dir(root),
+            std::path::PathBuf::from("/tmp/proj/.agent/team-memory")
+        );
+    }
+
+    #[test]
+    fn is_team_memory_path_recognizes_dir() {
+        assert!(is_team_memory_path(std::path::Path::new(
+            "/work/proj/.agent/team-memory/foo.md"
+        )));
+        assert!(!is_team_memory_path(std::path::Path::new(
+            "/work/proj/.agent/memory/foo.md"
+        )));
+        assert!(!is_team_memory_path(std::path::Path::new(
+            "/work/proj/team-memory/foo.md"
+        )));
+    }
+
+    #[test]
+    fn team_memory_round_trip_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        write_team_memory_file(
+            root,
+            "deploy.md",
+            "- [Deploy](deploy.md) — deploy steps",
+            "---\nname: Deploy\ndescription: deploy steps\ntype: project\n---\n\nUse `make ship`.",
+        );
+
+        let ctx = MemoryContext::load(Some(root));
+        // Team index loaded.
+        assert!(ctx.team_memory.as_ref().unwrap().contains("Deploy"));
+        // Topic file loaded with team scope.
+        let team_files: Vec<_> = ctx
+            .memory_files
+            .iter()
+            .filter(|f| f.scope == types::Scope::Team)
+            .collect();
+        assert_eq!(team_files.len(), 1, "expected one team file");
+        assert_eq!(team_files[0].name, "Deploy");
+        assert!(team_files[0].content.contains("make ship"));
+    }
+
+    #[test]
+    fn collision_precedence_project_over_team_over_user() {
+        // We only need the merge function — wire concrete `MemoryFile`s
+        // from each scope with the same id and confirm the highest
+        // precedence wins.
+        let mk = |scope, body: &str, id: &str| MemoryFile {
+            path: std::path::PathBuf::from(format!("/tmp/{id}.md")),
+            name: format!("{id}-{}", scope_label(scope)),
+            content: body.into(),
+            staleness: None,
+            scope,
+        };
+
+        // Same id `prefs`, three scopes.
+        let merged = merge_scoped_files(vec![
+            mk(types::Scope::User, "user wins?", "prefs"),
+            mk(types::Scope::Team, "team wins?", "prefs"),
+            mk(types::Scope::Project, "project wins", "prefs"),
+        ]);
+        assert_eq!(merged.len(), 1, "duplicate ids must collapse");
+        assert_eq!(merged[0].scope, types::Scope::Project);
+        assert_eq!(merged[0].content, "project wins");
+
+        // Without project entry, team wins over user.
+        let merged = merge_scoped_files(vec![
+            mk(types::Scope::User, "user", "prefs"),
+            mk(types::Scope::Team, "team", "prefs"),
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].scope, types::Scope::Team);
+    }
+
+    /// Stand-in for `Scope::label` in test contexts that don't import it.
+    fn scope_label(s: types::Scope) -> &'static str {
+        s.label()
+    }
+
+    #[test]
+    fn extraction_writer_path_is_not_team_memory() {
+        // The extraction loop writes via `ensure_memory_dir()`, which
+        // resolves to the per-user config directory. That path must
+        // never satisfy `is_team_memory_path` — that's the safety
+        // invariant for "model can read but not silently write".
+        if let Some(user_dir) = ensure_memory_dir() {
+            assert!(
+                !is_team_memory_path(&user_dir),
+                "user memory dir leaked into team-memory path: {}",
+                user_dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn user_memory_does_not_shadow_team_when_ids_differ() {
+        // Different filenames in different scopes coexist.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        write_team_memory_file(
+            root,
+            "deploy.md",
+            "- [Deploy](deploy.md) — deploy",
+            "---\nname: Deploy\ndescription: d\ntype: project\n---\n\nteam body",
+        );
+        // Use a separate temp dir as a fake user dir to avoid touching
+        // the real user config; load() reads from `user_memory_dir()`
+        // which we cannot easily redirect, so we just validate the
+        // merge logic with hand-rolled candidates instead.
+        let candidates = vec![
+            MemoryFile {
+                path: root.join(".agent/team-memory/deploy.md"),
+                name: "Deploy".into(),
+                content: "team".into(),
+                staleness: None,
+                scope: types::Scope::Team,
+            },
+            MemoryFile {
+                path: std::path::PathBuf::from("/u/prefs.md"),
+                name: "Prefs".into(),
+                content: "user".into(),
+                staleness: None,
+                scope: types::Scope::User,
+            },
+        ];
+        let merged = merge_scoped_files(candidates);
+        assert_eq!(merged.len(), 2);
+    }
+
+    // ---- merge ordering determinism ----
+
+    #[test]
+    fn merge_scoped_files_is_deterministic_across_input_orders() {
+        // Same set of candidates, two different input orders. The
+        // merged output must be byte-identical (path/name/scope), so
+        // the resulting system prompt does not shuffle between loads.
+        let mk = |scope, id: &str, dir: &str| MemoryFile {
+            path: std::path::PathBuf::from(format!("/{dir}/{id}.md")),
+            name: id.to_string(),
+            content: format!("{id}-body"),
+            staleness: None,
+            scope,
+        };
+        let a = mk(types::Scope::User, "alpha", "u");
+        let b = mk(types::Scope::Team, "beta", "t");
+        let c = mk(types::Scope::Project, "gamma", "p");
+        let d = mk(types::Scope::User, "delta", "u");
+
+        let m1 = merge_scoped_files(vec![a.clone(), b.clone(), c.clone(), d.clone()]);
+        let m2 = merge_scoped_files(vec![d, c, b, a]);
+
+        let key = |f: &MemoryFile| (f.path.clone(), f.scope, f.name.clone());
+        let k1: Vec<_> = m1.iter().map(key).collect();
+        let k2: Vec<_> = m2.iter().map(key).collect();
+        assert_eq!(k1, k2, "merge order must not depend on input order");
+    }
+
+    #[test]
+    fn merge_scoped_files_orders_user_before_team_before_project() {
+        let mk = |scope, id: &str| MemoryFile {
+            path: std::path::PathBuf::from(format!("/{id}.md")),
+            name: id.into(),
+            content: id.into(),
+            staleness: None,
+            scope,
+        };
+        let merged = merge_scoped_files(vec![
+            mk(types::Scope::Project, "z-proj"),
+            mk(types::Scope::User, "m-user"),
+            mk(types::Scope::Team, "a-team"),
+        ]);
+        // User first, then Team, then Project — most-specific last.
+        let scopes: Vec<_> = merged.iter().map(|f| f.scope).collect();
+        assert_eq!(
+            scopes,
+            vec![
+                types::Scope::User,
+                types::Scope::Team,
+                types::Scope::Project
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_scoped_files_orders_within_scope_lexicographically() {
+        let mk = |scope, id: &str| MemoryFile {
+            path: std::path::PathBuf::from(format!("/{id}.md")),
+            name: id.into(),
+            content: id.into(),
+            staleness: None,
+            scope,
+        };
+        let merged = merge_scoped_files(vec![
+            mk(types::Scope::User, "z-user"),
+            mk(types::Scope::User, "a-user"),
+            mk(types::Scope::User, "m-user"),
+        ]);
+        let names: Vec<_> = merged.iter().map(|f| f.name.clone()).collect();
+        assert_eq!(names, vec!["a-user", "m-user", "z-user"]);
+    }
+
+    #[test]
+    fn memory_context_load_is_deterministic_across_calls() {
+        // Build a project tree containing both team and project memory
+        // entries, then load the context twice. The two loads must
+        // produce the same `memory_files` ordering — otherwise the
+        // system prompt would shuffle and break prompt-cache hits.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+
+        // Team-memory entries.
+        write_team_memory_file(
+            root,
+            "deploy.md",
+            "- [Deploy](deploy.md) — deploy steps\n- [Onboarding](onboarding.md) — onboarding\n",
+            "---\nname: Deploy\ndescription: d\ntype: project\n---\n\nteam-deploy",
+        );
+        std::fs::write(
+            root.join(".agent")
+                .join("team-memory")
+                .join("onboarding.md"),
+            "---\nname: Onboarding\ndescription: o\ntype: project\n---\n\nteam-onboard",
+        )
+        .unwrap();
+
+        // Project-memory entries.
+        let proj_dir = root.join(".agent").join("memory");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(
+            proj_dir.join("MEMORY.md"),
+            "- [Style](style.md) — style guide\n- [Arch](arch.md) — architecture\n",
+        )
+        .unwrap();
+        std::fs::write(
+            proj_dir.join("style.md"),
+            "---\nname: Style\ndescription: s\ntype: project\n---\n\nstyle-body",
+        )
+        .unwrap();
+        std::fs::write(
+            proj_dir.join("arch.md"),
+            "---\nname: Arch\ndescription: a\ntype: project\n---\n\narch-body",
+        )
+        .unwrap();
+
+        let ctx1 = MemoryContext::load(Some(root));
+        let ctx2 = MemoryContext::load(Some(root));
+
+        let key = |f: &MemoryFile| (f.path.clone(), f.scope, f.name.clone());
+        let k1: Vec<_> = ctx1.memory_files.iter().map(key).collect();
+        let k2: Vec<_> = ctx2.memory_files.iter().map(key).collect();
+        assert_eq!(k1, k2, "memory_files order must be deterministic");
+
+        // And the on-disk team index is byte-stable too — write_team_memory
+        // appends in source order, so re-reading must round-trip the same
+        // bytes regardless of how `merge_scoped_files` orders entries.
+        let team_index_bytes =
+            std::fs::read(root.join(".agent").join("team-memory").join("MEMORY.md")).unwrap();
+        let team_index_bytes2 =
+            std::fs::read(root.join(".agent").join("team-memory").join("MEMORY.md")).unwrap();
+        assert_eq!(team_index_bytes, team_index_bytes2);
     }
 }

@@ -587,7 +587,8 @@ async fn main() -> anyhow::Result<()> {
         config.permissions.allowed_tools.clone(),
         config.permissions.disallowed_tools.clone(),
     ));
-    let permission_checker = PermissionChecker::from_config(&config.permissions);
+    let permission_checker = PermissionChecker::from_config(&config.permissions)
+        .with_project_root(session_env.project_root.clone());
     let app_state = AppState::new(config.clone());
 
     // Connect configured MCP servers and register their tools.

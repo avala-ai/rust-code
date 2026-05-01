@@ -415,6 +415,13 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "team-remember",
+        aliases: &["team-memory"],
+        description: "Add an entry to project team-memory \
+                      (subcommands: list, remove <name>; flag: --force)",
+        hidden: false,
+    },
+    Command {
         name: "break-cache",
         aliases: &[],
         description: "Force the next request to skip the prompt cache",
@@ -899,8 +906,21 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                 if memory.project_context.is_some() {
                     println!("Project context: loaded");
                 }
+                if memory.team_memory.is_some() {
+                    let team_count = memory
+                        .memory_files
+                        .iter()
+                        .filter(|f| f.scope == agent_code_lib::memory::types::Scope::Team)
+                        .count();
+                    println!("Team memory: loaded ({team_count} files)");
+                }
                 if memory.user_memory.is_some() {
-                    println!("User memory: loaded ({} files)", memory.memory_files.len());
+                    let user_count = memory
+                        .memory_files
+                        .iter()
+                        .filter(|f| f.scope == agent_code_lib::memory::types::Scope::User)
+                        .count();
+                    println!("User memory: loaded ({user_count} files)");
                 }
             }
             CommandResult::Handled
@@ -2161,6 +2181,11 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             execute_btw(args);
             CommandResult::Handled
         }
+        Some("team-remember") => {
+            let cwd = engine.state().cwd.clone();
+            execute_team_remember(args, std::path::Path::new(&cwd));
+            CommandResult::Handled
+        }
         Some("break-cache") => {
             if engine.state().break_cache_next {
                 println!("Cache bust already armed for the next request.");
@@ -2999,12 +3024,207 @@ fn execute_btw(args: Option<&str>) {
         name: name.clone(),
         description,
         memory_type: Some(agent_code_lib::memory::types::MemoryType::User),
+        author: None,
+        created_at: None,
     };
 
     match agent_code_lib::memory::writer::write_memory(&dir, &filename, &meta, text) {
         Ok(path) => println!("Noted. Saved to {}", path.display()),
         Err(e) => eprintln!("Failed to save note: {e}"),
     }
+}
+
+/// Execute the `/team-remember` command.
+///
+/// Subcommands:
+///   `/team-remember list`              List current team-memory entries.
+///   `/team-remember remove <name>`     Remove an entry.
+///   `/team-remember <text> [--force]`  Add a new entry. Prompts for
+///                                      confirmation since the file
+///                                      enters version control.
+fn execute_team_remember(args: Option<&str>, cwd: &std::path::Path) {
+    let raw = args.map(|s| s.trim()).unwrap_or("");
+    if raw.is_empty() {
+        println!(
+            "Usage:\n  /team-remember <text> [--force]\n  /team-remember list\n  \
+             /team-remember remove <name>"
+        );
+        return;
+    }
+
+    // Project root resolution: walk up to the nearest `.git` ancestor;
+    // fall back to cwd if there is none.
+    let project_root = nearest_git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+
+    let (subcmd, sub_rest) = raw
+        .split_once(char::is_whitespace)
+        .map(|(a, b)| (a.trim(), b.trim()))
+        .unwrap_or((raw, ""));
+
+    match subcmd {
+        "list" => team_remember_list(&project_root),
+        "remove" | "rm" | "delete" => {
+            if sub_rest.is_empty() {
+                println!("Usage: /team-remember remove <name>");
+                return;
+            }
+            team_remember_remove(&project_root, sub_rest);
+        }
+        _ => {
+            // Default: add a new entry. The full text minus any
+            // trailing `--force` flag becomes the body.
+            let (text, force) = strip_force_flag(raw);
+            team_remember_add(&project_root, text.trim(), force);
+        }
+    }
+}
+
+fn team_remember_list(project_root: &std::path::Path) {
+    let dir = agent_code_lib::memory::team_memory_dir(project_root);
+    if !dir.is_dir() {
+        println!("No team-memory directory at {}", dir.display());
+        return;
+    }
+    let names = agent_code_lib::memory::writer::list_team_memory(&dir);
+    if names.is_empty() {
+        println!("No team-memory entries.");
+    } else {
+        println!("Team memory ({}):", dir.display());
+        for n in names {
+            println!("  - {n}");
+        }
+    }
+}
+
+fn team_remember_remove(project_root: &std::path::Path, name: &str) {
+    let dir = agent_code_lib::memory::team_memory_dir(project_root);
+    if !dir.is_dir() {
+        eprintln!("No team-memory directory at {}", dir.display());
+        return;
+    }
+    match agent_code_lib::memory::writer::delete_team_memory(&dir, name) {
+        Ok(()) => println!("Removed team-memory entry '{name}'."),
+        Err(e) => eprintln!("Failed to remove '{name}': {e}"),
+    }
+}
+
+fn team_remember_add(project_root: &std::path::Path, text: &str, force: bool) {
+    if text.is_empty() {
+        println!("Usage: /team-remember <text> [--force]");
+        return;
+    }
+
+    let stamp_compact = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let slug = slugify_note(text);
+    // Slugs that collide with the index file (`memory`, `readme`) or
+    // Windows device names (`con`, `nul`, etc.) get the timestamped
+    // fallback so the filename is always valid on every filesystem.
+    let filename = if slug.is_empty() || is_reserved_team_slug(&slug) {
+        format!("team-{stamp_compact}.md")
+    } else {
+        format!("{slug}.md")
+    };
+
+    let dir = agent_code_lib::memory::team_memory_dir(project_root);
+    let target = dir.join(&filename);
+
+    println!(
+        "About to write team-memory entry to:\n  {}\n\
+         This file enters version control and will be visible to every \
+         session that opens this project.",
+        target.display()
+    );
+    if !confirm_yes_no("Proceed?") {
+        println!("Cancelled.");
+        return;
+    }
+
+    let description = truncate_to_words(text, 120);
+    let name = slug.clone();
+    let display_name = if name.is_empty() {
+        format!("Team note ({stamp_compact})")
+    } else {
+        name
+    };
+    let author = git_user_email().unwrap_or_else(|| "unknown".to_string());
+    let created_at = chrono::Utc::now().to_rfc3339();
+
+    let meta = agent_code_lib::memory::types::MemoryMeta {
+        name: display_name,
+        description,
+        memory_type: Some(agent_code_lib::memory::types::MemoryType::Project),
+        author: Some(author),
+        created_at: Some(created_at),
+    };
+
+    match agent_code_lib::memory::writer::write_team_memory(&dir, &filename, &meta, text, force) {
+        Ok(path) => println!("Saved team-memory entry to {}", path.display()),
+        Err(e) => eprintln!("Failed: {e}"),
+    }
+}
+
+/// Strip a trailing `--force` flag from the input string.
+/// Returns (cleaned_text, force_flag).
+fn strip_force_flag(input: &str) -> (String, bool) {
+    let trimmed = input.trim();
+    if let Some(stripped) = trimmed.strip_suffix("--force") {
+        (stripped.trim_end().to_string(), true)
+    } else if let Some(stripped) = trimmed.strip_prefix("--force") {
+        (stripped.trim_start().to_string(), true)
+    } else {
+        (trimmed.to_string(), false)
+    }
+}
+
+/// Yes/no prompt, default no. Returns true on `y` / `yes`.
+fn confirm_yes_no(prompt: &str) -> bool {
+    use std::io::Write;
+    print!("{prompt} [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+/// Walk up from `start` looking for the nearest ancestor that contains
+/// a `.git` directory or file. Returns `None` if none is found.
+fn nearest_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    for dir in start.ancestors() {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+    }
+    None
+}
+
+/// Read `git config user.email` if available. Used as the `author`
+/// stamp on team-memory writes; defaults to "unknown" when absent.
+fn git_user_email() -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["config", "user.email"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// True when a slug would collide with a reserved name on a
+/// case-folding filesystem or a Windows checkout. The team-memory
+/// writer would refuse the resulting filename — we catch it earlier
+/// so the user gets a timestamped fallback instead of an error.
+fn is_reserved_team_slug(slug: &str) -> bool {
+    const RESERVED: &[&str] = &[
+        "memory", "readme", "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5",
+        "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7",
+        "lpt8", "lpt9",
+    ];
+    let lower = slug.to_ascii_lowercase();
+    RESERVED.iter().any(|r| *r == lower)
 }
 
 /// Slugify a note for use in a filename (ASCII lowercase, hyphen-separated,
@@ -6691,5 +6911,24 @@ mod tests {
         let out = format_task_list(&tasks, now);
         assert!(out.contains("first-line"));
         assert!(!out.contains("second-line"));
+    }
+
+    #[test]
+    fn is_reserved_team_slug_catches_index_and_devices() {
+        // Index-name collisions on case-folding filesystems.
+        assert!(super::is_reserved_team_slug("memory"));
+        assert!(super::is_reserved_team_slug("Memory"));
+        assert!(super::is_reserved_team_slug("MEMORY"));
+        assert!(super::is_reserved_team_slug("readme"));
+        // Windows device names.
+        assert!(super::is_reserved_team_slug("con"));
+        assert!(super::is_reserved_team_slug("CON"));
+        assert!(super::is_reserved_team_slug("nul"));
+        assert!(super::is_reserved_team_slug("com1"));
+        assert!(super::is_reserved_team_slug("LPT9"));
+        // Lookalikes pass through.
+        assert!(!super::is_reserved_team_slug("console"));
+        assert!(!super::is_reserved_team_slug("memorize"));
+        assert!(!super::is_reserved_team_slug("deploy"));
     }
 }
