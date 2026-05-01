@@ -33,6 +33,13 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Default permission mode applied when we have no existing file to
+/// copy mode bits from. Settings files routinely contain API keys, so
+/// the safer default is owner-read/write only — matching what tools
+/// like ssh use for key files. POSIX-only; ignored on Windows.
+#[cfg(unix)]
+const DEFAULT_SETTINGS_MODE: u32 = 0o600;
+
 mod v0_to_v1;
 mod v1_to_v2;
 
@@ -276,8 +283,14 @@ pub fn load_and_migrate_with(
         // the snapshot we took into `.bak.1` with rotation. If the
         // archive step fails the live file is already up-to-date — we
         // surface the error but the caller's data is not lost.
-        atomic_write_json(path, &value)?;
-        let backup_path = rotate_backups_and_archive(path, &raw)?;
+        //
+        // Capture the live file's permission mode *before* the rewrite
+        // so we can apply it to both the rewritten live file and the
+        // archived `.bak.1` — preserves a 0600 secrets file's mode
+        // instead of letting umask widen it to 0644.
+        let mode = PreservedMode::capture(path);
+        atomic_write_bytes(path, &serialize_pretty_json(&value)?, true, mode)?;
+        let backup_path = rotate_backups_and_archive(path, &raw, mode)?;
         MigrationOutcome {
             from_version,
             to_version,
@@ -289,6 +302,14 @@ pub fn load_and_migrate_with(
     Ok((value, outcome))
 }
 
+/// Serialize a JSON value as pretty-printed bytes for an atomic write.
+/// Tiny helper kept separate from [`atomic_write_bytes`] so the byte
+/// payload and the captured permission mode can be passed alongside
+/// each other.
+fn serialize_pretty_json(value: &serde_json::Value) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(value).context("serializing migrated settings")
+}
+
 /// Rotate `.bak.1` → `.bak.2`, etc., dropping anything past
 /// [`MAX_BACKUPS`], then write the supplied pre-migration bytes to
 /// `.bak.1`. Returns the path to the freshly-written `.bak.1`.
@@ -297,7 +318,15 @@ pub fn load_and_migrate_with(
 /// place. The rotation is not itself atomic across slots; a crash
 /// mid-rotation would leave the chain re-numbered but the live file
 /// already correctly migrated, which is the failure mode we prefer.
-fn rotate_backups_and_archive(path: &Path, original_contents: &str) -> Result<PathBuf> {
+///
+/// `mode` is the permission mode to apply to the freshly-written
+/// `.bak.1` on Unix — the same mode bits we capture from the live
+/// file so backups don't widen access on a 0600 secrets file.
+fn rotate_backups_and_archive(
+    path: &Path,
+    original_contents: &str,
+    mode: PreservedMode,
+) -> Result<PathBuf> {
     // Drop the oldest slot if it exists. Ignore "not found" — first run
     // won't have any backups yet.
     let oldest = backup_path(path, MAX_BACKUPS);
@@ -317,9 +346,12 @@ fn rotate_backups_and_archive(path: &Path, original_contents: &str) -> Result<Pa
         }
     }
 
-    // Write the pre-migration contents into .bak.1.
+    // Write the pre-migration contents into .bak.1, going through the
+    // same atomic-write helper as the live file so the backup also
+    // gets unguessable temp-file naming, mode preservation, and a
+    // robust rename across platforms.
     let bak1 = backup_path(path, 1);
-    fs::write(&bak1, original_contents)
+    atomic_write_bytes(&bak1, original_contents.as_bytes(), false, mode)
         .with_context(|| format!("writing backup {}", bak1.display()))?;
     Ok(bak1)
 }
@@ -342,48 +374,175 @@ pub fn backup_path(path: &Path, n: usize) -> PathBuf {
     out
 }
 
-/// Serialize `value` as pretty JSON to `<path>.tmp`, fsync it, then
-/// rename over `path`. Any error before the rename leaves the original
-/// `path` untouched.
-fn atomic_write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
-    let bytes = serde_json::to_vec_pretty(value).context("serializing migrated settings")?;
-    atomic_write_bytes(path, &bytes, true)
+/// Permission mode captured from a pre-existing live file (or
+/// defaulted to a secrets-safe value when no file exists yet). On
+/// Windows this only tracks the read-only flag; POSIX mode bits have
+/// no Windows equivalent worth round-tripping.
+#[derive(Debug, Clone, Copy)]
+struct PreservedMode {
+    /// POSIX mode (e.g. `0o600`). Only meaningful on Unix; on Windows
+    /// this is ignored at apply time.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    unix_mode: u32,
+    /// Windows read-only flag, captured from the existing file's
+    /// permissions if any. POSIX-mode is not mappable on Windows, so
+    /// we preserve the closest-fit attribute instead.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    windows_readonly: bool,
 }
 
-/// Atomically replace `path` with `bytes`. Writes to `<path>.tmp`,
-/// fsyncs, then renames over `path`. Any error before the rename
-/// leaves the original `path` untouched.
+impl PreservedMode {
+    /// Capture mode from an existing file, falling back to a
+    /// secrets-safe default when the file doesn't exist yet.
+    fn capture(path: &Path) -> Self {
+        match fs::metadata(path) {
+            Ok(meta) => {
+                let perms = meta.permissions();
+                #[cfg(unix)]
+                let unix_mode = {
+                    use std::os::unix::fs::PermissionsExt;
+                    perms.mode()
+                };
+                #[cfg(not(unix))]
+                let unix_mode = 0;
+                Self {
+                    unix_mode,
+                    windows_readonly: perms.readonly(),
+                }
+            }
+            Err(_) => Self::default_for_secrets(),
+        }
+    }
+
+    /// Default for a file that does not exist yet. Settings files
+    /// routinely contain API keys, so the safer default is
+    /// owner-read/write only on Unix and not-readonly on Windows.
+    fn default_for_secrets() -> Self {
+        Self {
+            #[cfg(unix)]
+            unix_mode: DEFAULT_SETTINGS_MODE,
+            #[cfg(not(unix))]
+            unix_mode: 0,
+            windows_readonly: false,
+        }
+    }
+
+    /// Apply the captured mode to `target`. POSIX mode bits are
+    /// applied verbatim on Unix; on Windows we only preserve the
+    /// read-only flag (POSIX modes have no faithful Windows
+    /// equivalent).
+    fn apply(self, target: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::Permissions::from_mode(self.unix_mode);
+            fs::set_permissions(target, perms).with_context(|| {
+                format!(
+                    "setting permissions {:o} on {}",
+                    self.unix_mode,
+                    target.display()
+                )
+            })?;
+        }
+        #[cfg(windows)]
+        {
+            let mut perms = fs::metadata(target)
+                .with_context(|| format!("reading permissions for {}", target.display()))?
+                .permissions();
+            if perms.readonly() != self.windows_readonly {
+                perms.set_readonly(self.windows_readonly);
+                fs::set_permissions(target, perms)
+                    .with_context(|| format!("setting permissions on {}", target.display()))?;
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = target;
+        }
+        Ok(())
+    }
+}
+
+/// Atomically replace `path` with `bytes`.
+///
+/// Implementation:
+///
+/// - Writes to a randomly-named temp file in the same directory as
+///   `path` (via `tempfile::NamedTempFile::new_in`), so a pre-planted
+///   symlink at a deterministic `<path>.tmp` cannot get truncated.
+/// - Applies the supplied permission mode (e.g. `0o600`) to the temp
+///   file before writing — preserves an existing 0600 secrets file's
+///   restrictive mode instead of letting umask widen it to 0644.
+/// - Fsyncs the temp file before persisting.
+/// - Uses `NamedTempFile::persist`, which on Windows uses
+///   `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` so renaming over
+///   an existing destination works.
+/// - On POSIX, fsyncs the parent directory after the rename so the
+///   directory entry is durable across power loss. Skipped on Windows
+///   (no equivalent — `MoveFileExW` already handles durability).
 ///
 /// `append_newline` controls whether a trailing newline is appended to
 /// the written body (matches existing JSON-write behavior; useful for
 /// TOML callers that already produce a trailing newline themselves).
-fn atomic_write_bytes(path: &Path, bytes: &[u8], append_newline: bool) -> Result<()> {
-    let mut tmp = path.to_path_buf();
-    let mut tmp_name = tmp
-        .file_name()
-        .map(|s| s.to_os_string())
-        .unwrap_or_default();
-    tmp_name.push(".tmp");
-    tmp.set_file_name(tmp_name);
+fn atomic_write_bytes(
+    path: &Path,
+    bytes: &[u8],
+    append_newline: bool,
+    mode: PreservedMode,
+) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    // Unguessable temp-file path: tempfile generates a random suffix
+    // and refuses pre-existing files, defeating planted-symlink
+    // truncation on the deterministic `<path>.tmp` slot.
+    let mut named = tempfile::NamedTempFile::new_in(&parent)
+        .with_context(|| format!("creating temp file in {}", parent.display()))?;
+
+    // Apply the captured mode *before* writing secrets, so the file
+    // is never even briefly readable by other users.
+    mode.apply(named.path())?;
 
     {
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)
-            .with_context(|| format!("opening temp file {}", tmp.display()))?;
+        let tmp_path_display = named.path().display().to_string();
+        let f = named.as_file_mut();
         f.write_all(bytes)
-            .with_context(|| format!("writing temp file {}", tmp.display()))?;
+            .with_context(|| format!("writing temp file {tmp_path_display}"))?;
         if append_newline {
             f.write_all(b"\n").ok();
         }
         f.sync_all()
-            .with_context(|| format!("fsyncing temp file {}", tmp.display()))?;
+            .with_context(|| format!("fsyncing temp file {tmp_path_display}"))?;
     }
 
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming temp file {} → {}", tmp.display(), path.display()))?;
+    // Persist atomically over the live path. On Windows this uses
+    // ReplaceFile/MoveFileExW under the hood, so renaming over an
+    // existing target works (unlike `std::fs::rename` on Windows).
+    named.persist(path).map_err(|e| {
+        anyhow!(
+            "renaming temp file {} → {}: {}",
+            e.file.path().display(),
+            path.display(),
+            e.error
+        )
+    })?;
+
+    // POSIX: fsync the parent directory so the rename's directory
+    // entry survives a crash. Windows has no equivalent and the
+    // ReplaceFile path already provides durability.
+    #[cfg(unix)]
+    {
+        if let Ok(dir) = fs::File::open(&parent) {
+            // sync_all on a directory may fail on some unusual
+            // filesystems; downgrade to a best-effort step rather
+            // than failing the whole migration.
+            let _ = dir.sync_all();
+        }
+    }
+
     Ok(())
 }
 
@@ -445,8 +604,9 @@ pub fn load_and_migrate_toml_with(
             .context("serializing migrated settings as TOML")?
             .into_bytes();
         // toml::to_string_pretty already emits a trailing newline.
-        atomic_write_bytes(path, &bytes, false)?;
-        let backup_path = rotate_backups_and_archive(path, &raw)?;
+        let mode = PreservedMode::capture(path);
+        atomic_write_bytes(path, &bytes, false, mode)?;
+        let backup_path = rotate_backups_and_archive(path, &raw, mode)?;
         MigrationOutcome {
             from_version,
             to_version,

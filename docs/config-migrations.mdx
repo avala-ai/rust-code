@@ -177,6 +177,40 @@ pub struct MigrationOutcome {
 Useful for one-line startup logs like
 `migrated settings from v0 to v2 (backup at settings.json.bak.1)`.
 
+## Caveats
+
+### Comments and formatting are dropped on first rewrite
+
+The first time a pre-versioned settings file is loaded the runner
+parses the TOML, runs the migration chain, and re-serializes the
+upgraded value back to disk. The `toml` crate's serializer emits
+canonical output: it does **not** preserve comments, blank lines, or
+key ordering from the original file. After the first migration, your
+hand-written comments and grouping are gone — the on-disk file
+matches the tool's pretty-printed shape.
+
+If you keep editorial comments inside `settings.toml`, expect to
+re-add them after a release that bumps `CURRENT_SCHEMA_VERSION`. The
+pre-migration bytes are archived to `<settings>.bak.1` so you can
+copy comments back from there.
+
+This matches the existing `Config` loader, which already strips
+comments on every read-merge-write cycle, so this isn't new behavior
+— it just becomes visible the first time a migration runs.
+
+### TOML datetimes round-trip as strings
+
+Migrations are pure functions over `serde_json::Value`. The runner
+converts TOML to JSON before calling the chain and back to TOML
+after. JSON has no datetime type, so any TOML `datetime`,
+`local-date`, or `local-time` value is serialized to its RFC 3339
+string form on the way in and remains a string on the way out.
+
+No shipping field uses a datetime today, so this is documented but
+not triggered. If a future migration needs to round-trip a datetime,
+declare the field as a string in the schema first or extend the
+runner's TOML/JSON conversion.
+
 ## Recovering from a botched migration
 
 The `.bak.1` slot always contains the bytes that were on disk

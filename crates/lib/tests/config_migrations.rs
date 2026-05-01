@@ -545,3 +545,93 @@ fn config_load_runs_migrations_against_project_settings_toml() {
     let bak1 = fs::read_to_string(backup_path(&settings, 1)).unwrap();
     assert!(bak1.contains("token = \"sk-from-token-field\""));
 }
+
+// ---- Permission-mode preservation (POSIX-only) ----
+
+/// A pre-existing 0600 settings file must keep its 0600 mode after a
+/// migration rewrite — losing the restrictive mode would leak API
+/// keys to anyone with read access on the directory.
+#[cfg(unix)]
+#[test]
+fn migration_preserves_existing_0600_permissions_on_rewrite() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.toml");
+    fs::write(&path, "[api]\nmodel = \"legacy\"\ntoken = \"sk-secret\"\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let (_value, outcome) = load_and_migrate_toml(&path).expect("migrate succeeds");
+    assert!(outcome.rewrote);
+
+    let mode_after = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode_after, 0o600,
+        "rewritten live file should keep its restrictive 0600 mode"
+    );
+
+    // Backup must also be 0600 — otherwise the rotation step turns
+    // every old secrets file into a world-readable artifact.
+    let bak1 = backup_path(&path, 1);
+    let bak_mode = fs::metadata(&bak1).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        bak_mode, 0o600,
+        ".bak.1 should inherit the live file's mode"
+    );
+}
+
+/// When the live file already exists with 0644, the runner should
+/// preserve that too — we mirror what we found, not force 0600.
+#[cfg(unix)]
+#[test]
+fn migration_preserves_existing_0644_permissions_on_rewrite() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.toml");
+    fs::write(&path, "[api]\nmodel = \"legacy\"\ntoken = \"sk-x\"\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let _ = load_and_migrate_toml(&path).expect("migrate succeeds");
+    let mode_after = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode_after, 0o644, "rewritten live file should keep 0644");
+}
+
+/// A pre-planted symlink at the deterministic `<path>.tmp` slot must
+/// not be followed and truncated — the runner uses an unguessable
+/// temp-file name in the same directory instead.
+#[cfg(unix)]
+#[test]
+fn migration_does_not_truncate_pre_planted_tmp_symlink() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.toml");
+    fs::write(&path, "[api]\nmodel = \"legacy\"\ntoken = \"sk-x\"\n").unwrap();
+
+    // Plant a "victim" file the symlink will dangle to, with known
+    // contents we'll assert remain intact.
+    let victim = tmp.path().join("victim.secret");
+    let victim_body = "important-do-not-truncate";
+    fs::write(&victim, victim_body).unwrap();
+
+    let planted_tmp = path.with_file_name("settings.toml.tmp");
+    std::os::unix::fs::symlink(&victim, &planted_tmp).unwrap();
+
+    let _ = load_and_migrate_toml(&path).expect("migrate succeeds despite planted symlink");
+
+    // Victim is byte-identical — old code would have truncated it
+    // when opening `<path>.tmp` for write with O_TRUNC.
+    let victim_after = fs::read_to_string(&victim).unwrap();
+    assert_eq!(
+        victim_after, victim_body,
+        "planted symlink target must not be truncated"
+    );
+
+    // The symlink itself can either survive or be removed by the
+    // runner; what matters is that the victim is intact and the
+    // live file is correctly migrated.
+    let live: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        live.get("schema_version").and_then(|v| v.as_integer()),
+        Some(i64::from(CURRENT_SCHEMA_VERSION))
+    );
+}
