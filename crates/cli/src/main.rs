@@ -34,10 +34,22 @@ use std::sync::Arc;
 
 use agent_code_lib::config::{ApiAuthMode, Config};
 use agent_code_lib::llm::provider::{ProviderKind, WireFormat, detect_provider};
+use agent_code_lib::output_styles::AgentKind;
 use agent_code_lib::permissions::PermissionChecker;
 use agent_code_lib::query::QueryEngine;
 use agent_code_lib::state::AppState;
 use agent_code_lib::tools::registry::ToolRegistry;
+
+/// Detect whether this process was spawned as a child by the parent's
+/// `Agent` tool. The Agent tool sets `AGENT_CODE_SUBAGENT=1` in the
+/// child's environment so the child knows to filter output styles whose
+/// `applies_to` excludes the `subagent` role.
+fn detect_agent_kind() -> AgentKind {
+    match std::env::var("AGENT_CODE_SUBAGENT") {
+        Ok(v) if !v.is_empty() && v != "0" => AgentKind::Subagent,
+        _ => AgentKind::Main,
+    }
+}
 
 /// AI-powered coding agent for the terminal.
 #[derive(Parser, Debug)]
@@ -453,10 +465,24 @@ async fn main() -> anyhow::Result<()> {
         config.api.auth_mode = auth_mode;
     }
 
+    // `--dump-system-prompt` is a diagnostic that builds the prompt
+    // from tools+state without contacting any LLM, so it must not
+    // require an API key. CI environments and the e2e test in
+    // `output_styles_subagent.rs` strip all key env vars precisely
+    // because none should be necessary on this path. Fall through
+    // with an empty placeholder so provider construction below still
+    // type-checks; the provider is never used before the early
+    // return at the `dump_system_prompt` branch.
     let api_key = if config.api.auth_mode == ApiAuthMode::ApiKey {
-        Some(config.api.api_key.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("API key required. Set AGENT_CODE_API_KEY or pass --api-key.")
-        })?)
+        if let Some(key) = config.api.api_key.as_deref() {
+            Some(key)
+        } else if cli.dump_system_prompt {
+            Some("")
+        } else {
+            return Err(anyhow::anyhow!(
+                "API key required. Set AGENT_CODE_API_KEY or pass --api-key."
+            ));
+        }
     } else {
         None
     };
@@ -589,7 +615,34 @@ async fn main() -> anyhow::Result<()> {
     ));
     let permission_checker = PermissionChecker::from_config(&config.permissions)
         .with_project_root(session_env.project_root.clone());
-    let app_state = AppState::new(config.clone());
+    let mut app_state = AppState::new(config.clone());
+
+    // Subagents spawned by the parent's `Agent` tool inherit the
+    // parent's active disk-loaded output style via
+    // `AGENT_CODE_DISK_OUTPUT_STYLE`. Resolve the named style against
+    // this child's own loaded registry. If the style is missing (e.g.
+    // the parent had a project-level style but this subagent is in a
+    // worktree without the file), log a warning and continue with no
+    // override — never crash the child for a style mismatch.
+    if let Ok(name) = std::env::var("AGENT_CODE_DISK_OUTPUT_STYLE") {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            let project_root = session_env.project_root.clone();
+            let registry =
+                agent_code_lib::output_styles::OutputStyleRegistry::load_all(Some(&project_root));
+            match registry.find(trimmed) {
+                Some(style) => {
+                    app_state.disk_output_style = Some(style.clone());
+                }
+                None => {
+                    tracing::warn!(
+                        "AGENT_CODE_DISK_OUTPUT_STYLE='{trimmed}' is not a known output style; \
+                         continuing with no override"
+                    );
+                }
+            }
+        }
+    }
 
     // Connect configured MCP servers and register their tools.
     for (name, entry) in &config.mcp_servers {
@@ -633,8 +686,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let agent_kind = detect_agent_kind();
+
     if cli.dump_system_prompt {
-        let prompt = agent_code_lib::query::build_system_prompt(&tool_registry, &app_state);
+        let prompt =
+            agent_code_lib::query::build_system_prompt(&tool_registry, &app_state, agent_kind);
         println!("{prompt}");
         return Ok(());
     }
@@ -651,6 +707,7 @@ async fn main() -> anyhow::Result<()> {
             max_turns: cli.max_turns,
             verbose: cli.verbose,
             unattended: cli.prompt.is_some(),
+            agent_kind,
         },
     );
 

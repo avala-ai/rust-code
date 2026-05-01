@@ -25,6 +25,7 @@ use crate::hooks::{HookEvent, HookRegistry};
 use crate::llm::message::*;
 use crate::llm::provider::{Provider, ProviderError, ProviderRequest};
 use crate::llm::stream::StreamEvent;
+use crate::output_styles::AgentKind;
 use crate::permissions::PermissionChecker;
 use crate::services::compact::{self, CompactTracking, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT};
 use crate::services::tokens;
@@ -39,6 +40,10 @@ pub struct QueryEngineConfig {
     pub verbose: bool,
     /// Whether this is a non-interactive (one-shot) session.
     pub unattended: bool,
+    /// Role this engine runs as. Output styles whose `applies_to`
+    /// list excludes this role are filtered out at system-prompt
+    /// build time.
+    pub agent_kind: AgentKind,
 }
 
 /// The query engine orchestrates the agent loop.
@@ -660,6 +665,25 @@ impl QueryEngine {
                 // the style change would only take effect on the
                 // next "real" cache bust (e.g. cwd or model change).
                 (self.state.response_style as u8).hash(&mut h);
+                // Disk-loaded styles override the built-in voice. Hash
+                // both the id AND the body digest so editing a style
+                // file in-session and re-selecting the same id correctly
+                // busts the cached system prompt — id alone would let a
+                // stale prompt linger.
+                if let Some(style) = self.state.disk_output_style.as_ref() {
+                    style.name.hash(&mut h);
+                    style.content_hash.hash(&mut h);
+                    // applies_to is part of the rendered prompt (a style
+                    // that filters out for this kind contributes nothing),
+                    // so it has to be in the cache key too.
+                    style.applies_to.hash(&mut h);
+                } else {
+                    "".hash(&mut h);
+                }
+                // The agent kind gates `applies_to`; flipping it (in
+                // theory we don't, but keep the key complete) must
+                // invalidate the cache.
+                self.config.agent_kind.as_str().hash(&mut h);
                 h.finish()
             };
             let system_prompt = if let Some((cached_hash, ref cached)) = self.cached_system_prompt
@@ -667,7 +691,7 @@ impl QueryEngine {
             {
                 cached.clone()
             } else {
-                let prompt = build_system_prompt(&self.tools, &self.state);
+                let prompt = build_system_prompt(&self.tools, &self.state, self.config.agent_kind);
                 self.cached_system_prompt = Some((prompt_hash, prompt.clone()));
                 prompt
             };
@@ -856,6 +880,7 @@ impl QueryEngine {
                                                         session_allows: None,
                                                         permission_prompter: None,
                                                         sandbox: None,
+                                                        active_disk_output_style: None,
                                                     },
                                                 )
                                                 .await
@@ -1075,6 +1100,11 @@ impl QueryEngine {
                 sandbox: Some(std::sync::Arc::new(
                     crate::sandbox::SandboxExecutor::from_session_config(&self.state.config, &cwd),
                 )),
+                active_disk_output_style: self
+                    .state
+                    .disk_output_style
+                    .as_ref()
+                    .map(|s| s.name.clone()),
             };
 
             // Collect streaming tool results first.
@@ -1320,7 +1350,14 @@ fn get_fallback_model(current: &str) -> String {
 }
 
 /// Build the system prompt from tool definitions, app state, and memory.
-pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
+///
+/// `agent_kind` selects which active output style applies — disk styles
+/// whose `applies_to` list excludes this role are ignored.
+pub fn build_system_prompt(
+    tools: &ToolRegistry,
+    state: &AppState,
+    agent_kind: AgentKind,
+) -> String {
     let mut prompt = String::new();
 
     prompt.push_str(
@@ -1369,8 +1406,12 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
         // voice instructions stay salient across long contexts. Uses a
         // distinct heading from the static `# Response style` guideline
         // block lower down so they don't collide in tests or docs.
-        let style_fragment = state.response_style.prompt_fragment();
-        if !style_fragment.is_empty() {
+        // Disk-loaded output styles win over the built-in
+        // `response_style` so a user-defined preset can fully replace
+        // the canned voice without losing the section structure. A
+        // disk style whose `applies_to` excludes `agent_kind`
+        // contributes nothing for this role.
+        if let Some(style_fragment) = state.active_output_style_fragment(agent_kind) {
             prompt.push_str("# Active response style\n\n");
             prompt.push_str(style_fragment);
             prompt.push_str("\n\n");
@@ -1775,7 +1816,7 @@ mod tests {
     fn system_prompt_omits_additional_dirs_when_empty() {
         let state = AppState::new(crate::config::Config::default());
         let tools = ToolRegistry::new();
-        let prompt = build_system_prompt(&tools, &state);
+        let prompt = build_system_prompt(&tools, &state, AgentKind::Main);
         assert!(!prompt.contains("Additional tracked directories"));
     }
 
@@ -1786,7 +1827,7 @@ mod tests {
         state.additional_dirs.push("/tmp/alpha".to_string());
         state.additional_dirs.push("/tmp/beta".to_string());
         let tools = ToolRegistry::new();
-        let prompt = build_system_prompt(&tools, &state);
+        let prompt = build_system_prompt(&tools, &state, AgentKind::Main);
         assert!(prompt.contains("Additional tracked directories"));
         assert!(prompt.contains("/tmp/alpha"));
         assert!(prompt.contains("/tmp/beta"));
@@ -1797,7 +1838,7 @@ mod tests {
     fn system_prompt_omits_brief_block_when_off() {
         let state = AppState::new(crate::config::Config::default());
         let tools = ToolRegistry::new();
-        let prompt = build_system_prompt(&tools, &state);
+        let prompt = build_system_prompt(&tools, &state, AgentKind::Main);
         assert!(!prompt.contains("Brief mode is enabled"));
     }
 
@@ -1808,7 +1849,7 @@ mod tests {
         let mut state = AppState::new(crate::config::Config::default());
         state.brief_mode = true;
         let tools = ToolRegistry::new();
-        let prompt = build_system_prompt(&tools, &state);
+        let prompt = build_system_prompt(&tools, &state, AgentKind::Main);
         assert!(prompt.contains("Brief mode is enabled"));
         assert!(prompt.contains("under 3 sentences"));
         // Must appear before tool docs so it's not buried.
@@ -1825,7 +1866,7 @@ mod tests {
     fn system_prompt_omits_style_block_for_default() {
         let state = AppState::new(crate::config::Config::default());
         let tools = ToolRegistry::new();
-        let prompt = build_system_prompt(&tools, &state);
+        let prompt = build_system_prompt(&tools, &state, AgentKind::Main);
         assert!(!prompt.contains("# Active response style"));
     }
 
@@ -1841,7 +1882,7 @@ mod tests {
             let mut state = AppState::new(crate::config::Config::default());
             state.response_style = style;
             let tools = ToolRegistry::new();
-            let prompt = build_system_prompt(&tools, &state);
+            let prompt = build_system_prompt(&tools, &state, AgentKind::Main);
             assert!(
                 prompt.contains("# Active response style"),
                 "style {style:?} should inject a block"
@@ -1867,9 +1908,71 @@ mod tests {
         state.brief_mode = true;
         state.response_style = crate::state::ResponseStyle::Explanatory;
         let tools = ToolRegistry::new();
-        let prompt = build_system_prompt(&tools, &state);
+        let prompt = build_system_prompt(&tools, &state, AgentKind::Main);
         assert!(prompt.contains("Brief mode is enabled"));
         assert!(!prompt.contains("# Active response style"));
+    }
+
+    /// Regression for the codex finding: a disk style with
+    /// `applies_to: [subagent]` must NOT contribute to a main-agent
+    /// prompt. The previous code inserted the body unconditionally.
+    #[test]
+    fn system_prompt_filters_disk_style_by_applies_to() {
+        use crate::output_styles::{OutputStyle, OutputStyleSource};
+
+        let mut state = AppState::new(crate::config::Config::default());
+        let body = "Subagent-only prompt body that should not leak into main.";
+        state.disk_output_style = Some(OutputStyle {
+            name: "subagent-only".into(),
+            description: "Used only by spawned subagents".into(),
+            body: body.to_string(),
+            applies_to: vec!["subagent".to_string()],
+            source: OutputStyleSource::Project,
+            source_path: None,
+            content_hash: [0u8; 12],
+        });
+        let tools = ToolRegistry::new();
+
+        // Main agent: the style is filtered out — no block, no body.
+        let main_prompt = build_system_prompt(&tools, &state, AgentKind::Main);
+        assert!(
+            !main_prompt.contains("# Active response style"),
+            "applies_to=[subagent] must not inject a block for Main"
+        );
+        assert!(
+            !main_prompt.contains(body),
+            "applies_to=[subagent] body must not appear in Main prompt"
+        );
+
+        // Subagent: the style applies, the block and body are present.
+        let sub_prompt = build_system_prompt(&tools, &state, AgentKind::Subagent);
+        assert!(sub_prompt.contains("# Active response style"));
+        assert!(sub_prompt.contains(body));
+    }
+
+    /// A disk style with no `applies_to` field applies to every kind —
+    /// the empty-list case must not accidentally exclude the main agent.
+    #[test]
+    fn system_prompt_disk_style_with_no_applies_to_applies_everywhere() {
+        use crate::output_styles::{OutputStyle, OutputStyleSource};
+
+        let mut state = AppState::new(crate::config::Config::default());
+        let body = "Universal voice for every role.";
+        state.disk_output_style = Some(OutputStyle {
+            name: "universal".into(),
+            description: "Applies to everyone".into(),
+            body: body.to_string(),
+            applies_to: Vec::new(),
+            source: OutputStyleSource::Project,
+            source_path: None,
+            content_hash: [0u8; 12],
+        });
+        let tools = ToolRegistry::new();
+
+        for kind in [AgentKind::Main, AgentKind::Subagent] {
+            let prompt = build_system_prompt(&tools, &state, kind);
+            assert!(prompt.contains(body), "missing body for {kind:?}");
+        }
     }
 
     /// Verify that cancelling via the shared handle cancels the current
@@ -2069,6 +2172,7 @@ mod tests {
                 max_turns: Some(1),
                 verbose: false,
                 unattended: true,
+                agent_kind: AgentKind::Main,
             },
         )
     }

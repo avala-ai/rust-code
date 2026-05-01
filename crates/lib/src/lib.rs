@@ -73,6 +73,7 @@ pub mod error;
 pub mod hooks;
 pub mod llm;
 pub mod memory;
+pub mod output_styles;
 pub mod permissions;
 pub mod query;
 pub mod sandbox;
