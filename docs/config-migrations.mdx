@@ -1,0 +1,172 @@
+---
+title: "Settings Migrations"
+description: "How to evolve the settings schema without breaking existing files"
+---
+
+The settings file (`~/.config/agent-code/settings.json` and the project-level
+`<project>/.agent/settings.json`) is **versioned**. As the schema evolves we
+ship migrations that forward-upgrade older files automatically on load, so
+users never have to hand-edit JSON to keep up with a release.
+
+This page covers what the framework guarantees and how to author a new
+migration when you change the schema.
+
+## Top-level shape
+
+Every settings file carries a `schema_version` integer at the root:
+
+```json
+{
+  "schema_version": 2,
+  "api": { "model": "gpt-5.4" }
+}
+```
+
+A file with no `schema_version` field at all is treated as **version 0**
+(the pre-migration baseline). The runner stamps the version on first load
+and then migrates upward.
+
+The current target version is exposed as
+`agent_code_lib::config::migrations::CURRENT_SCHEMA_VERSION`.
+
+## What the runner does
+
+`load_and_migrate(path)` executes these steps in order:
+
+1. Read and parse the JSON file.
+2. Read `schema_version` (defaulting to `0` when absent).
+3. If the file is **already current**, return immediately. **No rewrite,
+   no backup.**
+4. If the file is **newer than this build**, abort with a clear error
+   instead of silently dropping fields.
+5. Otherwise, apply each registered migration whose `from_version` is at
+   or above the file's current version, in order, until we reach the
+   current target version.
+6. Atomically rewrite the file: write to `settings.json.tmp`, fsync,
+   rename over `settings.json`. A crash mid-write leaves either the
+   original file or the new file on disk — never a half-written body.
+7. Rotate backups before the rename: `settings.json.bak.2 →
+   settings.json.bak.3`, `settings.json.bak.1 → settings.json.bak.2`,
+   then write the pre-migration bytes to `settings.json.bak.1`. The
+   oldest slot beyond `MAX_BACKUPS` (3) is dropped.
+
+If any migration step returns `Err`, the on-disk file is left
+untouched, no backup is rotated, and the error propagates to the caller.
+
+## Authoring a new migration
+
+When you change the settings schema, ship a migration in the same PR.
+
+### 1. Bump the version constant
+
+Edit `crates/lib/src/config/migrations/mod.rs`:
+
+```rust
+pub const CURRENT_SCHEMA_VERSION: u32 = 3; // was 2
+```
+
+### 2. Add a `vN_to_vM.rs` file
+
+Add `crates/lib/src/config/migrations/v2_to_v3.rs`:
+
+```rust
+use anyhow::Result;
+use super::Migration;
+
+pub struct YourMigration;
+
+impl Migration for YourMigration {
+    fn from_version(&self) -> u32 { 2 }
+    fn to_version(&self) -> u32 { 3 }
+    fn description(&self) -> &'static str {
+        "short description for logs"
+    }
+    fn migrate(&self, value: &mut serde_json::Value) -> Result<()> {
+        // Mutate `value` in place. Pure function — no filesystem,
+        // no env vars, no network. Return Err to abort the upgrade.
+        Ok(())
+    }
+}
+```
+
+### 3. Register it
+
+In `mod.rs`:
+
+```rust
+mod v2_to_v3;
+
+pub fn registered_migrations() -> Vec<Box<dyn Migration>> {
+    vec![
+        Box::new(v0_to_v1::StampVersion),
+        Box::new(v1_to_v2::RenameApiTokenToApiKey),
+        Box::new(v2_to_v3::YourMigration),
+    ]
+}
+```
+
+The runner asserts on first call that the chain is continuous —
+each step's `to_version` must equal the next step's `from_version`,
+and the last step must end at `CURRENT_SCHEMA_VERSION`. A misconfigured
+registry panics with a clear error rather than silently corrupting
+data.
+
+### 4. Add a fixture pair and a test
+
+Drop a pair of JSON fixtures under
+`crates/lib/tests/fixtures/config_migrations/`:
+
+- `v2_input.json` — a representative pre-migration file.
+- `v2_to_current_expected.json` — the same file after running the
+  full migration chain.
+
+Then add a test in `crates/lib/tests/config_migrations.rs` that drives
+`load_and_migrate` against the input and asserts the output matches.
+
+## Migration authoring rules
+
+These rules are what make rollback safe:
+
+- **Pure functions only.** Take `&mut serde_json::Value`, mutate it,
+  return `Result<()>`. Do not read environment variables, the
+  filesystem, the network, or the system clock.
+- **Tolerate missing keys.** A user might be on a path the migration
+  doesn't apply to (e.g. they never set the field you're renaming).
+  Branch on `get_mut(...)` returning `None` rather than indexing.
+- **Be idempotent if you can.** A migration that runs against an
+  already-migrated payload should be a no-op. Saves debugging time
+  when fixtures or backups get fed back through.
+- **Don't touch `schema_version` yourself.** The runner stamps it
+  after your `migrate` returns `Ok`. If you stamp it early and then
+  fail, the on-disk file would lie about its state.
+
+## Inspecting what happened
+
+`load_and_migrate` returns a `MigrationOutcome`:
+
+```rust
+pub struct MigrationOutcome {
+    pub from_version: u32,        // version on disk before
+    pub to_version: u32,          // version after migration
+    pub rewrote: bool,            // was the file rewritten?
+    pub backup_path: Option<PathBuf>, // freshly-rotated backup
+}
+```
+
+Useful for one-line startup logs like
+`migrated settings from v0 to v2 (backup at settings.json.bak.1)`.
+
+## Recovering from a botched migration
+
+The `.bak.1` slot always contains the bytes that were on disk
+immediately before the most recent rewrite. To roll back a session
+that misbehaved after a migration:
+
+```bash
+mv ~/.config/agent-code/settings.json.bak.1 ~/.config/agent-code/settings.json
+```
+
+The next load will replay the migration chain from whatever version
+that file declares. If the migration is buggy the rollback is your
+escape hatch; please file a bug report with the offending file
+attached so we can fix the migration before the next release.

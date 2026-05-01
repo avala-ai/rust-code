@@ -1,0 +1,13 @@
+{
+  "api": {
+    "base_url": "https://api.example.com/v1",
+    "model": "gpt-5.4",
+    "token": "sk-legacy-abc"
+  },
+  "permissions": {
+    "default_mode": "ask"
+  },
+  "ui": {
+    "theme": "dark"
+  }
+}
