@@ -3,8 +3,24 @@
 //! Each schedule is stored as a JSON file in
 //! `~/.config/agent-code/schedules/<name>.json`. The store handles
 //! CRUD operations and persists execution history.
+//!
+//! # Path safety
+//!
+//! Names flow into filenames, so anything that escapes the schedules
+//! directory — `..`, path separators, NUL bytes, control characters —
+//! is rejected at the [`ScheduleStore`] boundary by
+//! [`validate_schedule_name`]. Tools layered on top (e.g.
+//! `CronCreate`, `CronDelete`, `RemoteTrigger`) may add nicer
+//! per-tool error messages, but the store enforces the invariant on
+//! every public method so a missing tool-side check cannot punch a
+//! hole in containment.
+//!
+//! On top of validation, [`ScheduleStore::save`] writes via a
+//! temp-file-plus-rename pattern with `O_NOFOLLOW`-equivalent
+//! semantics: a pre-planted symlink at the target is replaced
+//! atomically by `rename`, never followed by the underlying write.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -82,18 +98,26 @@ impl ScheduleStore {
     }
 
     /// Save a schedule (creates or updates).
+    ///
+    /// Validates the schedule name as a filename component and writes
+    /// atomically: serialize → write to a uniquely-named temp file in
+    /// the schedules directory → `rename` over the target. The temp
+    /// file is opened with `create_new`, so it cannot land on a
+    /// pre-existing symlink. `rename` replaces the target inode
+    /// itself, so a symlink planted at `<dir>/<name>.json` is
+    /// destroyed rather than followed.
     pub fn save(&self, schedule: &Schedule) -> Result<(), String> {
-        let path = self.path_for(&schedule.name);
+        let path = self.path_for(&schedule.name)?;
         let json = serde_json::to_string_pretty(schedule)
             .map_err(|e| format!("Serialization error: {e}"))?;
-        std::fs::write(&path, json).map_err(|e| format!("Write error: {e}"))?;
+        write_atomic_no_follow(&self.dir, &path, json.as_bytes())?;
         debug!("Schedule saved: {}", path.display());
         Ok(())
     }
 
     /// Load a schedule by name.
     pub fn load(&self, name: &str) -> Result<Schedule, String> {
-        let path = self.path_for(name);
+        let path = self.path_for(name)?;
         if !path.exists() {
             return Err(format!("Schedule '{name}' not found"));
         }
@@ -120,7 +144,7 @@ impl ScheduleStore {
 
     /// Remove a schedule by name.
     pub fn remove(&self, name: &str) -> Result<(), String> {
-        let path = self.path_for(name);
+        let path = self.path_for(name)?;
         if !path.exists() {
             return Err(format!("Schedule '{name}' not found"));
         }
@@ -136,10 +160,161 @@ impl ScheduleStore {
             .find(|s| s.webhook_secret.as_deref() == Some(secret))
     }
 
-    fn path_for(&self, name: &str) -> PathBuf {
-        self.dir.join(format!("{name}.json"))
+    /// Compute the on-disk path for a schedule name, applying
+    /// validation and a defense-in-depth containment check.
+    ///
+    /// Validation rejects names containing path separators, parent
+    /// references, NUL bytes, control characters, or anything outside
+    /// ASCII-graphic. After joining we verify the resulting path is
+    /// still inside the schedules directory by comparing against the
+    /// canonicalized parent — this catches edge cases like a name
+    /// that passes the lexical check but produces a surprising path
+    /// component on the host filesystem.
+    fn path_for(&self, name: &str) -> Result<PathBuf, String> {
+        validate_schedule_name(name)?;
+        let path = self.dir.join(format!("{name}.json"));
+
+        // Defense in depth: the schedules dir may itself live behind a
+        // symlink (e.g. `/tmp` on macOS), so we compare canonical
+        // forms of the parent rather than insisting on a string
+        // prefix of `self.dir`.
+        let dir_canonical = std::fs::canonicalize(&self.dir)
+            .map_err(|e| format!("Failed to canonicalize schedules dir: {e}"))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| "Schedule path has no parent".to_string())?;
+        let parent_canonical = std::fs::canonicalize(parent)
+            .map_err(|e| format!("Failed to canonicalize schedule parent: {e}"))?;
+        if parent_canonical != dir_canonical {
+            return Err(format!(
+                "Schedule name '{name}' resolves outside the schedules directory"
+            ));
+        }
+
+        Ok(path)
     }
 }
+
+/// Maximum permitted length of a schedule name as a filename
+/// component.
+pub(crate) const MAX_SCHEDULE_NAME_LEN: usize = 64;
+
+/// Validate a schedule name before it is used as a filesystem path
+/// component.
+///
+/// The store derives the on-disk path as `<dir>/<name>.json`, so any
+/// input that contains path separators, parent-directory references,
+/// NUL bytes, or other control characters could escape the schedules
+/// directory or produce surprising filenames. Reject those inputs
+/// up-front with a specific error so the caller can self-correct.
+///
+/// This is the canonical validator: tools layered on top of the
+/// store may run an early check for nicer error messages, but the
+/// store enforces the invariant on every public method so a missing
+/// tool-side check cannot punch a hole in containment.
+pub(crate) fn validate_schedule_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Routine name must not be empty.".into());
+    }
+    if name.len() > MAX_SCHEDULE_NAME_LEN {
+        return Err(format!(
+            "Routine name must be at most {MAX_SCHEDULE_NAME_LEN} characters (got {}).",
+            name.len()
+        ));
+    }
+    if name == "." || name == ".." || name.contains("..") {
+        return Err(
+            "Routine name must not contain '..' or be a parent-directory reference.".into(),
+        );
+    }
+    for ch in name.chars() {
+        if ch == '/' || ch == '\\' {
+            return Err(format!(
+                "Routine name must not contain path separators ('/' or '\\'); got {ch:?}."
+            ));
+        }
+        if ch == '\0' {
+            return Err("Routine name must not contain NUL bytes.".into());
+        }
+        if ch.is_control() {
+            return Err(format!(
+                "Routine name must not contain control characters; got {ch:?}."
+            ));
+        }
+        if !ch.is_ascii() || !ch.is_ascii_graphic() {
+            return Err(format!(
+                "Routine name must be ASCII-printable (letters, digits, '-', '_', '.'); got {ch:?}."
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Atomic, symlink-safe write: stage the bytes in a uniquely-named
+/// temp file inside `dir` (opened with `create_new`, so it cannot
+/// land on a pre-existing symlink), `fsync` it, then `rename` over
+/// `target`. `rename` replaces the destination inode, so a symlink
+/// pre-planted at `target` is destroyed rather than followed.
+///
+/// On failure the temp file is best-effort cleaned up.
+fn write_atomic_no_follow(dir: &Path, target: &Path, data: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+
+    // Build a unique temp name in the same directory so `rename` is
+    // atomic (same filesystem). Mix pid + nanos + a counter so
+    // concurrent writers don't collide.
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let counter = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stem = target
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("schedule");
+    let tmp_name = format!(".{stem}.{pid}.{nanos}.{counter}.tmp");
+    let tmp_path = dir.join(tmp_name);
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // 0o600: schedules can carry webhook secrets, so keep them
+        // user-readable only. NOFOLLOW is implicit for create_new
+        // (the file does not exist yet), but set it explicitly to
+        // signal intent and harden against TOCTOU.
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let mut file = match options.open(&tmp_path) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(format!(
+                "Failed to create temp file {}: {e}",
+                tmp_path.display()
+            ));
+        }
+    };
+    if let Err(e) = file.write_all(data) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Write error: {e}"));
+    }
+    if let Err(e) = file.sync_all() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Sync error: {e}"));
+    }
+    drop(file);
+
+    if let Err(e) = std::fs::rename(&tmp_path, target) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Rename error: {e}"));
+    }
+    Ok(())
+}
+
+static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn schedules_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("agent-code").join("schedules"))
@@ -245,5 +420,101 @@ mod tests {
         let loaded: Schedule = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.model.as_deref(), Some("gpt-5.4"));
         assert!(loaded.last_result.unwrap().success);
+    }
+
+    #[test]
+    fn validate_schedule_name_accepts_normal_id() {
+        validate_schedule_name("nightly-cleanup").unwrap();
+        validate_schedule_name("cron-abc123").unwrap();
+        validate_schedule_name("a.b_c-1").unwrap();
+    }
+
+    #[test]
+    fn validate_schedule_name_rejects_separators_and_dotdot() {
+        assert!(validate_schedule_name("foo/bar").is_err());
+        assert!(validate_schedule_name("foo\\bar").is_err());
+        assert!(validate_schedule_name("..").is_err());
+        assert!(validate_schedule_name("../etc").is_err());
+        assert!(validate_schedule_name("").is_err());
+        assert!(validate_schedule_name("foo bar").is_err()); // ASCII non-graphic
+        assert!(validate_schedule_name("foo\0bar").is_err());
+        assert!(validate_schedule_name("foo\nbar").is_err());
+    }
+
+    #[test]
+    fn store_load_rejects_traversal_at_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ScheduleStore::open_at(dir.path().to_path_buf()).unwrap();
+
+        // Even if a tool forgot to validate, the store rejects.
+        for bad in [
+            "../escape",
+            "foo/bar",
+            "foo\\bar",
+            "..",
+            "",
+            "tab\tname",
+            "with space",
+        ] {
+            assert!(store.load(bad).is_err(), "load should reject {bad:?}");
+            assert!(store.remove(bad).is_err(), "remove should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn store_save_rejects_traversal_at_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ScheduleStore::open_at(dir.path().to_path_buf()).unwrap();
+
+        let mut sched = test_schedule("..");
+        let err = store.save(&sched).unwrap_err();
+        assert!(err.contains("'..'") || err.contains("parent"), "got: {err}");
+
+        sched.name = "foo/bar".into();
+        assert!(store.save(&sched).is_err());
+    }
+
+    /// A pre-planted symlink at the target path must NOT be followed
+    /// by `save`. Verify the file the symlink points to is unchanged
+    /// after `save` runs.
+    #[cfg(unix)]
+    #[test]
+    fn save_does_not_follow_pre_planted_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let outer = tempfile::tempdir().unwrap();
+        let target_outside = outer.path().join("forbidden.txt");
+        std::fs::write(&target_outside, b"original-secret").unwrap();
+
+        let dir = outer.path().join("schedules");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Plant a symlink: <dir>/nightly.json -> ../forbidden.txt
+        let symlink_path = dir.join("nightly.json");
+        symlink(&target_outside, &symlink_path).unwrap();
+
+        let store = ScheduleStore::open_at(dir.clone()).unwrap();
+        let sched = test_schedule("nightly");
+        store.save(&sched).expect("save should succeed");
+
+        // The forbidden file outside the dir is untouched.
+        let after = std::fs::read_to_string(&target_outside).unwrap();
+        assert_eq!(
+            after, "original-secret",
+            "symlink target outside the schedules dir was clobbered"
+        );
+
+        // The schedule file inside the dir now contains the schedule
+        // JSON (the symlink itself was replaced by `rename`).
+        let new_meta = std::fs::symlink_metadata(&symlink_path).unwrap();
+        assert!(
+            new_meta.file_type().is_file(),
+            "expected a regular file after save, got {:?}",
+            new_meta.file_type()
+        );
+        let on_disk = std::fs::read_to_string(&symlink_path).unwrap();
+        assert!(
+            on_disk.contains("\"nightly\""),
+            "schedule JSON should be present at the target"
+        );
     }
 }
