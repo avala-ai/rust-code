@@ -11,6 +11,7 @@ use serde_json::json;
 use super::{Tool, ToolContext, ToolResult};
 use crate::error::ToolError;
 use crate::permissions::{PermissionChecker, PermissionDecision};
+use crate::schedule::storage::validate_schedule_name;
 use crate::schedule::{CronExpr, Schedule};
 
 use super::cron_support::open_store;
@@ -118,7 +119,11 @@ impl Tool for CronCreateTool {
 
         let id = match name {
             Some(n) => {
-                validate_routine_name(&n).map_err(ToolError::InvalidInput)?;
+                // Early-return validation for a crisp, model-friendly
+                // error message. The schedule store applies the same
+                // check at the boundary as defense in depth, so a
+                // missing tool-side check cannot escape containment.
+                validate_schedule_name(&n).map_err(ToolError::InvalidInput)?;
                 n
             }
             None => generate_routine_id(),
@@ -184,56 +189,6 @@ impl Tool for CronCreateTool {
 fn generate_routine_id() -> String {
     let raw = uuid::Uuid::new_v4().to_string().replace('-', "");
     format!("cron-{}", &raw[..8])
-}
-
-/// Maximum permitted length of a caller-supplied routine name.
-const MAX_ROUTINE_NAME_LEN: usize = 64;
-
-/// Validate a caller-supplied routine name before it is used as a
-/// filesystem path component by [`crate::schedule::ScheduleStore`].
-///
-/// The schedule store derives the on-disk path as
-/// `<schedules_dir>/<name>.json`, so any input that contains path
-/// separators, parent-directory references, NUL bytes, or other
-/// control characters could escape the schedules directory or
-/// produce surprising filenames. Reject those inputs up-front with a
-/// specific error so the model can self-correct.
-fn validate_routine_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("Routine name must not be empty.".into());
-    }
-    if name.len() > MAX_ROUTINE_NAME_LEN {
-        return Err(format!(
-            "Routine name must be at most {MAX_ROUTINE_NAME_LEN} characters (got {}).",
-            name.len()
-        ));
-    }
-    if name == "." || name == ".." || name.contains("..") {
-        return Err(
-            "Routine name must not contain '..' or be a parent-directory reference.".into(),
-        );
-    }
-    for ch in name.chars() {
-        if ch == '/' || ch == '\\' {
-            return Err(format!(
-                "Routine name must not contain path separators ('/' or '\\'); got {ch:?}."
-            ));
-        }
-        if ch == '\0' {
-            return Err("Routine name must not contain NUL bytes.".into());
-        }
-        if ch.is_control() {
-            return Err(format!(
-                "Routine name must not contain control characters; got {ch:?}."
-            ));
-        }
-        if !ch.is_ascii() || !ch.is_ascii_graphic() {
-            return Err(format!(
-                "Routine name must be ASCII-printable (letters, digits, '-', '_', '.'); got {ch:?}."
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -342,72 +297,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidInput(_)));
-    }
-
-    #[test]
-    fn validate_routine_name_accepts_normal_id() {
-        validate_routine_name("nightly-cleanup").expect("normal id should pass");
-        validate_routine_name("cron-abc123").expect("generated id shape should pass");
-        validate_routine_name("a.b_c-1").expect("punctuation subset should pass");
-    }
-
-    #[test]
-    fn validate_routine_name_rejects_empty() {
-        let err = validate_routine_name("").unwrap_err();
-        assert!(err.contains("empty"), "got: {err}");
-    }
-
-    #[test]
-    fn validate_routine_name_rejects_path_separators() {
-        let err = validate_routine_name("foo/bar").unwrap_err();
-        assert!(err.contains("path separator"), "got: {err}");
-        let err = validate_routine_name("foo\\bar").unwrap_err();
-        assert!(err.contains("path separator"), "got: {err}");
-    }
-
-    #[test]
-    fn validate_routine_name_rejects_dot_dot() {
-        for bad in ["..", "../etc/passwd", "foo/..", "bad..name"] {
-            let err = validate_routine_name(bad).unwrap_err();
-            assert!(
-                err.contains("'..'") || err.contains("path separator"),
-                "{bad}: {err}"
-            );
-        }
-        let err = validate_routine_name(".").unwrap_err();
-        assert!(err.contains("'..'") || err.contains("parent"), "got: {err}");
-    }
-
-    #[test]
-    fn validate_routine_name_rejects_nul_and_control_chars() {
-        let err = validate_routine_name("foo\0bar").unwrap_err();
-        assert!(err.contains("NUL"), "got: {err}");
-        let err = validate_routine_name("foo\nbar").unwrap_err();
-        assert!(err.contains("control"), "got: {err}");
-        let err = validate_routine_name("foo\tbar").unwrap_err();
-        assert!(err.contains("control"), "got: {err}");
-    }
-
-    #[test]
-    fn validate_routine_name_rejects_non_ascii() {
-        let err = validate_routine_name("rénover").unwrap_err();
-        assert!(err.contains("ASCII"), "got: {err}");
-        let err = validate_routine_name("foo bar").unwrap_err();
-        // space is ASCII but not graphic
-        assert!(err.contains("ASCII"), "got: {err}");
-    }
-
-    #[test]
-    fn validate_routine_name_rejects_overlong_input() {
-        let long = "a".repeat(MAX_ROUTINE_NAME_LEN + 1);
-        let err = validate_routine_name(&long).unwrap_err();
-        assert!(err.contains("at most"), "got: {err}");
-    }
-
-    #[test]
-    fn validate_routine_name_accepts_max_length() {
-        let exact = "a".repeat(MAX_ROUTINE_NAME_LEN);
-        validate_routine_name(&exact).expect("exact max length should pass");
     }
 
     #[tokio::test]

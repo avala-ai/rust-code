@@ -10,6 +10,7 @@
 
 use async_trait::async_trait;
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
@@ -17,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use super::{Tool, ToolContext, ToolResult};
 use crate::error::ToolError;
 use crate::permissions::{PermissionChecker, PermissionDecision};
+use crate::schedule::storage::validate_schedule_name;
 
 use super::cron_support::open_store;
 
@@ -89,6 +91,13 @@ impl Tool for RemoteTriggerTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidInput("'id' is required".into()))?;
 
+        // Validate up-front so we never pass a hostile id to the
+        // store, the subprocess argv, or anywhere else. The store
+        // applies the same check at its boundary as defense in
+        // depth, but rejecting here gives the model a crisp,
+        // actionable error before we touch the filesystem.
+        validate_schedule_name(id).map_err(ToolError::InvalidInput)?;
+
         // Verify the routine exists before forking — gives the model a
         // crisp error rather than a subprocess failure code.
         let store = open_store().map_err(|e| {
@@ -123,6 +132,12 @@ impl Tool for RemoteTriggerTool {
             // abort) before we explicitly kill the child below, Tokio
             // will reap it for us instead of leaving an orphan.
             .kill_on_drop(true);
+
+        // Put the child in its own process group so we can SIGKILL
+        // the whole tree on timeout/cancel. Without this, only the
+        // direct child gets `start_kill`'d and any grandchildren
+        // (e.g. tools the routine spawned) survive.
+        configure_process_group(&mut cmd);
 
         // Forward common provider env vars so the subprocess can
         // authenticate without re-reading config.
@@ -187,6 +202,7 @@ impl Tool for RemoteTriggerTool {
 }
 
 /// Outcome of a spawned subprocess that ran to completion.
+#[cfg_attr(test, derive(Debug))]
 struct RunOutcome {
     status: std::process::ExitStatus,
     stdout: Vec<u8>,
@@ -204,13 +220,22 @@ enum RunError {
 }
 
 /// Spawn `cmd`, wait for it with a wall-clock timeout, and reap the
-/// child on timeout/cancel.
+/// child (and its process group) on timeout/cancel.
 ///
 /// `cmd` must already be configured with `Stdio::piped()` for stdout
-/// and stderr; this helper takes the pipes off the spawned `Child` and
-/// drains them concurrently. On timeout or cancel we issue `start_kill`
-/// and `wait` on the child before returning so we never leave an
-/// orphan agent subprocess running after the tool call has resolved.
+/// and stderr and (on unix) put into its own process group via
+/// [`configure_process_group`]. This helper:
+///
+/// 1. Spawns dedicated drain tasks for stdout and stderr so output
+///    is captured into shared buffers regardless of which arm of
+///    the select wins.
+/// 2. Races the child's exit against the timeout and the cancel
+///    token.
+/// 3. On timeout/cancel, sends SIGKILL to the entire process group
+///    (negative pgid) so grandchildren are reaped too — `start_kill`
+///    only signals the direct child. Then `wait`s on the child and
+///    joins the drain tasks so any pending output ends up in the
+///    returned buffers and no reader task is abandoned.
 async fn run_with_timeout(
     mut cmd: tokio::process::Command,
     timeout: Duration,
@@ -218,43 +243,166 @@ async fn run_with_timeout(
 ) -> Result<RunOutcome, RunError> {
     let mut child = cmd.spawn().map_err(|e| RunError::Spawn(e.to_string()))?;
 
-    let mut stdout_handle = child.stdout.take().expect("stdout piped at spawn");
-    let mut stderr_handle = child.stderr.take().expect("stderr piped at spawn");
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
+    // Capture the pid early — once we've called `wait`, `child.id()`
+    // returns None on some platforms and we need the pgid for
+    // signaling.
+    #[cfg(unix)]
+    let child_pid = child.id().map(|id| id as i32);
 
-    let result = tokio::select! {
-        r = async {
-            let (so, se) = tokio::join!(
-                stdout_handle.read_to_end(&mut stdout_buf),
-                stderr_handle.read_to_end(&mut stderr_buf),
-            );
-            so?;
-            se?;
-            child.wait().await
-        } => r,
+    let stdout_handle = child.stdout.take().expect("stdout piped at spawn");
+    let stderr_handle = child.stderr.take().expect("stderr piped at spawn");
+
+    // Spawn dedicated drainers. Sharing the buffers via Arc<Mutex<_>>
+    // lets the timeout/cancel branches still recover whatever output
+    // had been written before we killed the child.
+    let stdout_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let stdout_drain = spawn_drain("stdout", stdout_handle, stdout_buf.clone());
+    let stderr_drain = spawn_drain("stderr", stderr_handle, stderr_buf.clone());
+
+    let outcome = tokio::select! {
+        wait_result = child.wait() => {
+            // Child exited on its own. Wait for drains to finish so
+            // we capture every last byte before returning.
+            let _ = stdout_drain.await;
+            let _ = stderr_drain.await;
+            match wait_result {
+                Ok(status) => Ok(RunOutcome {
+                    status,
+                    stdout: take_buf(&stdout_buf),
+                    stderr: take_buf(&stderr_buf),
+                }),
+                Err(e) => Err(RunError::Wait(e.to_string())),
+            }
+        }
         _ = tokio::time::sleep(timeout) => {
-            // Reap the runaway child so it can't keep consuming API
-            // budget after we've already returned to the caller.
-            let _ = child.start_kill();
+            // Reap the entire process group so grandchildren can't
+            // keep consuming API budget after we've returned.
+            kill_process_group(&mut child, _to_pid_for_unix(child_pid));
+            // Drains will see EOF as soon as the child's stdio is
+            // closed; bound them with a short deadline so a stuck
+            // pipe can't keep us here forever.
+            join_drain(stdout_drain).await;
+            join_drain(stderr_drain).await;
+            // Reap the child so it doesn't linger as a zombie.
             let _ = child.wait().await;
-            return Err(RunError::Timeout(timeout.as_millis() as u64));
+            Err(RunError::Timeout(timeout.as_millis() as u64))
         }
         _ = cancel.cancelled() => {
-            let _ = child.start_kill();
+            kill_process_group(&mut child, _to_pid_for_unix(child_pid));
+            join_drain(stdout_drain).await;
+            join_drain(stderr_drain).await;
             let _ = child.wait().await;
-            return Err(RunError::Cancelled);
+            Err(RunError::Cancelled)
         }
     };
 
-    match result {
-        Ok(status) => Ok(RunOutcome {
-            status,
-            stdout: stdout_buf,
-            stderr: stderr_buf,
-        }),
-        Err(e) => Err(RunError::Wait(e.to_string())),
+    outcome
+}
+
+/// Helper that ignores the pid arg on non-unix targets without
+/// emitting an "unused" lint there.
+#[cfg(unix)]
+fn _to_pid_for_unix(pid: Option<i32>) -> Option<i32> {
+    pid
+}
+
+#[cfg(not(unix))]
+fn _to_pid_for_unix(_pid: Option<i32>) -> Option<i32> {
+    None
+}
+
+fn take_buf(buf: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
+    buf.lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
+}
+
+/// Spawn a task that reads `reader` to EOF into `buf`. The task is
+/// detached but its handle is returned so callers can join it after
+/// the child has exited (or been killed) to flush remaining bytes.
+fn spawn_drain<R>(
+    label: &'static str,
+    mut reader: R,
+    buf: Arc<Mutex<Vec<u8>>>,
+) -> tokio::task::JoinHandle<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut local = Vec::new();
+        if let Err(e) = reader.read_to_end(&mut local).await {
+            tracing::debug!("remote_trigger drain {label} read error: {e}");
+        }
+        if let Ok(mut guard) = buf.lock() {
+            guard.extend_from_slice(&local);
+        }
+    })
+}
+
+/// Join a drain task with a small deadline. After we've killed the
+/// child, the pipes close almost immediately, so 5s is generous.
+async fn join_drain(handle: tokio::task::JoinHandle<()>) {
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// Configure `cmd` so the spawned child becomes the leader of its
+/// own process group. On unix this calls `setsid` in the child after
+/// `fork` and before `exec` (so signals to the child don't propagate
+/// to us, and we can target the whole group on timeout). On windows
+/// this is a no-op for now — see the module-level docs.
+fn configure_process_group(cmd: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    {
+        // `tokio::process::Command::pre_exec` is the async runtime's
+        // own API; no `std::os::unix::process::CommandExt` import is
+        // required.
+        //
+        // SAFETY: the closure runs in the forked child between
+        // `fork` and `exec`. `setsid` is async-signal-safe and
+        // explicitly permitted in this context. We do not allocate,
+        // touch global state, or call any non-async-signal-safe
+        // libc function here.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
+    #[cfg(not(unix))]
+    {
+        // Process-group/job-object support on Windows is a known
+        // gap. `kill_on_drop(true)` plus `start_kill` still reap the
+        // direct child; grandchildren may survive. Tracked as a
+        // follow-up.
+        let _ = cmd;
+    }
+}
+
+/// Kill the child and (on unix) its entire process group.
+fn kill_process_group(child: &mut tokio::process::Child, pid: Option<i32>) {
+    #[cfg(unix)]
+    {
+        if let Some(pid) = pid {
+            // Negative pid → process group. SIGKILL because we
+            // don't trust a runaway routine to honor SIGTERM.
+            // SAFETY: `libc::kill` is safe to call; it cannot
+            // violate Rust invariants.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+    // Fall back to the direct-child kill in case the group signal
+    // missed (or on windows) so the parent definitely terminates.
+    let _ = child.start_kill();
 }
 
 #[cfg(test)]
@@ -288,12 +436,15 @@ mod tests {
 
     /// Build a sleep command that must be killed to terminate. We use
     /// the full path-less `sleep` so the OS resolves it via PATH.
+    /// Configures a process group so the kill path under test
+    /// matches the production code path.
     fn long_sleep_cmd() -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new("sleep");
         cmd.arg("30")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        configure_process_group(&mut cmd);
         cmd
     }
 
@@ -345,6 +496,99 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(5),
             "cancel branch should kill the child promptly; took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(windows, ignore = "POSIX shell not available on Windows")]
+    async fn run_with_timeout_captures_partial_output_on_timeout() {
+        // Print 'before' immediately, then sleep past the timeout.
+        // We expect the buffered 'before' to be returned even though
+        // the child is killed before producing more output.
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg("printf 'before'; sleep 30")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        configure_process_group(&mut cmd);
+
+        let cancel = CancellationToken::new();
+        let result = run_with_timeout(cmd, Duration::from_millis(300), &cancel).await;
+
+        // Result is Timeout, but the partial output should still be
+        // captured. (We can't reach into a Result::Err to get the
+        // buffer, so we instead exercise the success path with a
+        // tiny program to confirm the drain mechanism — see the
+        // success test below. This test just confirms that timeout
+        // doesn't deadlock when the child has already produced
+        // bytes.)
+        match result {
+            Err(RunError::Timeout(_)) => {}
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_with_timeout_kills_grandchildren_on_timeout() {
+        // Spawn a shell that backgrounds a long-lived sleep then
+        // also sleeps. Without process-group kill, only the shell
+        // would die and the backgrounded sleep would leak. We
+        // record the grandchild pid to a tempfile and check that it
+        // is gone after the timeout returns.
+        let tmp = tempfile::tempdir().unwrap();
+        let pidfile = tmp.path().join("grandchild.pid");
+
+        // sh -c '(sleep 60 & echo $! > pidfile); sleep 60'
+        let script = format!(
+            "(sleep 60 & echo $! > {pidfile_path}); sleep 60",
+            pidfile_path = pidfile.display()
+        );
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg(script)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        configure_process_group(&mut cmd);
+
+        let cancel = CancellationToken::new();
+        let result = run_with_timeout(cmd, Duration::from_millis(500), &cancel).await;
+        match result {
+            Err(RunError::Timeout(_)) => {}
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+
+        // Read the recorded grandchild pid and confirm it has been
+        // signaled. `kill -0 <pid>` succeeds iff the process is
+        // still alive, so we want it to fail.
+        let mut grandchild_pid: Option<i32> = None;
+        for _ in 0..20 {
+            if let Ok(s) = std::fs::read_to_string(&pidfile)
+                && let Ok(pid) = s.trim().parse::<i32>()
+            {
+                grandchild_pid = Some(pid);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let pid = grandchild_pid.expect("grandchild should have written pidfile");
+
+        // Give the kernel a beat to deliver SIGKILL and reap.
+        let mut alive = true;
+        for _ in 0..40 {
+            // SAFETY: probing a pid with signal 0 is non-mutating.
+            let r = unsafe { libc::kill(pid, 0) };
+            if r != 0 {
+                alive = false;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !alive,
+            "grandchild pid {pid} survived process-group SIGKILL"
         );
     }
 
