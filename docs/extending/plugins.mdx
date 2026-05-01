@@ -1,25 +1,39 @@
 ---
 title: "Plugins"
-description: "Bundle skills, hooks, and config as packages"
+description: "Bundle skills, slash commands, hooks, and MCP servers as installable packages"
 ---
 
-Plugins package skills, hooks, and configuration together as installable units. A plugin is a directory with a `plugin.toml` manifest.
+A plugin is a directory of files that contributes one or more of: **skills**, **slash commands**, **hooks**, **MCP server registrations**, and **executable tools**. Plugins are loaded at startup, enable/disable state is per project, and the runtime treats every plugin-contributed surface the same way it treats first-party code — including the permission system.
 
-## Plugin structure
+agent-code recognises three on-disk plugin formats. You can mix and match: a project can have native plugins alongside plugins that were authored for adjacent agent ecosystems, and they all show up in the same `/plugin list`.
+
+## Locations
+
+| Path | Source label |
+|------|-------------|
+| `~/.config/agent-code/plugins/<name>/` | `user` |
+| `<project>/.agent/plugins/<name>/` | `project` |
+| Compiled into the binary | `builtin` |
+| `~/.codex/config.toml` + `~/.codex/prompts/` | `sibling` (codex-style compat) |
+
+The built-in slot is wired but ships empty in v0.21 — bundled built-in plugins land in a follow-up release.
+
+## Native format
+
+The first-party format. A directory with a `plugin.toml` manifest and conventional sub-directories.
 
 ```
 my-plugin/
-  plugin.toml        ← manifest
+  plugin.toml
   skills/
-    deploy.md        ← bundled skills
+    deploy.md
     rollback.md
+  hooks/                 (optional)
+  bin/                   (optional, executable tools)
 ```
-
-## Manifest
 
 ```toml
 # plugin.toml
-
 name = "my-deploy-plugin"
 version = "1.0.0"
 description = "Deployment workflows for our stack"
@@ -33,21 +47,79 @@ tool_name = "Bash"
 command = "notify-deploy-status"
 ```
 
-## Installing plugins
+## Claude-style format
 
-Place plugin directories in:
-
-| Location | Scope |
-|----------|-------|
-| `.agent/plugins/` | Project-specific |
-| `~/.config/agent-code/plugins/` | Available in all projects |
-
-## Commands
+A directory with `.claude-plugin/plugin.json` plus convention-named sub-directories. agent-code reads the JSON manifest and discovers the contributed surface from the directory layout. No conversion step is required — drop the directory in and it is loaded.
 
 ```
-> /plugins
-Loaded 1 plugins:
-  my-deploy-plugin v1.0.0 — Deployment workflows for our stack
+my-claude-plugin/
+  .claude-plugin/
+    plugin.json
+  commands/
+    hello.md             ← slash command, body = prompt template
+  agents/
+    reviewer.md          ← surfaced as `agent:reviewer`
+  skills/
+    onboard.md
+  hooks/
+    hooks.json
+  .mcp.json              (optional)
 ```
 
-Skills from plugins are automatically registered and appear in `/skills` output.
+Recognised JSON manifest fields: `name`, `version`, `description`, `author` (string or `{"name": "..."}`).
+
+`hooks/hooks.json` (or any `hooks/*.json`) is parsed for entries of the form `{ "event": ..., "command": ..., "toolName": ... }`. Either a top-level `{ "hooks": [...] }` wrapper or a bare array is accepted.
+
+`.mcp.json` registers MCP servers at runtime only — agent-code never writes to your on-disk MCP config when loading a claude-style plugin. The runtime view in `/plugin list` flags the entry with `mcp:N (runtime-only)` so it is unambiguous where the server registration came from.
+
+If a directory contains `.claude-plugin/marketplace.json`, agent-code iterates each `plugins[].path` entry and parses each as a sub-plugin.
+
+## Codex-style format
+
+A TOML file declaring at least one `[mcp_servers.<name>]` table is treated as a codex-style plugin. agent-code synthesises one plugin entry per server (`codex-mcp-<server-name>`).
+
+```toml
+# config.toml
+[mcp_servers.echo]
+command = "echo-mcp"
+args = ["--stdio"]
+
+[mcp_servers.echo.env]
+DEBUG = "1"
+```
+
+Sibling `prompts/*.md` files are loaded as slash commands, mirroring the convention of putting prompt markdown next to the config.
+
+The detection rule is intentionally narrow: a TOML file with no `mcp_servers.*` tables is **not** considered a plugin. This keeps the loader from accidentally picking up your project's `settings.toml` or any other unrelated configuration file.
+
+When `~/.codex/config.toml` and `~/.codex/prompts/` exist on the host, agent-code surfaces them as `sibling`-source plugins so codex users can keep using the same MCP servers and prompts without copy-pasting them into the agent-code config.
+
+## Slash commands
+
+```
+/plugin list                — show every loaded plugin with source labels
+/plugin enable <id>         — enable for the current project
+/plugin disable <id>        — disable for the current project
+/plugin install <path>      — install a local plugin directory
+/plugin remove <id>         — uninstall a non-builtin plugin
+```
+
+Per-project enable/disable state is persisted to `<project>/.agent/plugin-settings.toml`, written atomically with `0600` mode preserved.
+
+`/plugin install` accepts a local directory path. URL-based marketplace fetching is reserved for a follow-up release; the slash command stub returns "not yet implemented" if you pass an `http(s)://` URL today.
+
+## Trust model
+
+- Plugin-contributed slash commands and hooks flow through the existing permission system. There is no "trusted" bypass for plugins.
+- Plugin-contributed executable tools (binaries discovered in `bin/`) are still subject to the bash-tool destructive-pattern detection and the protected-directory list — a plugin cannot escalate above the user's own permission profile.
+- A plugin's MCP server registration is added to the **runtime** MCP config only. The on-disk config is never modified at load time. `/plugin list` flags every plugin-derived MCP entry with `runtime-only` so the source is visible.
+- Disabling a plugin removes its skills, hooks, and MCP server contributions from the active session. Re-enable to restore them.
+
+## Compatibility
+
+| Adjacent format | What we load | What we ignore |
+|-----------------|--------------|----------------|
+| Claude-style | manifest, `commands/*.md`, `agents/*.md`, `skills/*.md`, `hooks/*.json`, `.mcp.json`, `marketplace.json` | unknown manifest fields; non-`*.md` files in `commands/`, `agents/`, `skills/`; format-specific hook keys we don't model |
+| Codex-style | `[mcp_servers.<name>]` tables, sibling `prompts/*.md` | every other section in the TOML file (we never overwrite it) |
+
+The adapters convert at load time. The rest of agent-code only sees the normalised internal representation, so bug reports and feature requests that mention a specific format author target should be filed as such — the conversion path is the surface to debug.

@@ -13,6 +13,7 @@
 //! that shouldn't be committed (e.g. a personal API base URL while keeping
 //! the team's shared `settings.toml` intact).
 
+pub mod atomic;
 pub mod migrations;
 mod schema;
 

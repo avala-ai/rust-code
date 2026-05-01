@@ -1,0 +1,6 @@
+[mcp_servers.echo]
+command = "codex-echo-mcp"
+args = ["--stdio"]
+
+[mcp_servers.echo.env]
+DEBUG = "1"

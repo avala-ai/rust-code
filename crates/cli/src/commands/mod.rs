@@ -247,6 +247,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "plugin",
+        aliases: &[],
+        description: "Manage plugins (subcommands: list, enable <id>, disable <id>, install <path>, remove <id>)",
+        hidden: false,
+    },
+    Command {
         name: "verbose",
         aliases: &[],
         description: "Toggle verbose output",
@@ -1406,6 +1412,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                     println!("  {} v{} — {}", p.manifest.name, ver, desc);
                 }
             }
+            CommandResult::Handled
+        }
+        Some("plugin") => {
+            execute_plugin(args, engine);
             CommandResult::Handled
         }
         Some("verbose") => {
@@ -5591,6 +5601,200 @@ fn execute_debug_tool_call(args: Option<&str>, engine: &QueryEngine) {
     }
 }
 
+/// `/plugin` subcommand dispatcher. Sub-shapes:
+///
+/// - `/plugin list` — same surface as `/plugins` but with source labels
+/// - `/plugin enable <id>` / `/plugin disable <id>` — write per-project state
+/// - `/plugin install <path-or-url>` — local path only in this MVP
+/// - `/plugin remove <id>` — delete on-disk plugin (refuses `@builtin/*`)
+fn execute_plugin(args: Option<&str>, engine: &agent_code_lib::query::QueryEngine) {
+    use agent_code_lib::services::plugins::{PluginRegistry, settings::PluginSettings};
+
+    let cwd = std::path::PathBuf::from(&engine.state().cwd);
+    let raw = args.unwrap_or("").trim();
+    let (sub, rest) = raw
+        .split_once(char::is_whitespace)
+        .map(|(s, r)| (s, r.trim()))
+        .unwrap_or((raw, ""));
+
+    match sub {
+        "" | "help" => {
+            println!("Plugin management:");
+            println!("  /plugin list                — list every loaded plugin with source labels");
+            println!("  /plugin enable <id>         — enable a plugin for this project");
+            println!("  /plugin disable <id>        — disable a plugin for this project");
+            println!("  /plugin install <path>      — install a plugin from a local directory");
+            println!("  /plugin remove <id>         — uninstall a non-builtin plugin");
+        }
+        "list" => {
+            let registry = PluginRegistry::load_all_with_compat(Some(&cwd), true);
+            if registry.all().is_empty() {
+                println!("No plugins loaded.");
+                return;
+            }
+            println!("Loaded {} plugins:", registry.all().len());
+            for p in registry.all() {
+                let desc = p.manifest.description.as_deref().unwrap_or("");
+                let ver = p.manifest.version.as_deref().unwrap_or("?");
+                let state = if p.is_enabled() {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                let mut tags = vec![
+                    p.source.label().to_string(),
+                    p.manifest.format.label().to_string(),
+                ];
+                if !p.manifest.mcp_servers.is_empty() {
+                    tags.push(format!(
+                        "mcp:{} (runtime-only)",
+                        p.manifest.mcp_servers.len()
+                    ));
+                }
+                println!(
+                    "  {} v{} [{}] [{}] — {}",
+                    p.id(),
+                    ver,
+                    state,
+                    tags.join(", "),
+                    desc
+                );
+            }
+        }
+        "enable" | "disable" => {
+            if rest.is_empty() {
+                println!("Usage: /plugin {sub} <id>");
+                return;
+            }
+            let registry = PluginRegistry::load_all_with_compat(Some(&cwd), true);
+            if registry.find(rest).is_none() {
+                println!("No plugin matching '{rest}'. Try /plugin list.");
+                return;
+            }
+            let path = cwd.join(".agent").join("plugin-settings.toml");
+            let mut s = match PluginSettings::load(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("Failed to load plugin settings: {e}");
+                    return;
+                }
+            };
+            let new_state = sub == "enable";
+            s.set_enabled(rest, new_state);
+            match s.save(&path) {
+                Ok(()) => println!(
+                    "{} plugin '{}' for this project (wrote {}).",
+                    if new_state { "Enabled" } else { "Disabled" },
+                    rest,
+                    path.display()
+                ),
+                Err(e) => println!("Failed to save plugin settings: {e}"),
+            }
+        }
+        "install" => {
+            if rest.is_empty() {
+                println!("Usage: /plugin install <path-to-plugin-dir>");
+                return;
+            }
+            // URL-based installs are deliberately stubbed in the MVP.
+            // The architecture leaves this as a drop-in extension point;
+            // for now, point the user at the local-path workflow.
+            // TODO: signed registry fetch + checksum verification.
+            if rest.starts_with("http://") || rest.starts_with("https://") {
+                println!(
+                    "URL-based marketplace fetching is not yet implemented. Use \
+                     `/plugin install <path>` with a local directory for now."
+                );
+                return;
+            }
+            let src = std::path::Path::new(rest);
+            if !src.is_dir() {
+                println!("Source must be an existing directory: {rest}");
+                return;
+            }
+            let dest_root = cwd.join(".agent").join("plugins");
+            let name = src.file_name().and_then(|s| s.to_str()).unwrap_or("plugin");
+            let dest = dest_root.join(name);
+            if dest.exists() {
+                println!("Already installed at {}. Remove it first.", dest.display());
+                return;
+            }
+            if let Err(e) = std::fs::create_dir_all(&dest_root) {
+                println!("Could not create plugin dir: {e}");
+                return;
+            }
+            match copy_dir_recursive(src, &dest) {
+                Ok(()) => println!("Installed plugin into {}.", dest.display()),
+                Err(e) => println!("Install failed: {e}"),
+            }
+        }
+        "remove" | "uninstall" => {
+            if rest.is_empty() {
+                println!("Usage: /plugin remove <id>");
+                return;
+            }
+            if rest.starts_with("@builtin/") {
+                println!("Refusing to remove builtin plugin '{rest}'.");
+                return;
+            }
+            let registry = PluginRegistry::load_all_with_compat(Some(&cwd), false);
+            let plugin = match registry.find(rest) {
+                Some(p) => p,
+                None => {
+                    println!("No plugin matching '{rest}'.");
+                    return;
+                }
+            };
+            let path = plugin.path.clone();
+            if !path.is_dir() {
+                println!(
+                    "Cannot remove '{rest}': not a managed on-disk plugin (path: {}).",
+                    path.display()
+                );
+                return;
+            }
+            print!(
+                "Delete plugin directory {} for good? [y/N] ",
+                path.display()
+            );
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+            let mut answer = String::new();
+            if std::io::stdin().read_line(&mut answer).is_err() {
+                println!("Cancelled.");
+                return;
+            }
+            if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+                println!("Cancelled.");
+                return;
+            }
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => println!("Removed {}.", path.display()),
+                Err(e) => println!("Remove failed: {e}"),
+            }
+        }
+        other => {
+            println!("Unknown subcommand '{other}'. Try /plugin help.");
+        }
+    }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7361,5 +7565,32 @@ mod tests {
         assert!(!super::is_reserved_team_slug("console"));
         assert!(!super::is_reserved_team_slug("memorize"));
         assert!(!super::is_reserved_team_slug("deploy"));
+    }
+
+    // ---- /plugin helpers ----
+
+    #[test]
+    fn copy_dir_recursive_preserves_tree_shape() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("nested")).unwrap();
+        std::fs::write(src.path().join("a.txt"), "alpha").unwrap();
+        std::fs::write(src.path().join("nested").join("b.txt"), "beta").unwrap();
+
+        super::copy_dir_recursive(src.path(), &dst.path().join("out")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("out").join("a.txt")).unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("out").join("nested").join("b.txt")).unwrap(),
+            "beta"
+        );
+    }
+
+    #[test]
+    fn plugin_command_is_registered() {
+        assert!(super::COMMANDS.iter().any(|c| c.name == "plugin"));
+        assert!(super::COMMANDS.iter().any(|c| c.name == "plugins"));
     }
 }
