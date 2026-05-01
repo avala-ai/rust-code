@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::config::Config;
 use crate::llm::message::{Message, Usage};
-use crate::output_styles::OutputStyle;
+use crate::output_styles::{AgentKind, OutputStyle};
 
 /// Preset response styles selectable via `/output-style`.
 ///
@@ -181,21 +181,38 @@ impl AppState {
     ///
     /// A disk-loaded style (set via `/output-style <name>` when the
     /// id resolves to a disk file) wins over the built-in
-    /// `response_style`. Returns an empty string when neither
-    /// contributes a fragment.
-    pub fn active_output_style_fragment(&self) -> &str {
+    /// `response_style`. Returns `None` when no style contributes a
+    /// fragment for `kind` — either the active style's `applies_to`
+    /// list excludes this role or the active style is `Default`.
+    pub fn active_output_style_fragment(&self, kind: AgentKind) -> Option<&str> {
         if let Some(style) = &self.disk_output_style {
-            return style.body.as_str();
+            if !style.applies_to_kind(kind) {
+                return None;
+            }
+            let body = style.body.as_str();
+            return if body.is_empty() { None } else { Some(body) };
         }
-        self.response_style.prompt_fragment()
+        let fragment = self.response_style.prompt_fragment();
+        if fragment.is_empty() {
+            None
+        } else {
+            Some(fragment)
+        }
     }
 
-    /// Display name of the active output style.
-    pub fn active_output_style_name(&self) -> &str {
+    /// Display name of the active output style for `kind`.
+    ///
+    /// Returns `None` when the active disk style's `applies_to` list
+    /// excludes this role. Built-in styles always apply to every kind,
+    /// so for them this never returns `None`.
+    pub fn active_output_style_name(&self, kind: AgentKind) -> Option<&str> {
         if let Some(style) = &self.disk_output_style {
-            return style.name.as_str();
+            if !style.applies_to_kind(kind) {
+                return None;
+            }
+            return Some(style.name.as_str());
         }
-        self.response_style.name()
+        Some(self.response_style.name())
     }
 }
 
@@ -331,6 +348,46 @@ mod tests {
         state.record_usage(&u1, "claude-sonnet-4");
         state.record_usage(&u2, "claude-sonnet-4");
         assert_eq!(state.total_usage.output_tokens, 80); // 50 + 30.
+    }
+
+    #[test]
+    fn active_output_style_fragment_filters_by_applies_to() {
+        use crate::output_styles::{OutputStyle, OutputStyleSource};
+
+        let mut state = AppState::new(crate::config::Config::default());
+        state.disk_output_style = Some(OutputStyle {
+            name: "subagent-only".into(),
+            description: "d".into(),
+            body: "subagent body".into(),
+            applies_to: vec!["subagent".to_string()],
+            source: OutputStyleSource::Project,
+            source_path: None,
+            content_hash: [0u8; 12],
+        });
+
+        // applies_to=[subagent] excludes the main agent — both fragment
+        // and name must be `None` so the system prompt builder skips
+        // the block entirely.
+        assert_eq!(state.active_output_style_fragment(AgentKind::Main), None);
+        assert_eq!(state.active_output_style_name(AgentKind::Main), None);
+        assert_eq!(
+            state.active_output_style_fragment(AgentKind::Subagent),
+            Some("subagent body")
+        );
+        assert_eq!(
+            state.active_output_style_name(AgentKind::Subagent),
+            Some("subagent-only")
+        );
+    }
+
+    #[test]
+    fn active_output_style_fragment_returns_none_for_default_response_style() {
+        let state = AppState::new(crate::config::Config::default());
+        assert_eq!(state.active_output_style_fragment(AgentKind::Main), None);
+        assert_eq!(
+            state.active_output_style_name(AgentKind::Main),
+            Some("default")
+        );
     }
 
     #[test]

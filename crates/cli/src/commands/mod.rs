@@ -3857,8 +3857,14 @@ fn compute_context_breakdown(
     use agent_code_lib::services::tokens;
 
     // System prompt — rebuild from scratch here so the breakdown is
-    // accurate even if the engine has a stale cache.
-    let system_prompt = agent_code_lib::query::build_system_prompt(tools, state);
+    // accurate even if the engine has a stale cache. The breakdown is
+    // surfaced from the user-facing slash commands, so the `Main` role
+    // is correct (subagents don't have a UI to print this view).
+    let system_prompt = agent_code_lib::query::build_system_prompt(
+        tools,
+        state,
+        agent_code_lib::output_styles::AgentKind::Main,
+    );
     let system_prompt_tokens = tokens::estimate_tokens(&system_prompt);
 
     let mut user_text = 0u64;
@@ -4204,7 +4210,9 @@ fn execute_output_style(args: Option<&str>, engine: &mut QueryEngine) {
     let registry = agent_code_lib::output_styles::OutputStyleRegistry::load_all(Some(&cwd));
 
     if raw.is_empty() {
-        let active_name = engine.state().active_output_style_name().to_string();
+        // Listing always shows the currently active id regardless of
+        // `applies_to` — the user wants to see what they picked.
+        let active_name = active_output_style_name_for_listing(engine.state());
 
         println!("Available response styles:");
         // Sort: built-ins first (in canonical order), then disk styles
@@ -4244,30 +4252,68 @@ fn execute_output_style(args: Option<&str>, engine: &mut QueryEngine) {
         return;
     }
 
-    // Try built-ins first. ResponseStyle::from_name handles aliases
-    // (off, terse, explain, teach) that the disk registry would not.
-    if let Some(new_style) = agent_code_lib::state::ResponseStyle::from_name(raw) {
-        engine.state_mut().response_style = new_style;
-        // Picking a built-in clears any active disk override.
-        engine.state_mut().disk_output_style = None;
-        println!("Response style set to '{}'.", new_style.name());
-        return;
+    match resolve_output_style_selection(raw, &registry) {
+        OutputStyleSelection::Disk(style) => {
+            let display_name = style.name.clone();
+            let label = style.source.label();
+            engine.state_mut().response_style = agent_code_lib::state::ResponseStyle::Default;
+            engine.state_mut().disk_output_style = Some(style);
+            println!("Response style set to '{display_name}' ({label}).");
+        }
+        OutputStyleSelection::BuiltIn(new_style) => {
+            engine.state_mut().response_style = new_style;
+            // Picking a built-in clears any active disk override.
+            engine.state_mut().disk_output_style = None;
+            println!("Response style set to '{}'.", new_style.name());
+        }
+        OutputStyleSelection::Unknown => {
+            eprintln!("Unknown style: {raw}");
+            println!("Run /output-style with no argument to see all available styles.");
+        }
     }
+}
 
-    // Fall through to disk styles (case-sensitive — ids come from
-    // user-controlled files, not free-form input).
+/// Outcome of resolving a user-typed `/output-style <name>` argument
+/// against the disk registry plus the built-in `ResponseStyle` aliases.
+///
+/// Disk styles win first so user-authored overrides of built-in ids
+/// (e.g. `concise.md` shadowing the canned `concise` voice) actually
+/// activate. Built-ins are checked second so `ResponseStyle` aliases
+/// like `off`, `terse`, `explain`, and `teach` still resolve when no
+/// disk file matches.
+enum OutputStyleSelection {
+    Disk(agent_code_lib::output_styles::OutputStyle),
+    BuiltIn(agent_code_lib::state::ResponseStyle),
+    Unknown,
+}
+
+fn resolve_output_style_selection(
+    raw: &str,
+    registry: &agent_code_lib::output_styles::OutputStyleRegistry,
+) -> OutputStyleSelection {
+    // Disk first — overrides with the same id as a built-in must win.
     if let Some(style) = registry.find(raw) {
-        let chosen = style.clone();
-        let display_name = chosen.name.clone();
-        let label = chosen.source.label();
-        engine.state_mut().response_style = agent_code_lib::state::ResponseStyle::Default;
-        engine.state_mut().disk_output_style = Some(chosen);
-        println!("Response style set to '{display_name}' ({label}).");
-        return;
+        return OutputStyleSelection::Disk(style.clone());
     }
 
-    eprintln!("Unknown style: {raw}");
-    println!("Run /output-style with no argument to see all available styles.");
+    if let Some(new_style) = agent_code_lib::state::ResponseStyle::from_name(raw) {
+        return OutputStyleSelection::BuiltIn(new_style);
+    }
+
+    OutputStyleSelection::Unknown
+}
+
+/// Display name of the active style for the `/output-style` listing.
+///
+/// Differs from `AppState::active_output_style_name(kind)` in that the
+/// listing wants to show whatever the user picked, even if the disk
+/// style's `applies_to` filters it out for the current role — the
+/// user needs feedback that their selection is in effect.
+fn active_output_style_name_for_listing(state: &agent_code_lib::state::AppState) -> String {
+    if let Some(style) = state.disk_output_style.as_ref() {
+        return style.name.clone();
+    }
+    state.response_style.name().to_string()
 }
 
 /// Execute `/reload` — rescan on-disk extensions and invalidate the
@@ -6692,6 +6738,119 @@ mod tests {
                 idx < sandbox_idx,
                 "flag {flag} should come before sandbox in {line:?}"
             );
+        }
+    }
+
+    // ---- /output-style resolution ----
+
+    /// Stage a single fixture file under `<dir>/.agent/output-styles/`.
+    fn stage_disk_style(project_root: &std::path::Path, file_name: &str, contents: &str) {
+        let styles_dir = project_root.join(".agent").join("output-styles");
+        std::fs::create_dir_all(&styles_dir).unwrap();
+        let path = styles_dir.join(file_name);
+        std::fs::write(&path, contents).unwrap();
+    }
+
+    /// Regression for the codex finding: a disk style whose id collides
+    /// with a built-in (`concise`) must win. The previous resolution
+    /// order checked built-ins first, so the override never activated.
+    #[test]
+    fn output_style_disk_override_wins_over_builtin_with_same_id() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_disk_style(
+            dir.path(),
+            "concise.md",
+            "---\n\
+             name: concise\n\
+             description: Project override of concise\n\
+             ---\n\
+             Custom concise prompt body.",
+        );
+
+        let registry =
+            agent_code_lib::output_styles::OutputStyleRegistry::load_all(Some(dir.path()));
+        match resolve_output_style_selection("concise", &registry) {
+            OutputStyleSelection::Disk(style) => {
+                assert_eq!(
+                    style.source,
+                    agent_code_lib::output_styles::OutputStyleSource::Project,
+                    "disk override must beat the built-in"
+                );
+                assert!(style.body.contains("Custom concise prompt"));
+            }
+            other => panic!("expected Disk match, got {other:?}"),
+        }
+    }
+
+    /// Without a colliding disk file the canned `ResponseStyle::Concise`
+    /// still resolves — the new resolution order must not regress
+    /// built-in matching when there's nothing on disk.
+    #[test]
+    fn output_style_builtin_resolves_when_no_disk_match() {
+        let dir = tempfile::tempdir().unwrap();
+        // No fixtures staged — only built-ins are available.
+        let registry =
+            agent_code_lib::output_styles::OutputStyleRegistry::load_all(Some(dir.path()));
+        match resolve_output_style_selection("concise", &registry) {
+            // The built-in `concise` is itself in the registry, so the
+            // disk-first lookup matches it (source = BuiltIn). Either
+            // outcome is correct — what matters is that the resolution
+            // doesn't fall through to `Unknown`.
+            OutputStyleSelection::Disk(style) => {
+                assert_eq!(
+                    style.source,
+                    agent_code_lib::output_styles::OutputStyleSource::BuiltIn
+                );
+                assert_eq!(style.name, "concise");
+            }
+            OutputStyleSelection::BuiltIn(s) => {
+                assert_eq!(s, agent_code_lib::state::ResponseStyle::Concise);
+            }
+            OutputStyleSelection::Unknown => panic!("`concise` must resolve to something"),
+        }
+    }
+
+    /// `ResponseStyle` aliases (`off`, `terse`, `explain`, `teach`) are
+    /// not registered as disk entries, so they fall through to the
+    /// built-in matcher.
+    #[test]
+    fn output_style_aliases_still_resolve_to_builtins() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry =
+            agent_code_lib::output_styles::OutputStyleRegistry::load_all(Some(dir.path()));
+        for (alias, expected) in [
+            ("off", agent_code_lib::state::ResponseStyle::Default),
+            ("terse", agent_code_lib::state::ResponseStyle::Concise),
+            ("explain", agent_code_lib::state::ResponseStyle::Explanatory),
+            ("teach", agent_code_lib::state::ResponseStyle::Learning),
+        ] {
+            match resolve_output_style_selection(alias, &registry) {
+                OutputStyleSelection::BuiltIn(s) => assert_eq!(s, expected),
+                other => panic!("alias {alias:?}: expected BuiltIn, got {other:?}"),
+            }
+        }
+    }
+
+    /// Unknown ids (no disk match, not a built-in alias) report Unknown
+    /// so the caller can print the usage hint.
+    #[test]
+    fn output_style_unknown_id_returns_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry =
+            agent_code_lib::output_styles::OutputStyleRegistry::load_all(Some(dir.path()));
+        match resolve_output_style_selection("nope-not-a-style", &registry) {
+            OutputStyleSelection::Unknown => {}
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    impl std::fmt::Debug for OutputStyleSelection {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Disk(style) => write!(f, "Disk({}, {:?})", style.name, style.source),
+                Self::BuiltIn(s) => write!(f, "BuiltIn({s:?})"),
+                Self::Unknown => write!(f, "Unknown"),
+            }
         }
     }
 

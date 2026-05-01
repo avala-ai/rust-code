@@ -145,6 +145,11 @@ impl Tool for AgentTool {
             }
         }
 
+        // Mark the child process as running in the `subagent` role.
+        // The CLI reads this to filter output styles whose
+        // `applies_to` list excludes subagents.
+        cmd.env("AGENT_CODE_SUBAGENT", "1");
+
         let timeout = std::time::Duration::from_secs(300); // 5 minute timeout.
 
         let result = tokio::select! {

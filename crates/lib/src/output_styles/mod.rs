@@ -40,7 +40,31 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
+
+/// Which agent in the runtime is consuming the output style.
+///
+/// The `applies_to` frontmatter list is matched against this so a
+/// style authored for one role doesn't bleed into the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentKind {
+    /// The user-facing top-level agent (interactive REPL, `--prompt`
+    /// one-shots run directly by a human).
+    Main,
+    /// A child agent spawned by the `Agent` tool.
+    Subagent,
+}
+
+impl AgentKind {
+    /// Canonical string id used in `applies_to` lists.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Subagent => "subagent",
+        }
+    }
+}
 
 /// Where an output style was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,14 +105,27 @@ pub struct OutputStyle {
     pub source: OutputStyleSource,
     /// The file the style was loaded from. `None` for built-ins.
     pub source_path: Option<PathBuf>,
+    /// Stable digest of the rendered body. Hashed into the system-prompt
+    /// cache key so editing a style file in-session and re-selecting the
+    /// same id correctly invalidates the cached prompt.
+    pub content_hash: [u8; 12],
 }
 
 impl OutputStyle {
-    /// Whether this style should be active for a given subagent kind.
+    /// Whether this style should be active for the given agent role.
     /// An empty `applies_to` list means "all kinds".
-    pub fn applies_to_kind(&self, kind: &str) -> bool {
-        self.applies_to.is_empty() || self.applies_to.iter().any(|k| k == kind)
+    pub fn applies_to_kind(&self, kind: AgentKind) -> bool {
+        self.applies_to.is_empty() || self.applies_to.iter().any(|k| k == kind.as_str())
     }
+}
+
+/// 12-byte SHA256 prefix of `body` — long enough to detect any real
+/// edit, short enough to keep the cache key cheap.
+fn body_digest(body: &str) -> [u8; 12] {
+    let digest = Sha256::digest(body.as_bytes());
+    let mut out = [0u8; 12];
+    out.copy_from_slice(&digest[..12]);
+    out
 }
 
 /// Frontmatter schema for disk-loaded styles.
@@ -150,11 +187,7 @@ impl OutputStyleRegistry {
     /// working without a disk file.
     fn load_builtins(&mut self) {
         let entries: &[(&str, &str, &str)] = &[
-            (
-                "default",
-                "No override (the codebase's default voice).",
-                "",
-            ),
+            ("default", "No override (the codebase's default voice).", ""),
             (
                 "concise",
                 "Shorter responses with fewer qualifiers.",
@@ -187,6 +220,7 @@ impl OutputStyleRegistry {
                 applies_to: Vec::new(),
                 source: OutputStyleSource::BuiltIn,
                 source_path: None,
+                content_hash: body_digest(body),
             });
         }
     }
@@ -215,9 +249,7 @@ impl OutputStyleRegistry {
 
             match load_style_file(&path, source) {
                 Ok(style) => {
-                    if let Some(existing) =
-                        self.styles.iter().position(|s| s.name == style.name)
-                    {
+                    if let Some(existing) = self.styles.iter().position(|s| s.name == style.name) {
                         warn!(
                             "Output style '{}' from {} overrides {} entry",
                             style.name,
@@ -288,13 +320,16 @@ fn load_style_file(path: &Path, source: OutputStyleSource) -> Result<OutputStyle
         })
         .collect();
 
+    let body = body.trim().to_string();
+    let content_hash = body_digest(&body);
     Ok(OutputStyle {
         name,
         description,
-        body: body.trim().to_string(),
+        body,
         applies_to,
         source,
         source_path: Some(path.to_path_buf()),
+        content_hash,
     })
 }
 
@@ -455,10 +490,7 @@ fn parse_inline_list(value: &str) -> Result<Vec<String>, String> {
             .split(',')
             .map(|s| parse_scalar(s.trim()))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(items
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect())
+        Ok(items.into_iter().filter(|s| !s.is_empty()).collect())
     } else {
         // Bare scalar — treat as a single-item list.
         Ok(vec![parse_scalar(v)?])
@@ -578,9 +610,10 @@ mod tests {
             applies_to: Vec::new(),
             source: OutputStyleSource::BuiltIn,
             source_path: None,
+            content_hash: body_digest(""),
         };
-        assert!(style.applies_to_kind("main"));
-        assert!(style.applies_to_kind("any-other-kind"));
+        assert!(style.applies_to_kind(AgentKind::Main));
+        assert!(style.applies_to_kind(AgentKind::Subagent));
     }
 
     #[test]
@@ -592,9 +625,19 @@ mod tests {
             applies_to: vec!["main".into()],
             source: OutputStyleSource::BuiltIn,
             source_path: None,
+            content_hash: body_digest(""),
         };
-        assert!(style.applies_to_kind("main"));
-        assert!(!style.applies_to_kind("subagent"));
+        assert!(style.applies_to_kind(AgentKind::Main));
+        assert!(!style.applies_to_kind(AgentKind::Subagent));
+    }
+
+    #[test]
+    fn content_hash_changes_when_body_changes() {
+        // The cache key in `query::run_loop` depends on this digest, so
+        // any body edit must produce a different hash. A regression here
+        // would cause stale system prompts after `/reload`.
+        assert_ne!(body_digest("alpha"), body_digest("beta"));
+        assert_eq!(body_digest("alpha"), body_digest("alpha"));
     }
 
     #[test]
@@ -623,8 +666,8 @@ mod tests {
         assert_eq!(style.description, "Warm tone for pairing");
         assert_eq!(style.applies_to, vec!["main".to_string()]);
         assert!(style.body.contains("Speak warmly"));
-        assert!(style.applies_to_kind("main"));
-        assert!(!style.applies_to_kind("subagent"));
+        assert!(style.applies_to_kind(AgentKind::Main));
+        assert!(!style.applies_to_kind(AgentKind::Subagent));
     }
 
     #[test]

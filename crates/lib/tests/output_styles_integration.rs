@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 
-use agent_code_lib::output_styles::{OutputStyleRegistry, OutputStyleSource};
+use agent_code_lib::output_styles::{AgentKind, OutputStyleRegistry, OutputStyleSource};
 
 /// Copy every fixture under `crates/lib/tests/fixtures/output_styles/`
 /// into a fake `<project>/.agent/output-styles/` directory inside a
@@ -69,8 +69,8 @@ fn project_directory_styles_are_picked_up() {
         "body must come from the markdown file, got: {:?}",
         friendly.body
     );
-    assert!(friendly.applies_to_kind("main"));
-    assert!(!friendly.applies_to_kind("planner"));
+    assert!(friendly.applies_to_kind(AgentKind::Main));
+    assert!(friendly.applies_to_kind(AgentKind::Subagent));
 }
 
 #[test]
@@ -121,6 +121,47 @@ fn malformed_files_are_skipped_without_crashing() {
     assert!(
         registry.find("default").is_some(),
         "built-ins must still be present after a parse failure"
+    );
+}
+
+/// Regression for the codex finding: editing a style file in-session
+/// must change its `content_hash`, otherwise the system-prompt cache
+/// (which mixes the active style's content hash into its key) would
+/// stay stale after a `/reload`.
+#[test]
+fn editing_disk_style_body_changes_content_hash() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let styles_dir = tempdir.path().join(".agent").join("output-styles");
+    fs::create_dir_all(&styles_dir).unwrap();
+    let path = styles_dir.join("custom.md");
+
+    fs::write(
+        &path,
+        "---\n\
+         name: custom\n\
+         description: Initial body\n\
+         ---\n\
+         First version of the prompt body.",
+    )
+    .unwrap();
+    let first = OutputStyleRegistry::load_all(Some(tempdir.path()));
+    let hash_before = first.find("custom").unwrap().content_hash;
+
+    fs::write(
+        &path,
+        "---\n\
+         name: custom\n\
+         description: Initial body\n\
+         ---\n\
+         Second version of the prompt body — totally different.",
+    )
+    .unwrap();
+    let second = OutputStyleRegistry::load_all(Some(tempdir.path()));
+    let hash_after = second.find("custom").unwrap().content_hash;
+
+    assert_ne!(
+        hash_before, hash_after,
+        "editing the body must produce a different content_hash"
     );
 }
 

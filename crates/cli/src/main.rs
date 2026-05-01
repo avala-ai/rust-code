@@ -34,10 +34,22 @@ use std::sync::Arc;
 
 use agent_code_lib::config::{ApiAuthMode, Config};
 use agent_code_lib::llm::provider::{ProviderKind, WireFormat, detect_provider};
+use agent_code_lib::output_styles::AgentKind;
 use agent_code_lib::permissions::PermissionChecker;
 use agent_code_lib::query::QueryEngine;
 use agent_code_lib::state::AppState;
 use agent_code_lib::tools::registry::ToolRegistry;
+
+/// Detect whether this process was spawned as a child by the parent's
+/// `Agent` tool. The Agent tool sets `AGENT_CODE_SUBAGENT=1` in the
+/// child's environment so the child knows to filter output styles whose
+/// `applies_to` excludes the `subagent` role.
+fn detect_agent_kind() -> AgentKind {
+    match std::env::var("AGENT_CODE_SUBAGENT") {
+        Ok(v) if !v.is_empty() && v != "0" => AgentKind::Subagent,
+        _ => AgentKind::Main,
+    }
+}
 
 /// AI-powered coding agent for the terminal.
 #[derive(Parser, Debug)]
@@ -633,8 +645,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let agent_kind = detect_agent_kind();
+
     if cli.dump_system_prompt {
-        let prompt = agent_code_lib::query::build_system_prompt(&tool_registry, &app_state);
+        let prompt =
+            agent_code_lib::query::build_system_prompt(&tool_registry, &app_state, agent_kind);
         println!("{prompt}");
         return Ok(());
     }
@@ -651,6 +666,7 @@ async fn main() -> anyhow::Result<()> {
             max_turns: cli.max_turns,
             verbose: cli.verbose,
             unattended: cli.prompt.is_some(),
+            agent_kind,
         },
     );
 

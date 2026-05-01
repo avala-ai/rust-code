@@ -11,6 +11,7 @@ use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::llm::provider::Provider;
+use crate::output_styles::AgentKind;
 use crate::permissions::PermissionChecker;
 use crate::query::{QueryEngine, QueryEngineConfig, StreamSink};
 use crate::state::AppState;
@@ -89,6 +90,9 @@ impl ScheduleExecutor {
                 max_turns: schedule.max_turns.or(Some(25)),
                 verbose: false,
                 unattended: true,
+                // Scheduled jobs are top-level agent runs, not children
+                // spawned by the Agent tool, so they get the `Main` role.
+                agent_kind: AgentKind::Main,
             },
         );
 
