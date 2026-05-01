@@ -1,0 +1,6 @@
+{
+  "name": "claude-bar",
+  "version": "0.2.0",
+  "description": "Claude-style format test plugin",
+  "author": { "name": "test-suite" }
+}

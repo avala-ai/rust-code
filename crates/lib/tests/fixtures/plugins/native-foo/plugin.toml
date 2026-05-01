@@ -1,0 +1,10 @@
+name = "native-foo"
+version = "0.1.0"
+description = "Native-format test plugin"
+author = "test-suite"
+skills = ["foo"]
+
+[[hooks]]
+event = "post_tool_use"
+tool_name = "Bash"
+command = "echo native hook"
