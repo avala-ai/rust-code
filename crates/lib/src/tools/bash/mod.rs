@@ -7,6 +7,28 @@
 //! - Destructive command warnings
 //! - Output truncation for large results
 //! - Cancellation via CancellationToken
+//!
+//! The safety pipeline is split into named sub-modules so each helper
+//! can be tested in isolation:
+//!
+//! - [`bash_security`] — destructive-command classification
+//! - [`command_semantics`] — coarse effect classification
+//! - [`read_only_validation`] — refuse mutations under read-only profile
+//! - [`sandbox_decision`] — single decision function for a command
+//! - [`sed_edit_parser`] + [`sed_validation`] — gate `sed -i` through the
+//!   FileEdit permission path
+//!
+//! `bash.rs` itself is now a thin orchestrator: it calls the helpers in
+//! order from `validate_input`, then dispatches to the shell with the
+//! sandbox wrapping the host already configured.
+
+pub mod bash_security;
+pub mod command_semantics;
+pub mod protected_paths;
+pub mod read_only_validation;
+pub mod sandbox_decision;
+pub mod sed_edit_parser;
+pub mod sed_validation;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -19,89 +41,30 @@ use tokio::process::Command;
 use super::{Tool, ToolContext, ToolResult};
 use crate::error::ToolError;
 
+pub use bash_security::{DestructiveFinding, DestructivenessLevel, classify_destructive};
+pub use command_semantics::{Effect, classify, classify_single, is_read_only};
+pub use read_only_validation::{PermissionProfile, ReadOnlyViolation, validate_read_only};
+pub use sandbox_decision::{ExecutionContext, SandboxDecision, decide};
+pub use sed_edit_parser::{SedEdit, parse_sed_edits};
+pub use sed_validation::{FileEditPermission, SedViolation, validate_sed_edits};
+
 /// Maximum output size before truncation (256KB).
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 
-/// Commands that are potentially destructive and warrant a warning.
-const DESTRUCTIVE_PATTERNS: &[&str] = &[
-    // Filesystem destruction.
-    "rm -rf",
-    "rm -r /",
-    "rm -fr",
-    "rmdir",
-    "shred",
-    // Git destructive operations.
-    "git reset --hard",
-    "git clean -f",
-    "git clean -d",
-    "git push --force",
-    "git push -f",
-    "git checkout -- .",
-    "git checkout -f",
-    "git restore .",
-    "git branch -D",
-    "git branch --delete --force",
-    "git stash drop",
-    "git stash clear",
-    "git rebase --abort",
-    // Database operations.
-    "DROP TABLE",
-    "DROP DATABASE",
-    "DROP SCHEMA",
-    "DELETE FROM",
-    "TRUNCATE",
-    // System operations.
-    "shutdown",
-    "reboot",
-    "halt",
-    "poweroff",
-    "init 0",
-    "init 6",
-    "mkfs",
-    "dd if=",
-    "dd of=/dev",
-    "> /dev/sd",
-    "wipefs",
-    // Permission escalation.
-    "chmod -R 777",
-    "chmod 777",
-    "chown -R",
-    // Process/system danger.
-    "kill -9",
-    "killall",
-    "pkill -9",
-    // Fork bomb.
-    ":(){ :|:& };:",
-    // NPM/package destruction.
-    "npm publish",
-    "cargo publish",
-    // Docker cleanup.
-    "docker system prune -a",
-    "docker volume prune",
-    // Kubernetes.
-    "kubectl delete namespace",
-    "kubectl delete --all",
-    // Infrastructure.
-    "terraform destroy",
-    "pulumi destroy",
-];
-
-/// Paths that should never be written to.
+/// System paths that should never be written to from the bash tool.
 ///
-/// Includes system directories (data loss risk) and the project's
-/// team-memory directory (`.agent/team-memory/`), which is read-only
-/// to the agent — only the `/team-remember` slash command may add
-/// entries. Bash redirection / `tee` / `mv` against any of these is
-/// blocked at validation time.
-const BLOCKED_WRITE_PATHS: &[&str] = &[
-    "/etc/",
-    "/usr/",
-    "/bin/",
-    "/sbin/",
-    "/boot/",
-    "/sys/",
-    "/proc/",
-    ".agent/team-memory/",
+/// Mirrors the protected-directories concept from
+/// [`crate::permissions`] but for absolute system paths that no agent
+/// command should ever modify regardless of cwd. Crate-visible so the
+/// shared `protected_paths` helper can match against it without
+/// duplicating the list.
+///
+/// The project's team-memory directory (`.agent/team-memory/`) is
+/// blocked separately by [`protected_paths`], which delegates to
+/// [`crate::permissions::is_team_memory_write_target`] so the same
+/// predicate is used by every write surface.
+pub(crate) const BLOCKED_WRITE_PATHS: &[&str] = &[
+    "/etc/", "/usr/", "/bin/", "/sbin/", "/boot/", "/sys/", "/proc/",
 ];
 
 pub struct BashTool;
@@ -160,79 +123,55 @@ impl Tool for BashTool {
     fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
         let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Skip all safety checks if dangerouslyDisableSandbox is set.
-        if input
-            .get("dangerouslyDisableSandbox")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            return Ok(());
-        }
+        // `dangerouslyDisableSandbox` only affects whether the command
+        // runs INSIDE the sandbox or outside it — it does NOT skip
+        // destructive-pattern or protected-path validation. The bypass
+        // exists for tooling that legitimately needs network or full
+        // host access; it must never let `rm -rf /` or a write into
+        // `.git/` slip through.
 
-        // Check for destructive commands.
-        let cmd_lower = command.to_lowercase();
-        for pattern in DESTRUCTIVE_PATTERNS {
-            if cmd_lower.contains(&pattern.to_lowercase()) {
-                return Err(format!(
-                    "Potentially destructive command detected: contains '{pattern}'. \
-                     This command could cause data loss or system damage. \
-                     If you're sure, ask the user for confirmation first."
-                ));
+        // Build a parsed view of the command so the classifier modules
+        // can reason about it. If the parser fails we fall back to a
+        // raw-only `ParsedCommand` so destructive-pattern detection
+        // still runs.
+        let parsed = super::bash_parse::parse_bash(command).unwrap_or_else(|| {
+            super::bash_parse::ParsedCommand {
+                raw: command.to_string(),
+                ..super::bash_parse::ParsedCommand::default()
             }
+        });
+
+        // Destructive-command classifier. Mirrors the historical inline
+        // checks (substring match, piped destructive base, chained
+        // segments) but lives in a single named helper.
+        let findings = bash_security::find_destructive(&parsed);
+        if let Some(first) = findings.first() {
+            return Err(format!(
+                "Potentially destructive command detected: {}. \
+                 This command could cause data loss or system damage. \
+                 If you're sure, ask the user for confirmation first.",
+                first.reason
+            ));
         }
 
-        // Check for piped destructive patterns.
-        // Split on pipes and check each segment's base command.
-        for segment in command.split('|') {
-            let trimmed = segment.trim();
-            let base_cmd = trimmed.split_whitespace().next().unwrap_or("");
-            if matches!(
-                base_cmd,
-                "rm" | "shred" | "dd" | "mkfs" | "wipefs" | "shutdown" | "reboot" | "halt"
-            ) {
-                return Err(format!(
-                    "Potentially destructive command in pipe: '{base_cmd}'. \
-                     Ask the user for confirmation first."
-                ));
-            }
-        }
-
-        // Check for chained destructive commands (&&, ;).
-        for segment in cmd_lower.split("&&").flat_map(|s| s.split(';')) {
-            let trimmed = segment.trim();
-            for pattern in DESTRUCTIVE_PATTERNS {
-                if trimmed.contains(&pattern.to_lowercase()) {
-                    return Err(format!(
-                        "Potentially destructive command in chain: contains '{pattern}'. \
-                         Ask the user for confirmation first."
-                    ));
-                }
-            }
-        }
-
-        // Advanced security checks (inspired by TS bashSecurity.ts).
+        // Advanced shell-injection checks (separate from destructive
+        // patterns; flagged as "obfuscation" rather than "destruction").
         check_shell_injection(command)?;
 
-        // Block writes to protected paths. Includes both system
-        // directories and the project's team-memory directory.
-        for path in BLOCKED_WRITE_PATHS {
-            if cmd_lower.contains(&format!(">{path}"))
-                || cmd_lower.contains(&format!("tee {path}"))
-                || cmd_lower.contains(&"mv ".to_string()) && cmd_lower.contains(path)
-            {
-                return Err(format!(
-                    "Cannot write to protected path '{path}'. \
-                     This directory is not writable by the agent."
-                ));
-            }
+        // Unified protected-path check: covers redirections, writer
+        // commands (cp/mv/tee/dd/install/ln/rsync/truncate),
+        // recursive shell payloads (`bash -c '…'`, `eval '…'`), and a
+        // heuristic scan of inline interpreter source (`python -c`,
+        // `node -e`, etc.) for `PROTECTED_DIRS`, the system path list
+        // `BLOCKED_WRITE_PATHS`, and the team-memory directory.
+        if let Err(violation) = protected_paths::check(command) {
+            return Err(violation.reason);
         }
 
         // Tree-sitter AST analysis (catches obfuscation that regex misses).
-        if let Some(parsed) = super::bash_parse::parse_bash(command) {
-            let violations = super::bash_parse::check_parsed_security(&parsed);
-            if let Some(first) = violations.first() {
-                return Err(format!("AST security check: {first}"));
-            }
+        let violations = super::bash_parse::check_parsed_security(&parsed);
+        if let Some(first) = violations.first() {
+            return Err(format!("AST security check: {first}"));
         }
 
         Ok(())
@@ -247,6 +186,24 @@ impl Tool for BashTool {
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidInput("'command' is required".into()))?;
+
+        // Route any `sed -i` invocations through the FileEdit permission
+        // path so protected directories stay protected from both surfaces.
+        let parsed = super::bash_parse::parse_bash(command).unwrap_or_else(|| {
+            super::bash_parse::ParsedCommand {
+                raw: command.to_string(),
+                ..super::bash_parse::ParsedCommand::default()
+            }
+        });
+        if let Err(violation) =
+            sed_validation::validate_sed_edits(&parsed, &ctx.cwd, ctx.permission_checker.as_ref())
+        {
+            return Err(ToolError::InvalidInput(format!(
+                "sed -i refused for '{}': {}",
+                violation.file.display(),
+                violation.reason
+            )));
+        }
 
         let timeout_ms = input
             .get("timeout")
@@ -731,5 +688,85 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn dangerously_disable_sandbox_does_not_skip_destructive_check() {
+        let tool = BashTool;
+        // The flag must NOT short-circuit destructive validation.
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "rm -rf /",
+                "dangerouslyDisableSandbox": true,
+            }))
+            .is_err()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "git push --force",
+                "dangerouslyDisableSandbox": true,
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn dangerously_disable_sandbox_does_not_skip_protected_path_check() {
+        let tool = BashTool;
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "cp src .git/config",
+                "dangerouslyDisableSandbox": true,
+            }))
+            .is_err()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "command": "printf evil > .git/config",
+                "dangerouslyDisableSandbox": true,
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn protected_dir_writes_via_writers_refused() {
+        let tool = BashTool;
+        for cmd in [
+            "cat foo > .git/config",
+            "tee -a .git/config",
+            "printf evil >> .git/config",
+            "cp src .git/config",
+            "mv x .git/config",
+            "install -m 644 src .git/config",
+            "ln -sf evil .git/config",
+            "rsync src .git/config",
+            "dd of=.git/config",
+            "bash -c 'printf evil > .git/config'",
+            "python -c \"open('.git/config','w').write('evil')\"",
+        ] {
+            assert!(
+                tool.validate_input(&serde_json::json!({"command": cmd}))
+                    .is_err(),
+                "expected refusal for {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn system_path_writes_via_writers_refused() {
+        let tool = BashTool;
+        for cmd in [
+            "cp src /etc/passwd",
+            "printf x > /boot/grub/grub.cfg",
+            "dd of=/sys/something",
+            "tee /etc/foo",
+        ] {
+            assert!(
+                tool.validate_input(&serde_json::json!({"command": cmd}))
+                    .is_err(),
+                "expected refusal for {cmd}"
+            );
+        }
     }
 }

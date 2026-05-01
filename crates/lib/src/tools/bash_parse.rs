@@ -8,8 +8,10 @@
 use tree_sitter::{Language, Node, Parser};
 
 /// Parsed representation of a bash command for security analysis.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ParsedCommand {
+    /// Original command string, kept for substring-style scans.
+    pub raw: String,
     /// Top-level command names (the actual binaries being run).
     pub commands: Vec<String>,
     /// Variable assignments (FOO=bar).
@@ -39,7 +41,10 @@ pub fn parse_bash(command: &str) -> Option<ParsedCommand> {
     let tree = parser.parse(command, None)?;
     let root = tree.root_node();
 
-    let mut parsed = ParsedCommand::default();
+    let mut parsed = ParsedCommand {
+        raw: command.to_string(),
+        ..ParsedCommand::default()
+    };
     extract_from_node(root, command.as_bytes(), &mut parsed);
     Some(parsed)
 }

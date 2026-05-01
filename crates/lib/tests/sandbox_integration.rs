@@ -584,3 +584,77 @@ async fn sandboxed_bash_reads_remain_broadly_allowed() {
         result.content
     );
 }
+
+#[tokio::test]
+#[cfg_attr(
+    target_os = "windows",
+    ignore = "BashTool invokes bash(1); Windows Git-Bash subprocess handling diverges"
+)]
+async fn sed_inplace_in_forbidden_dir_is_refused() {
+    // End-to-end: a `sed -i` invocation that would touch `.git/` must
+    // be refused before exec, in the same way the FileEdit tool would
+    // refuse a direct edit there.
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path();
+    // Lay down a fake `.git/config` so the path resolves to an existing
+    // file; without this the sandbox would still accept the call from
+    // the OS perspective and we want to assert *we* refuse, regardless.
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::write(project.join(".git/config"), "[core]\n").unwrap();
+
+    let ctx = make_ctx(project.to_path_buf(), None);
+    let bash = BashTool;
+    let result = bash
+        .call(
+            serde_json::json!({
+                "command": "sed -i 's/core/banana/' .git/config"
+            }),
+            &ctx,
+        )
+        .await;
+    let err = result.expect_err("sed -i in .git must be refused");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("sed -i refused") || msg.contains(".git/"),
+        "expected refusal mentioning sed/.git, got: {msg}"
+    );
+
+    // The original content must be untouched.
+    let after = std::fs::read_to_string(project.join(".git/config")).unwrap();
+    assert_eq!(after, "[core]\n");
+}
+
+#[tokio::test]
+#[cfg_attr(
+    target_os = "windows",
+    ignore = "BashTool invokes bash(1); Windows Git-Bash subprocess handling diverges"
+)]
+async fn sed_clustered_inplace_in_forbidden_dir_is_refused() {
+    // Same as the previous test, but using a clustered short-option
+    // form (`sed -Ei`). Earlier the parser missed clustered forms and
+    // these calls bypassed the FileEdit permission gate.
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path();
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::write(project.join(".git/config"), "[core]\n").unwrap();
+
+    let ctx = make_ctx(project.to_path_buf(), None);
+    let bash = BashTool;
+    let result = bash
+        .call(
+            serde_json::json!({
+                "command": "sed -Ei 's/core/banana/' .git/config"
+            }),
+            &ctx,
+        )
+        .await;
+    let err = result.expect_err("sed -Ei in .git must be refused");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("sed -i refused") || msg.contains(".git/"),
+        "expected refusal mentioning sed/.git, got: {msg}"
+    );
+
+    let after = std::fs::read_to_string(project.join(".git/config")).unwrap();
+    assert_eq!(after, "[core]\n");
+}
