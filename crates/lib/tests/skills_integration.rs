@@ -9,7 +9,7 @@ use agent_code_lib::skills::SkillRegistry;
 
 #[test]
 fn bundled_skills_load_without_project_dir() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     assert!(
         registry.all().len() >= 12,
         "Expected at least 12 bundled skills, got {}",
@@ -19,7 +19,7 @@ fn bundled_skills_load_without_project_dir() {
 
 #[test]
 fn bundled_skills_are_all_invocable() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     let invocable = registry.user_invocable();
     assert!(
         invocable.len() >= 12,
@@ -30,7 +30,7 @@ fn bundled_skills_are_all_invocable() {
 
 #[test]
 fn find_bundled_skill_by_name() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     for name in [
         "commit",
         "review",
@@ -104,7 +104,7 @@ fn project_skill_overrides_bundled() {
 
 #[test]
 fn bundled_skill_batch_invokes_with_expected_prompt() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     let skill = registry.find("batch").expect("batch should be bundled");
     let body = skill.expand(None);
     assert!(body.contains("Resolve the target set"));
@@ -114,7 +114,7 @@ fn bundled_skill_batch_invokes_with_expected_prompt() {
 
 #[test]
 fn bundled_skill_loop_invokes_with_expected_prompt() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     let skill = registry.find("loop").expect("loop should be bundled");
     let body = skill.expand(None);
     assert!(body.contains("exit condition"));
@@ -124,7 +124,7 @@ fn bundled_skill_loop_invokes_with_expected_prompt() {
 
 #[test]
 fn bundled_skill_remember_invokes_with_expected_prompt() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     let skill = registry
         .find("remember")
         .expect("remember should be bundled");
@@ -136,7 +136,7 @@ fn bundled_skill_remember_invokes_with_expected_prompt() {
 
 #[test]
 fn bundled_skill_simplify_invokes_with_expected_prompt() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     let skill = registry
         .find("simplify")
         .expect("simplify should be bundled");
@@ -148,7 +148,7 @@ fn bundled_skill_simplify_invokes_with_expected_prompt() {
 
 #[test]
 fn bundled_skill_stuck_invokes_with_expected_prompt() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     let skill = registry.find("stuck").expect("stuck should be bundled");
     let body = skill.expand(None);
     assert!(body.contains("Reconstruct what was tried"));
@@ -158,7 +158,7 @@ fn bundled_skill_stuck_invokes_with_expected_prompt() {
 
 #[test]
 fn bundled_skill_verify_invokes_with_expected_prompt() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     let skill = registry.find("verify").expect("verify should be bundled");
     let body = skill.expand(None);
     assert!(body.contains("State the claim"));
@@ -168,7 +168,7 @@ fn bundled_skill_verify_invokes_with_expected_prompt() {
 
 #[test]
 fn bundled_skill_app_builder_invokes_with_expected_prompt() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     let skill = registry
         .find("app-builder")
         .expect("app-builder should be bundled");
@@ -180,7 +180,7 @@ fn bundled_skill_app_builder_invokes_with_expected_prompt() {
 
 #[test]
 fn phase_8_3_skills_all_present() {
-    let registry = SkillRegistry::load_all(None);
+    let registry = SkillRegistry::load_bundled_only();
     for name in [
         "batch",
         "loop",

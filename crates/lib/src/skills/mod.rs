@@ -140,6 +140,18 @@ impl SkillRegistry {
         Self { skills: Vec::new() }
     }
 
+    /// Load only the skills that ship with the binary, ignoring user
+    /// and project skill directories. Use this in tests that assert on
+    /// the prompt fragments shipped with `agent-code` — `load_all`
+    /// would also pick up `~/.config/agent-code/skills/<name>.md` and
+    /// `<project>/.agent/skills/<name>.md`, which can shadow a bundled
+    /// skill of the same name and silently invalidate the assertion.
+    pub fn load_bundled_only() -> Self {
+        let mut registry = Self::new();
+        registry.load_bundled();
+        registry
+    }
+
     /// Load skills from all configured directories.
     pub fn load_all(project_root: Option<&Path>) -> Self {
         let mut registry = Self::new();
