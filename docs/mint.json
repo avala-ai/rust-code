@@ -75,6 +75,7 @@
       "group": "Configuration",
       "pages": [
         "configuration/settings",
+        "configuration/themes",
         "configuration/providers",
         "configuration/mcp-servers",
         "configuration/hooks"

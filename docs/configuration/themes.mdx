@@ -1,0 +1,165 @@
+---
+title: "Themes"
+description: "Terminal color themes and the semantic palette agent-code paints with"
+---
+
+`agent-code` ships nine built-in themes plus an `auto` option that follows
+the terminal's background colour. Each theme is a fixed semantic palette —
+UI elements bind to slot names like `error` or `subagent_red` rather than
+to hard-coded hex codes, so a single theme switch repaints the whole
+session.
+
+## Choosing a theme
+
+Run `/theme` to open the picker, or set the slot directly in
+`~/.config/agent-code/config.toml`:
+
+```toml
+[ui]
+theme = "midnight"
+```
+
+The valid identifiers are:
+
+| Name                | Description                                       |
+| ------------------- | ------------------------------------------------- |
+| `auto`              | Match the terminal background via OSC 11.         |
+| `midnight`          | Default dark palette with violet accents.         |
+| `daybreak`          | Default light palette with violet accents.        |
+| `midnight-muted`    | Softer dark palette.                              |
+| `daybreak-muted`    | Softer light palette.                             |
+| `terminal`          | Standard 16 ANSI colours, inherits terminal text. |
+| `dark-colorblind`   | Okabe-Ito palette on a dark background.           |
+| `light-colorblind`  | Okabe-Ito palette on a light background.          |
+| `dark-ansi`         | 16-colour ANSI dark palette (no truecolor).       |
+| `light-ansi`        | 16-colour ANSI light palette (no truecolor).      |
+
+## Semantic slots
+
+The theme struct exposes a fixed set of named slots. Render code reads
+the active theme via `ui::theme::current()` and paints with the slot
+that matches its semantics. The slots are grouped by purpose below.
+
+### Foundational
+
+| Slot          | Purpose                                                   |
+| ------------- | --------------------------------------------------------- |
+| `accent`      | Brand accent — prompts, banners, headers.                 |
+| `error`       | Error messages, failures, denied permissions.             |
+| `warning`     | Non-critical alerts and cautions.                         |
+| `success`     | Confirmations and successful operations.                  |
+| `muted`       | Secondary text, metadata, low-emphasis output.            |
+| `inactive`    | Disabled controls and dimmed list items.                  |
+| `tool`        | Permission prompts and tool-name labels.                  |
+| `plan`        | Plan-mode banner and indicator.                           |
+| `text`        | Primary text — usually the terminal's default foreground. |
+| `diff_add`    | Added line in a diff (line-level fg).                     |
+| `diff_remove` | Removed line in a diff (line-level fg).                   |
+
+### Subagent identification
+
+Eight stable colours assigned to spawned subagents so users can tell
+concurrent tasks apart at a glance.
+
+| Slot               | Purpose                              |
+| ------------------ | ------------------------------------ |
+| `agent_colors[8]`  | Round-robin palette indexed by spawn order. |
+| `subagent_red`     | Stable label colour for "red" agent. |
+| `subagent_blue`    | Stable label colour for "blue" agent. |
+| `subagent_green`   | Stable label colour for "green" agent. |
+| `subagent_yellow`  | Stable label colour for "yellow" agent. |
+| `subagent_purple`  | Stable label colour for "purple" agent. |
+| `subagent_orange`  | Stable label colour for "orange" agent. |
+| `subagent_pink`    | Stable label colour for "pink" agent. |
+| `subagent_cyan`    | Stable label colour for "cyan" agent. |
+
+### Shimmer variants
+
+Brighter siblings of the foundational slots, used for animated states
+(in-flight ops, attention pulses). On dark themes they are 15-20%
+lighter than the base; on light themes 15-20% darker.
+
+| Slot              | Base slot |
+| ----------------- | --------- |
+| `success_shimmer` | `success` |
+| `error_shimmer`   | `error`   |
+| `warning_shimmer` | `warning` |
+| `accent_shimmer`  | `accent`  |
+| `muted_shimmer`   | `muted`   |
+
+### Diff intensities
+
+Layered highlights for word-level and dimmed line-level diffs. The base
+`diff_add` / `diff_remove` slots remain the line-level foreground; the
+new slots add depth.
+
+| Slot                  | Purpose                                          |
+| --------------------- | ------------------------------------------------ |
+| `diff_added_dimmed`   | Faint line-background variant of `diff_add`.    |
+| `diff_removed_dimmed` | Faint line-background variant of `diff_remove`. |
+| `diff_added_word`     | Word-level highlight overlaid on an added line. |
+| `diff_removed_word`   | Word-level highlight overlaid on a removed line. |
+
+### Rate-limit / budget bar
+
+| Slot               | Purpose                                |
+| ------------------ | -------------------------------------- |
+| `rate_limit_fill`  | Filled portion of the budget bar.      |
+| `rate_limit_empty` | Empty portion of the budget bar.       |
+
+### Interaction backgrounds
+
+`selection_bg` replaces the cell background while preserving the cell's
+foreground — matching native terminal selection behaviour. The other
+background slots tint message bubbles by message kind.
+
+| Slot                | Purpose                                            |
+| ------------------- | -------------------------------------------------- |
+| `selection_bg`      | Selected text background.                          |
+| `message_action_bg` | Inline action affordances (retry, copy, etc).      |
+| `user_message_bg`   | User message bubble tint.                          |
+| `bash_message_bg`   | Bash command bubble tint.                          |
+| `memory_message_bg` | Memory note (`#`-prefixed) bubble tint.            |
+
+### Rainbow keyword highlighting
+
+Seven bands used to paint multi-colour emphasis on a single keyword
+(for example, the `ultrathink` directive in user input).
+
+| Slot              |
+| ----------------- |
+| `rainbow_red`     |
+| `rainbow_orange`  |
+| `rainbow_yellow`  |
+| `rainbow_green`   |
+| `rainbow_blue`    |
+| `rainbow_indigo`  |
+| `rainbow_violet`  |
+
+### Mode tags
+
+Per-mode colours used by the REPL prompt's mode indicator.
+
+| Slot                | Purpose                                         |
+| ------------------- | ----------------------------------------------- |
+| `plan_mode`         | Plan-mode tag fg.                               |
+| `brief_mode`        | Brief-mode tag fg.                              |
+| `fast_mode`         | Fast-mode tag fg.                               |
+| `fast_mode_shimmer` | Brighter `fast_mode` for animated transitions.  |
+
+## Theme conventions
+
+- **Colour-blindness**: the `dark-colorblind` and `light-colorblind`
+  themes restrict every chromatic slot to the
+  [Okabe-Ito palette](https://jfly.uni-koeln.de/color/) plus black and
+  white. Some slots intentionally repeat colours because the palette
+  has fewer hues than the slot count; the constraint is
+  distinguishability, not visual diversity.
+- **16-colour terminals**: the `dark-ansi` and `light-ansi` themes use
+  only the 16 standard ANSI codes. Several slots map to the same code
+  (for example, `subagent_pink` reuses `Color::DarkMagenta` because the
+  16-ANSI set has no separate pink). Tests enforce this restriction so
+  the themes degrade cleanly on legacy terminals.
+- **Truecolor downgrade**: themes are authored in truecolor and adapted
+  on the fly to 256- or 16-colour output via `ui::color_emit`. Authors
+  do not need to write three palettes per theme.
