@@ -24,7 +24,7 @@
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
-use agent_code_lib::config::atomic::atomic_write_secret;
+use agent_code_lib::config::{agent_config_dir, atomic::atomic_write_secret};
 use crossterm::style::Stylize;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -43,11 +43,10 @@ pub const DEFAULT_THEME: &str = "auto";
 
 /// Resolve the directory that holds `config.toml` and our sentinel.
 ///
-/// `dirs::config_dir()` honours `$XDG_CONFIG_HOME` on Linux/BSD and
-/// uses `~/Library/Application Support` on macOS — both are correct
-/// per the platform conventions, so we don't need to special-case.
+/// Use the shared helper so `$XDG_CONFIG_HOME` is honored consistently on every
+/// platform, including Windows test sandboxes.
 fn config_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agent-code"))
+    agent_config_dir()
 }
 
 /// Path to the onboarding sentinel file. `None` only if the platform
@@ -541,9 +540,9 @@ fn persist_theme(theme_name: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// `dirs::config_dir()` resolves to `$XDG_CONFIG_HOME` when set on
-    /// Linux. Pinning that env var to a tempdir gives us a clean
-    /// sandbox per test.
+    /// `agent_config_dir()` resolves to `$XDG_CONFIG_HOME` when set on every
+    /// platform. Pinning that env var to a tempdir gives us a clean sandbox per
+    /// test.
     struct ConfigSandbox {
         _tmp: tempfile::TempDir,
         // Saved values restored on Drop so a test can't leak its
@@ -557,10 +556,8 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
             let prev_home = std::env::var("HOME").ok();
-            // SAFETY: tests run single-threaded inside the harness for
-            // any test marked `#[serial]`; we keep that contract by
-            // running each sandbox-using test sequentially via the
-            // `serial_test` pattern of locking before mutation.
+            // SAFETY: sandbox-using tests hold ENV_LOCK while mutating process
+            // env, so no other test in this module observes a partial update.
             unsafe {
                 std::env::set_var("XDG_CONFIG_HOME", tmp.path());
                 std::env::set_var("HOME", tmp.path());
@@ -575,6 +572,8 @@ mod tests {
 
     impl Drop for ConfigSandbox {
         fn drop(&mut self) {
+            // SAFETY: the owning test still holds ENV_LOCK while this Drop
+            // restores process-wide environment values.
             unsafe {
                 match &self.prev_xdg {
                     Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
