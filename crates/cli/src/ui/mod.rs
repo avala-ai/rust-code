@@ -12,5 +12,7 @@ pub mod render;
 pub mod repl;
 pub mod selector;
 pub mod setup;
+pub mod terminal_query;
+#[path = "theme_runtime.rs"]
 pub mod theme;
 pub mod tui;
