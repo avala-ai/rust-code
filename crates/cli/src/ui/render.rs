@@ -414,23 +414,12 @@ fn render_inline(line: &str) -> String {
     result.trim_end_matches('\n').to_string()
 }
 
-/// Convert a crossterm Color to an ANSI escape sequence prefix.
+/// Convert a crossterm Color to an ANSI escape sequence prefix. Routes
+/// through the active [`super::color_emit::EmitMode`] so RGB colors
+/// downgrade to ANSI 256 / ANSI 16 on terminals that mishandle 24-bit
+/// sequences.
 fn color_to_ansi(color: crossterm::style::Color) -> String {
-    match color {
-        crossterm::style::Color::Rgb { r, g, b } => format!("\x1b[38;2;{r};{g};{b}m"),
-        crossterm::style::Color::DarkCyan => "\x1b[36m".to_string(),
-        crossterm::style::Color::Cyan => "\x1b[96m".to_string(),
-        crossterm::style::Color::Red => "\x1b[31m".to_string(),
-        crossterm::style::Color::Green => "\x1b[32m".to_string(),
-        crossterm::style::Color::Yellow => "\x1b[33m".to_string(),
-        crossterm::style::Color::Blue => "\x1b[34m".to_string(),
-        crossterm::style::Color::Magenta => "\x1b[35m".to_string(),
-        crossterm::style::Color::Grey => "\x1b[37m".to_string(),
-        crossterm::style::Color::DarkGrey => "\x1b[90m".to_string(),
-        crossterm::style::Color::White => "\x1b[97m".to_string(),
-        crossterm::style::Color::Black => "\x1b[30m".to_string(),
-        _ => "\x1b[36m".to_string(), // fallback to cyan
-    }
+    super::color_emit::format_fg(super::color_emit::current(), color)
 }
 
 /// Detect whether a line looks like a markdown table row (`| col | col |`).

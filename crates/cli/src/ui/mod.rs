@@ -4,6 +4,7 @@
 //! output display. Built on crossterm and rustyline.
 
 pub mod activity;
+pub mod color_emit;
 pub mod keybindings;
 pub mod keymap;
 pub mod onboarding;

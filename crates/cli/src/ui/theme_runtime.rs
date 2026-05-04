@@ -143,13 +143,41 @@ pub fn init(theme_name: &str) {
     }
 }
 
-/// Get a snapshot of the active theme.
+/// Get a snapshot of the active theme. Each color slot is adapted to
+/// the current [`color_emit::EmitMode`] so consumers transparently get
+/// the right palette without threading the mode through every render
+/// callsite. The stored theme keeps its original RGB values; only this
+/// snapshot is downgraded.
 pub fn current() -> Theme {
-    ACTIVE_THEME
+    let raw = ACTIVE_THEME
         .read()
         .ok()
         .and_then(|g| g.clone())
-        .unwrap_or_else(Theme::midnight)
+        .unwrap_or_else(Theme::midnight);
+    adapt_for_emit(raw)
+}
+
+fn adapt_for_emit(theme: Theme) -> Theme {
+    let mode = super::color_emit::current();
+    if mode == super::color_emit::EmitMode::Truecolor {
+        return theme;
+    }
+    let adapt = |c: Color| super::color_emit::adapt(mode, c);
+    Theme {
+        accent: adapt(theme.accent),
+        error: adapt(theme.error),
+        warning: adapt(theme.warning),
+        success: adapt(theme.success),
+        muted: adapt(theme.muted),
+        inactive: adapt(theme.inactive),
+        tool: adapt(theme.tool),
+        plan: adapt(theme.plan),
+        text: adapt(theme.text),
+        diff_add: adapt(theme.diff_add),
+        diff_remove: adapt(theme.diff_remove),
+        agent_colors: theme.agent_colors.map(adapt),
+        is_dark: theme.is_dark,
+    }
 }
 
 #[cfg(test)]
