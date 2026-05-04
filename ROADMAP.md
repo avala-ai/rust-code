@@ -1588,7 +1588,15 @@ The existing TUI re-renders from scratch on most events, causing flicker in long
 
 This phase grows agent-code along three axes: (a) **extensibility** so users can add capability without forking, (b) **surfaces** so the agent can host non-terminal clients, and (c) **orchestration** so multi-worker workflows are first-class. Each subsection is independently shippable.
 
-### 8.1 Plugin Marketplace and Built-in Plugin Registry
+### 8.1 Plugin Marketplace and Built-in Plugin Registry — Shipped (MVP, #262)
+
+MVP shipped in #262: native `plugin.toml` loader, claude-style `.claude-plugin/plugin.json` adapter, codex-style `[mcp_servers.*]` adapter, `/plugin list/install/enable/disable/remove` commands, built-in plugin slot. Marketplace fetcher is stubbed with an explicit "not yet implemented" message; URL-install is a follow-up.
+
+**Open follow-ups:**
+- [ ] URL-based marketplace fetcher with checksum verification
+- [ ] Bundled built-in plugins (the slice is currently empty — see 8.3 for the skill side)
+
+
 
 Today plugin *execution* exists (`crates/lib/src/services/plugins.rs`, `crates/lib/src/tools/plugin_exec.rs`) but there is no install/list/enable UX, no marketplace fetcher, and no notion of built-in plugins. This is the highest-leverage gap because nearly every other extensibility item below could ship as a plugin once the surface lands.
 
@@ -1601,15 +1609,12 @@ Today plugin *execution* exists (`crates/lib/src/services/plugins.rs`, `crates/l
 - [ ] Plugin can contribute: tools, skills, slash commands, output styles, hooks
 - [ ] Doc page: `docs/plugins.mdx` with authoring guide
 
-### 8.2 Disk-Loaded Output Styles
+### 8.2 Disk-Loaded Output Styles — Shipped (#256)
 
-Output style presets are currently hardcoded in `crates/lib/src/state/mod.rs`. Users should be able to drop a markdown file in their project or user dir and have it picked up.
+Shipped in #256 with second-fix in the same PR for resolution-order, `applies_to` filtering, content-hash cache key, subagent style propagation via `AGENT_CODE_DISK_OUTPUT_STYLE` env var, accurate active-source marker in `/output-style list`, and hermetic test isolation.
 
-- [ ] Loader for `<project>/.agent/output-styles/*.md` and `~/.config/agent-code/output-styles/*.md`
-- [ ] Frontmatter schema: `name`, `description`, `applies_to` (optional list of subagent kinds)
-- [ ] `/output-style` command lists disk styles alongside built-ins
-- [ ] Hot reload on file change within a session
-- [ ] Migration: keep current built-ins as `@builtin/*` styles for backward compatibility
+**Open follow-up:**
+- [ ] Hot reload on file mtime change within a session (currently re-reads only on `/reload`)
 
 ### 8.3 Bundled First-Party Skills
 
@@ -1626,9 +1631,11 @@ We ship 12 skills today. Expand the bundled set to cover the most common day-to-
 - [ ] **app-builder** — agent + sandboxed preview workspace + iframe + chat for scaffolding new projects and iterating on UI
 - [ ] Each skill: standalone test, doc entry, and listed in `/skills`
 
-### 8.4 Settings Migrations Framework
+### 8.4 Settings Migrations Framework — Shipped (#255)
 
-As config schema evolves we need a forward-migration path so old `~/.config/agent-code/settings.json` files do not break. Today there is no migration runner.
+Shipped in #255 with second-fix for unguessable temp paths, mode preservation (0600 secrets stay 0600), Windows `MoveFileExW` cross-platform persist, parent-dir fsync, and routing the profile loader through migrations. v0→v1→v2 chain seeded; TOML datetime + comment loss documented in `docs/config-migrations.mdx`.
+
+Original framework spec follows for historical reference:
 
 - [ ] `crates/lib/src/config/migrations/` directory with numbered migration files
 - [ ] Each migration: `from_version`, `to_version`, pure function `(serde_json::Value) -> Result<serde_json::Value>`
@@ -1637,9 +1644,9 @@ As config schema evolves we need a forward-migration path so old `~/.config/agen
 - [ ] Migration test harness: golden inputs/outputs in `crates/lib/tests/config_migrations.rs`
 - [ ] Doc page: `docs/config-migrations.mdx`
 
-### 8.5 Cron and Remote-Trigger Model Tools
+### 8.5 Cron and Remote-Trigger Model Tools — Shipped (#254)
 
-Cron storage and an executor already exist in `crates/lib/src/schedule/`. The remaining work is exposing them as model-callable tools so the agent can manage its own schedules and trigger remote runs.
+Shipped in #254 with second-fix for store-level name validation (defense-in-depth, not just at the tool boundary), symlink-safe atomic writes via `O_NOFOLLOW`+rename, process-group isolation via `setsid`/`killpg` so remote runs reap their grandchildren, and bounded output-drain joining. Original spec follows for reference:
 
 - [ ] `CronCreate` tool — schema: cron expression, prompt, optional working directory, optional timeout
 - [ ] `CronList` tool — list active routines with last-run/next-run timestamps
@@ -1674,18 +1681,18 @@ The current coordinator (`crates/lib/src/services/coordinator.rs`) is a session 
 - [ ] **Kanban view** — Flutter client surface that groups active teammates into columns by status (`pending`, `running`, `awaiting-permission`, `done`, `errored`) or by repo/branch, with artifact previews on each card and a "create teammate" entry point. Reuses the existing client; the wire protocol just adds teammate metadata.
 - [ ] Add to `docs/multi-agent.mdx`
 
-### 8.8 Additional Model-Callable Tools
+### 8.8 Additional Model-Callable Tools — Shipped (#259)
 
-A handful of small tools that close usability gaps for the model itself.
+Shipped in #259 with three rounds of review: the third fix introduced the `Tool::validate_input` trait method that runs before `PreToolUse` hooks (so disallowed inputs never reach the audit log), a shared `config::atomic::atomic_write_secret` helper, file-locked concurrent writes via `fs2`, broader Unicode rejection (bidi/zero-width/BOM), `EnvGuard`/`ENV_LOCK` shared test helper. Original spec follows:
 
 - [x] **Brief** — file a structured research handoff (question, context, attachments) that another session can consume
 - [x] **Config** — model-callable settings reader/writer with a typed `supported_settings` schema and a hard allow-list (nothing else is mutable from a tool call)
 - [x] **McpAuth** — re-trigger the OAuth/auth flow for a configured MCP server when a call returns 401, without dropping back to the user
 - [x] Each tool gated behind a permission rule with sane defaults
 
-### 8.9 Bash Tool Hardening
+### 8.9 Bash Tool Hardening — Shipped (#258)
 
-The Bash tool is one of the highest-blast-radius surfaces and our helpers around it are still thin. Pull the safety logic into named modules so it can be tested in isolation.
+Shipped in #258 with second-fix that introduced `bash/protected_paths.rs`, a unified destination-operand checker covering writers (cp/mv/tee/dd/install/ln/rsync/truncate), all redirection forms, recursive shell payloads (`bash -c`/`eval`), and an interpreter heuristic. `dangerouslyDisableSandbox` no longer skips destructive validation; clustered sed forms (`-Ei`, `--in-place=...`) are parsed; redirections classify as Mutating regardless of base command. Original spec follows:
 
 - [ ] `bash_security.rs` — destructive command detection (already partially present; consolidate)
 - [ ] `command_semantics.rs` — classify commands as read-only / mutating / network / privileged
@@ -1703,9 +1710,9 @@ Quality-of-life improvements for the existing Agent tool that materially improve
 - [ ] **Fork** — duplicate a running subagent's state into a new id (cheap branching for "what if I tried this instead")
 - [ ] **Resume** — reattach to a prior subagent run by id and continue from its last checkpoint
 
-### 8.11 Memory: Team-Memory Layer
+### 8.11 Memory: Team-Memory Layer — Shipped (#257)
 
-Memory currently has scanner / extraction / consolidation / session-notes. Add a team-memory layer so a project shared between multiple users has a common memory surface.
+Shipped in #257 with second-fix to make the read-only invariant actually enforced (project_root threaded through `PermissionChecker`; team-memory writes blocked across all 4 write tools + Bash redirections; `/team-remember` slash command is the single sanctioned writer). Plus consolidation routes through `delete_memory`, `MEMORY.md` link targets validated against traversal+symlinks, case-insensitive filename collisions rejected, lstat-rejects symlink leaves, byte-stable `rebuild_index`. Original spec follows:
 
 - [ ] `<project>/.agent/team-memory/` directory, version-controlled by default
 - [ ] Distinct from per-user memory: read by every session, written only via explicit `/team-remember`
@@ -1723,9 +1730,9 @@ Several supporting services exist in plan but not in code. Land each as a small,
 - [ ] **Tips service** — surfaces a rotating tip on idle; tips authored as bundled markdown
 - [ ] **Notifier service** — desktop notifications on long-running task completion / permission prompt while backgrounded
 
-### 8.13 Task Model Variants
+### 8.13 Task Model Variants — Shipped (#263)
 
-Today there is one task model. Generalize so different task kinds (local shell, local agent, scheduled run, MCP monitor) share the queue but carry kind-specific payload.
+Shipped in #263: `TaskKind` enum (`LocalShell | LocalAgent | LocalWorkflow | MonitorMcp | RemoteAgent | Dream`), `TaskPayload` tagged-enum, per-kind `TaskExecutor` trait + registry, kind-aware id prefixes for `/tasks` output. `LocalShellExecutor` wraps the existing path; `LocalAgentExecutor` calls `AgentTool` (no duplication); `RemoteAgentExecutor` stubs to `RemoteTrigger`; `LocalWorkflow`/`MonitorMcp`/`Dream` return `NotImplemented` with TODOs. Original spec follows:
 
 - [ ] `TaskKind` enum: `LocalShell`, `LocalAgent`, `LocalWorkflow`, `MonitorMcp`, `RemoteAgent`, `Dream` (idle-time background work)
 - [ ] Per-kind executor trait, registered into the task runner
@@ -1749,6 +1756,75 @@ This is a multi-PR effort and depends on 8.6 (direct-connect server + wire proto
 - [ ] **Reference deployment** — Helm chart or container compose file in `helm/` or `docker/cloud/` so an operator can run their own cloud-runtime cluster
 
 This is the single biggest gap to a "polished hosted product" experience. Cron + remote-trigger (8.5) is the local-only version of this; 8.14 is the managed equivalent that someone else's machine actually executes.
+
+### 8.15 Theme System: Live Terminal Detection and Palette Depth
+
+PR #265 shipped first-run onboarding with a 7-option theme picker (Auto + dark/light × {default, colorblind, ANSI-only}) and a live diff preview pane. The auto-detection currently uses only env-var hints (`COLORFGBG`, `TERM_PROGRAM`), which works on the terminals that set those but fails silently on most modern ones (Ghostty, kitty, Alacritty, recent iTerm2). And the palette is intentionally minimal — about a dozen named slots, vs. the ~50-slot palette the richer UI states (animations, word-level diff, semantic shimmers) eventually need.
+
+Five independently-shippable follow-ups, ordered by impact. Land 8.15.1 first; the others are standalone after.
+
+#### 8.15.1 OSC 11 + BT.709 luminance auto-detection
+
+**Problem:** `Auto` silently falls back to dark on any terminal that doesn't set `COLORFGBG`. That's most modern terminals. Users who pick `Auto` get dark even on a light background.
+
+**Fix:** Query the terminal's actual background color via the `OSC 11 ?` escape sequence, parse the `rgb:RRRR/GGGG/BBBB` reply, compute relative luminance with the BT.709 weights `L = 0.2126·r + 0.7152·g + 0.0722·b`, classify dark vs light at the 0.5 midpoint. Module-level cache so the result is read synchronously by `detect_system_theme()`. Seed the cache from `$COLORFGBG` synchronously at startup, then update from the OSC reply when it arrives.
+
+- [ ] New module `crates/cli/src/ui/terminal_query.rs` (CLI-only — `lib/` has no business reading stdin/stdout)
+- [ ] DA1-sentinel pattern (`CSI c`) terminates query batches without timeouts: every terminal since VT100 answers DA1, so if your OSC 11 reply lands before DA1's, the terminal supports it; if DA1 arrives first, it doesn't and we fall back. Eliminates magic timeouts.
+- [ ] `is_tty()` gate before any escape-sequence write — never poison `agent --serve`, `--prompt`, or CI logs
+- [ ] `OnceCell<SystemTheme>` cache; `detect_system_theme()` (currently in `crates/cli/src/ui/theme.rs:615`) extended to read the cache; existing env-based fallback chain preserved
+- [ ] Subagent propagation: detected theme passed via env var so `Agent`-tool spawned children don't re-query (every subagent spawn re-querying = thundering-herd-by-design); follows the `AGENT_CODE_DISK_OUTPUT_STYLE` pattern from #265
+- [ ] Hard 1-second timeout around the OSC round-trip; default to dark on timeout
+- [ ] Tests: parser coverage for `rgb:R/G/B`, `rgb:RR/GG/BB`, `rgb:RRR/GGG/BBB`, `rgb:RRRR/GGGG/BBBB`, `rgba:` variant (alpha ignored), `#RRGGBB` and `#RRRRGGGGBBBB` hash forms, malformed input → `None`. Luminance threshold tests at black, white, midgrey-128, midgrey-200, and the BT.709 weighting check (red-dominant ≠ luminance-dominant). Integration test with a simulated stdin/stdout pair.
+
+#### 8.15.2 Apple_Terminal truecolor → 256-color downgrade
+
+**Problem:** Apple Terminal mishandles 24-bit color escape sequences and renders broken output. Today we emit truecolor unconditionally; Apple Terminal users see corrupted theme rendering.
+
+**Fix:** When `TERM_PROGRAM=Apple_Terminal`, route theme-color emission through a 256-color quantizer (round each channel to the nearest of 6 cube levels + greys; map to ANSI 256). Affects only the rendering layer, not the theme palette itself.
+
+- [ ] `crates/cli/src/ui/color_emit.rs` (or extend `ui/theme.rs`) with a `EmitMode { Truecolor | Ansi256 | Ansi16 }` enum
+- [ ] Detect at startup; user can override via `AGENT_CODE_COLOR_MODE` env var
+- [ ] Quantizer: well-known formula, no new deps (`crossterm` already speaks ANSI 256)
+- [ ] Smoke test on real Apple Terminal during release QA
+- [ ] Test: round-trip a truecolor → 256 → render assertion that the chosen index matches the closest cube cell
+
+#### 8.15.3 Live OS-theme watcher
+
+**Problem:** When the user toggles dark mode in their OS settings, our `Auto` setting won't catch it until the next session restart.
+
+**Fix:** A background task that watches for theme changes and updates the cache. Three platform paths:
+- macOS: subscribe to `kCFNotificationCenterDistributedKey` for `AppleInterfaceThemeChangedNotification` (via `objc2`/`objc2-foundation` if not already a dep, or just shell out to `defaults read -g AppleInterfaceStyle` periodically as a fallback).
+- Linux/X11: re-query OSC 11 on `SIGWINCH` (terminal resize often coincides with theme switches in tabbed terminals) and on a low-frequency timer (every 30s).
+- Windows: registry watch on `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme`.
+
+Each platform path is small but distinct — bundle into `crates/cli/src/ui/theme_watcher.rs` with a single trait + per-platform cfg.
+
+- [ ] Trait `ThemeWatcher: Send + Sync` with `start(callback: impl Fn(SystemTheme))`
+- [ ] Per-platform impls behind `#[cfg(...)]`
+- [ ] Integration with existing `state` so the prompt rebuilds on theme flip without a restart
+- [ ] Tests: stub watcher fires events, callback updates cache, prompt re-renders. Real-platform behavior is manual-test-only.
+
+#### 8.15.4 Expanded Theme palette (~50 named slots)
+
+**Problem:** Current `Theme` struct is ~12 slots. Several upcoming UI states (subagent message labels, animated shimmer for in-flight ops, word-level diff highlighting, rate-limit fill, semantic warning intensities) have no slots to bind to.
+
+**Fix:** Expand the struct to roughly the slot set used by the richer reference implementation. Don't bake in render code that uses the new slots in this PR — add the slots first, render later, so each slot finds its consumer in a follow-up PR.
+
+- [ ] Add slots: `success_shimmer`, `error_shimmer`, `warning_shimmer`, `diff_added_dimmed`, `diff_removed_dimmed`, `diff_added_word`, `diff_removed_word`, 8 stable subagent colors (`subagent_red`/`blue`/`green`/`yellow`/`purple`/`orange`/`pink`/`cyan`), `rate_limit_fill`/`empty`, `selection_bg`, `message_action_bg`, `rainbow_*` for keyword highlighting
+- [ ] All 7 themes (5 existing + 4 from #265) gain the new slots; pick palette-consistent values per theme
+- [ ] Consumer migration is out of scope for this PR — slots land first, UI features bind to them later
+- [ ] Tests: every theme defines every slot; no `Option<Color>` slots (a missing slot is a bug, not a default)
+
+#### 8.15.5 OSC 10 (foreground) query
+
+**Problem:** With OSC 11 (background) we know dark vs light, but not the foreground color the terminal would otherwise use. Some accessibility-friendly themes want to inherit the user's foreground for the default text slot.
+
+**Fix:** Symmetric to 8.15.1 — query OSC 10, parse, expose via `detect_system_foreground()`. Optional consumer: an `inherit-fg` mode for the Auto theme that reuses the terminal's foreground for `text` rather than picking one.
+
+- [ ] Reuse the `terminal_query.rs` infrastructure from 8.15.1 (the `oscColor(code)` builder pattern is generic over the code)
+- [ ] `inherit-fg` toggle in onboarding (additional checkbox below the theme picker, or a setting-only knob)
+- [ ] Tests: the parser is shared; mainly a wiring test
 
 ---
 
@@ -1802,17 +1878,30 @@ Priority areas where contributions are most welcome:
 11. **Remote agent protocol** (7.8) — JSON-RPC 2.0 with Agent Card discovery
 12. **Conversation branching** (7.15) — Named branches, checkout, merge (basic `/fork` exists)
 
-### Phase 8 priorities (v1.1 – v1.3)
-13. **Plugin marketplace** (8.1) — install/list/enable plugins; built-in registry
-14. **Disk-loaded output styles** (8.2) — small, high-visibility win
-15. **Cron + RemoteTrigger model tools** (8.5) — storage and executor already exist
-16. **Direct-connect server / IDE bridge** (8.6) — host non-terminal clients
-17. **Teammate / swarm mode + kanban view** (8.7) — Team* and SyntheticOutput tools, plus a parallel-agent management surface
-18. **Bundled first-party skills** (8.3) — batch, loop, simplify, verify, stuck, remember, app-builder
-19. **Settings migrations framework** (8.4) — forward-migrate older config files
-20. **Bash tool hardening** (8.9) — split safety helpers into testable modules
-21. **Cloud-runtime mode** (8.14) — managed long-running agents addressable from CLI/SDK; depends on 8.6
+### Phase 8 — shipped this cycle
+- ~~**Plugin marketplace MVP** (8.1)~~ — **Done** (#262); URL-fetch + bundled built-ins are open follow-ups
+- ~~**Disk-loaded output styles** (8.2)~~ — **Done** (#256); hot-reload-on-mtime is an open follow-up
+- ~~**Settings migrations framework** (8.4)~~ — **Done** (#255)
+- ~~**Cron + RemoteTrigger model tools** (8.5)~~ — **Done** (#254)
+- ~~**Brief / Config / McpAuth tools** (8.8)~~ — **Done** (#259)
+- ~~**Bash tool hardening** (8.9)~~ — **Done** (#258)
+- ~~**Team-memory layer** (8.11)~~ — **Done** (#257)
+- ~~**Task model variants** (8.13)~~ — **Done** (#263)
+- ~~**First-run onboarding + theme picker** (under 8.15)~~ — **Done** (#265); Auto-detection follow-ups tracked in 8.15.1-5
+
+### Phase 8 — next priorities (v1.1 – v1.3)
+13. **OSC 11 + BT.709 auto theme detection** (8.15.1) — fixes broken Auto on Ghostty/kitty/Alacritty/iTerm2; ~300 lines, single PR
+14. **Apple_Terminal truecolor downgrade** (8.15.2) — fixes broken color rendering on macOS's stock terminal
+15. **Direct-connect server / IDE bridge** (8.6) — host non-terminal clients; multi-PR
+16. **Teammate / swarm mode + kanban view** (8.7) — Team* + SyntheticOutput tools + parallel-agent management surface
+17. **Bundled first-party skills** (8.3) — batch, loop, simplify, verify, stuck, remember, app-builder; one agent per skill
+18. **Cloud-runtime mode** (8.14) — managed long-running agents addressable from CLI/SDK; depends on 8.6
+19. **Service layer fill-in** (8.12) — OAuth, policy/rate-limit, settings-sync, tips, notifier; 5 small services
+20. **Coordinator memory snapshot + fork/resume** (8.10) — depends on 8.7
+21. **Live OS theme watcher** (8.15.3) — picks up dark/light toggles mid-session
+22. **Expanded Theme palette** (8.15.4) — add ~40 named slots for shimmer / word-diff / subagent colors
+23. **OSC 10 foreground query** (8.15.5) — symmetric to 8.15.1; enables `inherit-fg` Auto mode
 
 ---
 
-*Last updated: 2026-05-01*
+*Last updated: 2026-05-04*
