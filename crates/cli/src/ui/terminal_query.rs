@@ -50,24 +50,7 @@ pub fn is_tty() -> bool {
 }
 
 pub fn system_theme() -> SystemTheme {
-    let theme = *SYSTEM_THEME.get_or_init(detect_system_theme_uncached);
-    prime_system_theme_env(theme);
-    theme
-}
-
-fn prime_system_theme_env(theme: SystemTheme) {
-    if std::env::var(SYSTEM_THEME_ENV)
-        .ok()
-        .and_then(|value| SystemTheme::from_env(&value))
-        .is_some()
-    {
-        return;
-    }
-
-    // SAFETY: this is called during theme initialization before the agent
-    // starts spawning child processes. The env value lets those children reuse
-    // the parent's result instead of re-querying the terminal.
-    unsafe { std::env::set_var(SYSTEM_THEME_ENV, theme.as_str()) };
+    *SYSTEM_THEME.get_or_init(detect_system_theme_uncached)
 }
 
 fn detect_system_theme_uncached() -> SystemTheme {
