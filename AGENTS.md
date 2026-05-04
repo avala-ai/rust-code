@@ -146,14 +146,14 @@ fix(ci): skip bash-dependent tests on Windows and add job timeout
 fix: make Escape and Ctrl+C actually interrupt agent during streaming
 ```
 
-No DCO sign-off is required. **Do not** add `Co-Authored-By: Claude` or any Anthropic/Claude attribution in commits made in this repo — use only the human author. No `🤖 Generated with …` trailers.
+No DCO sign-off is required. **Do not** add `Co-Authored-By: Claude` or any Anthropic/Claude attribution in commits made in this repo — use only the human author. No `Generated with ...` trailers.
 
 ### Pull requests
 
 The PR template (`.github/PULL_REQUEST_TEMPLATE.md`) requires:
 
 - A one-to-three-bullet summary
-- A test plan checklist: `cargo test` passes, `cargo clippy` clean, `cargo fmt` applied, new tests added for new functionality
+- A test plan checklist covering the full CI gate: `cargo check --all-targets`, `cargo test --all-targets`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all -- --check`, and new tests for new functionality
 
 One approval merges. Prefer squash or rebase merges over merge commits. Do not force-push to `main`.
 
@@ -171,13 +171,15 @@ From `CONTRIBUTING.md` and practice:
 
 ## 6. Release process (summary)
 
-Full details in `RELEASING.md`. At a glance:
+Full details in `RELEASING.md`; that file is authoritative for release branch names, PR title/body/label, version bump list, changelog, verification, and tag steps. At a glance:
 
 1. Branch `release/vX.Y.Z` from `main`
-2. Bump versions in `crates/lib/Cargo.toml`, `crates/cli/Cargo.toml`, `npm/package.json`
+2. Bump versions in `crates/lib/Cargo.toml`, `crates/cli/Cargo.toml`, the `crates/eval/Cargo.toml` `agent-code-lib` path dependency, `Cargo.lock`, and `npm/package.json`
 3. Stamp `CHANGELOG.md` (Keep-a-Changelog format)
-4. Run the full CI gate locally
-5. PR → merge → `git tag vX.Y.Z && git push origin vX.Y.Z`
+4. Commit as `chore(release): prepare vX.Y.Z`
+5. Open a regular PR titled `Release vX.Y.Z`, add the `run-e2e` label immediately, and use the release PR body skeleton from `RELEASING.md`
+6. Require the full CI gate, GitHub Actions CI, and the `run-e2e` workflow before merge
+7. After merge, tag on `main` with `git tag vX.Y.Z && git push origin vX.Y.Z`
 
 Tag push triggers: `release.yml` (binaries + crates.io), `docker.yml` (`ghcr.io/avala-ai/agent-code:X.Y.Z`), the npm publish workflow, and the Homebrew tap update. If you are making a release, do not run these workflows manually — let the tag drive them.
 
@@ -209,6 +211,7 @@ A concentrated list. If you are about to do any of these, stop and ask.
 - Architecture questions → `ARCHITECTURE.md`
 - Security model → `SECURITY.md` and `crates/lib/src/permissions/`
 - Roadmap / what's planned → `ROADMAP.md`
+- Release process → `RELEASING.md`
 - Provider-specific behavior → `crates/lib/src/providers/`
 - Tool behavior → `crates/lib/src/tools/`
 - Slash commands → `crates/cli/src/commands/`

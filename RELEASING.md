@@ -6,9 +6,30 @@ How to cut a new release of agent-code.
 
 - Push access to `main`
 - GitHub secrets configured:
-  - `CARGO_REGISTRY_TOKEN` — crates.io publish token
-  - `NPM_TOKEN` — npm publish token (Automation type)
-  - `HOMEBREW_TAP_TOKEN` — GitHub PAT with `contents:write` on `avala-ai/homebrew-tap`
+  - `CARGO_REGISTRY_TOKEN` - crates.io publish token
+  - `NPM_TOKEN` - npm publish token (Automation type)
+  - `HOMEBREW_TAP_TOKEN` - GitHub PAT with `contents:write` on `avala-ai/homebrew-tap`
+
+## Release naming standard
+
+Release PRs follow the naming and body shape used by recent releases such as #244 and #249. Commit messages still use Conventional Commits, but release PR titles do not.
+
+| Item | Format |
+|------|--------|
+| Branch | `release/vX.Y.Z` |
+| PR title | `Release vX.Y.Z` |
+| Release prep commit | `chore(release): prepare vX.Y.Z` |
+| Required PR label | `run-e2e` |
+| Tag | `vX.Y.Z` |
+
+Release PRs are regular PRs, not drafts. Use checklist items in the PR body for anything still pending.
+
+Release PR bodies use these sections, in this order:
+
+1. `Summary`
+2. `Highlights`
+3. `Verification (RELEASING.md section 4)`
+4. `After merge`
 
 ## Steps
 
@@ -26,19 +47,22 @@ Update the version in these files:
 | File | Field |
 |------|-------|
 | `crates/lib/Cargo.toml` | `version = "X.Y.Z"` |
-| `crates/cli/Cargo.toml` | `version = "X.Y.Z"` (appears twice — package and the `agent-code-lib` path-dependency) |
-| `crates/eval/Cargo.toml` | `agent-code-lib = { path = "...", version = "X.Y.Z" }` (path-dependency, not the eval package version) |
+| `crates/cli/Cargo.toml` | `version = "X.Y.Z"` in `[package]` and the `agent-code-lib` path-dependency |
+| `crates/eval/Cargo.toml` | `agent-code-lib = { path = "...", version = "X.Y.Z" }` path-dependency only |
+| `Cargo.lock` | `version = "X.Y.Z"` for `agent-code` and `agent-code-lib` package stanzas |
 | `npm/package.json` | `"version": "X.Y.Z"` |
 
-The eval crate is `publish = false` so its own package version doesn't need bumping, but its `agent-code-lib` dependency pin must match — otherwise `cargo check --all-targets` fails with `failed to select a version for the requirement agent-code-lib = "^OLD"`.
+The eval crate is `publish = false` so its own package version does not need bumping, but its `agent-code-lib` dependency pin must match. Otherwise `cargo check --all-targets` fails with `failed to select a version for the requirement agent-code-lib = "^OLD"`.
+
+After editing the manifests, run a Cargo command such as `cargo check --all-targets` or `cargo metadata` and confirm `Cargo.lock` updated. If only workspace package versions changed, the lockfile diff should only touch the `agent-code` and `agent-code-lib` version lines.
 
 ### 3. Stamp the CHANGELOG
 
 In `CHANGELOG.md`:
 
-1. Replace `## [Unreleased]` content with `*No changes yet.*`
-2. Add a new section: `## [X.Y.Z] - YYYY-MM-DD`
-3. Move the unreleased items into the new section
+1. Leave `## [Unreleased]` with `*No changes yet.*`
+2. Add a new section below it: `## [X.Y.Z] - YYYY-MM-DD`
+3. Summarize the merged PRs since the previous release under Keep-a-Changelog headings (`Added`, `Changed`, `Fixed`, etc.)
 4. Update the comparison links at the bottom:
 
 ```markdown
@@ -48,6 +72,8 @@ In `CHANGELOG.md`:
 
 ### 4. Verify
 
+Run the full CI gate locally before pushing when the local environment supports it:
+
 ```bash
 cargo check --all-targets
 cargo test --all-targets
@@ -55,21 +81,56 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
+The release PR must also pass GitHub Actions CI and the `run-e2e` label-triggered workflow before merge.
+
 ### 5. Commit and push
 
 ```bash
 git add -A
-git commit -m "Bump version to X.Y.Z"
+git commit -m "chore(release): prepare vX.Y.Z"
 git push -u origin release/vX.Y.Z
 ```
 
-### 6. Open and merge the release PR
+### 6. Open the release PR
+
+Create a regular PR and add `run-e2e` immediately:
 
 ```bash
-gh pr create --title "Release vX.Y.Z" --body "Version bump + changelog stamp"
+gh pr create --title "Release vX.Y.Z" --body-file /tmp/release-pr.md
+gh pr edit --add-label run-e2e
 ```
 
-Merge after CI passes.
+Use this body skeleton:
+
+```markdown
+## Summary
+
+Cuts **vX.Y.Z**. Bumps `crates/lib`, `crates/cli`, `crates/eval` (path-dep only), `Cargo.lock`, and `npm/package.json` from OLD -> X.Y.Z. Stamps the CHANGELOG with the changes merged since the vOLD release.
+
+## Highlights
+
+**Feature or fix group** (#123, #124):
+- User-facing summary.
+- Important compatibility, safety, or migration notes.
+
+Full changelog is in `CHANGELOG.md` under the `[X.Y.Z]` heading.
+
+## Verification (RELEASING.md section 4)
+
+- [x] `run-e2e` label added
+- [ ] `cargo check --all-targets`
+- [ ] `cargo test --all-targets`
+- [ ] `cargo clippy --all-targets -- -D warnings`
+- [ ] `cargo fmt --all -- --check`
+- [ ] GitHub Actions CI passed
+- [ ] `run-e2e` workflow passed
+
+## After merge
+
+Follow RELEASING.md section 7: tag `vX.Y.Z` on main and push. Release automation handles Linux/macOS/Windows binaries, crates.io publish, npm publish, Docker image publish, and Homebrew tap update.
+```
+
+Merge after the changelog, lockfile, CI, E2E, and approval are complete.
 
 ### 7. Tag and push
 
@@ -139,6 +200,6 @@ git push origin v0.11.1
 
 If a release has a critical issue:
 
-1. **Don't delete the tag** — downstream users may have pinned it
+1. **Don't delete the tag** - downstream users may have pinned it
 2. Cut a patch release (vX.Y.1) with the fix
 3. If the npm package is broken: `npm unpublish agent-code@X.Y.Z` (within 72 hours)
