@@ -9,6 +9,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 *No changes yet.*
 
+## [0.21.1] - 2026-05-04
+
+### Fixed
+
+- **Version sync** (#270): the v0.21.0 tag was applied before the workspace version bump landed in `main`, so `crates/{lib,cli,eval}/Cargo.toml`, `Dockerfile`, and `npm/package.json` continued to read `0.20.0`. v0.21.1 corrects the drift; source-equivalent to v0.21.0.
+
+## [0.21.0] - 2026-05-04
+
+### Added
+
+#### New model-callable tools
+
+- **Cron and remote-trigger tools** (#254): `CronCreate`, `CronList`, `CronDelete`, and `RemoteTrigger` expose the existing `crates/lib/src/schedule/` storage and executor as model-callable surfaces. Routine names are validated at the store layer (defense-in-depth, not just at the tool boundary); `RemoteTrigger` runs in its own process group via `setsid` so grandchildren get reaped on timeout/cancel; writes go through `O_NOFOLLOW`-style atomic rename so a pre-planted symlink can't redirect writes outside the schedules dir.
+- **Brief, Config, McpAuth tools** (#259): `Brief` files structured research handoffs with attachment-path canonicalization (rejects `..` traversal, symlink escape, bidi/zero-width/BOM/format codepoints in title/question/context). `Config` reads/writes a deliberately narrow allow-list of user-tunable settings via `crates/lib/src/config/supported_settings.rs`; security-sensitive sections (`permissions.*`, `security.*`, `sandbox.*`, `hooks.*`, `mcp_servers.*`, `*api_key*`) are rejected with separator-aware lowercase normalization. `McpAuth` re-triggers the auth flow for a configured MCP server, fail-closed on `McpAuthKind::Unknown`.
+
+#### First-run onboarding and theme system
+
+- **First-run onboarding** (#265): welcome banner with an ASCII monogram, 7-option theme picker (`Auto` + dark/light × `{default, colorblind, ANSI-only}`), and a live diff preview that re-renders in the highlighted theme's colors as the cursor moves. First-run sentinel at `~/.config/agent-code/.onboarding-complete`. Skips automatically when stdin/stdout aren't both TTYs (`--prompt`, `--serve`, `--acp`, subcommands). `/theme` reuses the same picker mid-session.
+- **Accessibility-friendly themes**: `dark-colorblind`/`light-colorblind` on the Okabe-Ito palette safe for protanopia/deuteranopia/tritanopia, and `dark-ansi`/`light-ansi` restricted to the 16 standard ANSI codes for terminals without truecolor.
+- **OSC 11 terminal theme detection** (#268): `Auto` mode queries the terminal background via `OSC 11 ?` and classifies dark vs light using the BT.709 relative-luminance formula (`L = 0.2126·r + 0.7152·g + 0.0722·b`, threshold > 0.5). Eliminates the silent fallback to dark on terminals (Ghostty, kitty, Alacritty, recent iTerm2) that don't set `COLORFGBG`. DA1-sentinel (`CSI c`) pattern terminates the OSC query batch without arbitrary timeouts. `is_tty()` gate prevents poisoning headless surfaces.
+
+#### Plugin marketplace and extensibility
+
+- **Plugin marketplace MVP** (#262): native `plugin.toml` loader, plus adapters for two adjacent plugin formats — claude-style (`.claude-plugin/plugin.json` with sibling `commands/`, `agents/`, `skills/`, `hooks/` dirs and `.mcp.json`) and codex-style (`config.toml` with `[mcp_servers.*]` entries plus `prompts/*.md`). New `/plugin {list, install, enable, disable, remove}` commands. Built-in plugin slot (currently empty). Per-project enable/disable persists to `<project>/.agent/plugin-settings.toml` via the new atomic-write helper.
+- **Disk-loaded output styles** (#256): markdown style files at `<project>/.agent/output-styles/*.md` and `~/.config/agent-code/output-styles/*.md`. Frontmatter schema: `name`, `description`, optional `applies_to`. Disk styles override built-ins on id collision; `applies_to: [main|subagent]` filters at apply time; subagent style propagation via `AGENT_CODE_DISK_OUTPUT_STYLE` env var. Prompt cache key includes a 12-byte SHA-256 prefix of style content so in-session edits invalidate correctly.
+- **Team-memory layer** (#257): version-controlled `<project>/.agent/team-memory/` directory, read-only to the model and writable only via the explicit `/team-remember` slash command. The "read but not silently write" invariant is enforced through `PermissionChecker` (which now carries `project_root`), blocking `FileWrite`/`FileEdit`/`MultiEdit`/`NotebookEdit` and Bash redirections from team-memory paths. `MEMORY.md` link targets are validated against traversal and symlink leaves; `rebuild_index` produces byte-stable output.
+
+#### Configuration and infrastructure
+
+- **Settings migrations framework** (#255): forward-migration runner with numbered migrations (`crates/lib/src/config/migrations/`), wired into `Config::load_inner` for every layer (user, project, project-local). Atomic writes via `tempfile::NamedTempFile` with mode preservation (0600 secrets stay 0600), parent-dir fsync on POSIX, `MoveFileExW`-backed atomic replace on Windows. Profile loader (`services/profiles.rs`) routes through migrations. Seeded with `v0→v1` (stamp version) and `v1→v2` (consolidate `api.token` into `api.api_key`).
+- **`Tool::validate_input` trait method** (#259): runs before `PreToolUse` hooks and `check_permissions`, so disallowed tool inputs short-circuit before any audit log entry or permission prompt fires. `ConfigTool` overrides it for the allow-list preflight; `BriefTool` overrides it for control + invisible-format codepoint rejection.
+- **`config::atomic::atomic_write_secret`** (#259): shared mode-preserving atomic-write helper used by ConfigTool, plugin settings, the onboarding sentinel, and other secret-bearing files.
+- **`config::agent_config_dir()`** (#267): cross-platform helper that honors `XDG_CONFIG_HOME` on every platform (falling back to `dirs::config_dir().join("agent-code")`). All 15 call sites of `dirs::config_dir()` rerouted through it; fixes Windows behavior where `dirs::config_dir()` ignores `XDG_CONFIG_HOME`.
+
+#### Task model
+
+- **Task model variants** (#263): `TaskKind` enum (`LocalShell | LocalAgent | LocalWorkflow | MonitorMcp | RemoteAgent | Dream`), tagged `TaskPayload`, per-kind `TaskExecutor` trait + registry. `LocalShellExecutor` wraps the existing path; `LocalAgentExecutor` delegates to `AgentTool` (no duplication); `RemoteAgentExecutor` stubs to `RemoteTrigger`; `LocalWorkflow`/`MonitorMcp`/`Dream` are `NotImplemented` with TODOs. Surfaced in `/tasks`, `TaskList`, `TaskGet`.
+
+#### Roadmap
+
+- **Phase 8** (#253, #260, #266): "Extensibility, Surfaces, and Orchestration" added to `ROADMAP.md` covering plugin marketplace, output styles, bundled skills, settings migrations, cron tools, multi-surface host, swarm mode, additional model-callable tools, bash tool hardening, fork/resume, team-memory, service fill-in, task variants, cloud-runtime mode, and the new 8.15 theme-detection follow-ups (8.15.1 OSC 11 detection landed; 8.15.2-5 still open).
+
+### Changed
+
+- **Bash tool: unified protected-path enforcement** (#258): split safety logic into named modules (`bash_security`, `command_semantics`, `read_only_validation`, `sandbox_decision`, `sed_edit_parser`, `sed_validation`) and added `bash/protected_paths.rs` — a single destination-operand checker covering writers (`cp`, `mv`, `tee`, `dd`, `install`, `ln`, `rsync`, `truncate`), all redirection forms (`>`, `>>`, `&>`, `2>`, etc.), recursive shells (`bash -c`, `sh -c`, `eval`) up to depth 3, and an interpreter heuristic (`python -c`, `node -e`, `perl -e`, `ruby -e`). Closes the gap where non-sed writers could bypass the FileEdit permission gate.
+- **`dangerouslyDisableSandbox`** (#258): no longer skips destructive-pattern or protected-path validation. The flag now affects only whether the command runs inside the sandbox vs outside, not whether validation runs.
+- **Read-only validation handles redirections** (#258): output redirections (`>`, `>>`, heredoc-to-file, process substitution) now classify as `Mutating` regardless of the base command.
+- **Sed parser handles attached and clustered forms** (#258): `sed --in-place=.bak`, `sed --expression=ARG`, `sed -eSCRIPT`, `sed -fFILE`, and clustered short flags (`-Ei`, `-nEi`, `-Eie`) all route through the FileEdit permission path.
+- **Concurrent config writes serialized** (#259): read-modify-write critical sections take an exclusive `fs2`-backed lock on a sibling `settings.toml.lock` so racing writers can't lose updates.
+- **Test environment isolation** (#259): shared `EnvGuard` / `ENV_LOCK` in `crates/lib/src/test_support.rs` for any test that mutates `HOME`, `XDG_CONFIG_HOME`, or other env vars; replaces ad-hoc local locks across tests.
+
+### Fixed
+
+- **Windows compile**: `child_pid` binding is now cross-platform (#261); `backup_rotation_does_not_run_when_atomic_write_fails` is `#[cfg(unix)]`-gated (#264).
+- **Windows runtime tests** (#267): profile loader test uses shared `EnvGuard`; sed-validation deny-substring uses platform-appropriate path separators; brief attachments test uses `C:\Windows\System32\drivers\etc\hosts` instead of `/etc/hostname`; `XDG_CONFIG_HOME` honored on Windows via the new `agent_config_dir()` helper.
+- **Symlink TOCTOU in atomic config writes** (#259): unguessable temp file names via `tempfile::NamedTempFile::new_in` defeat planted-symlink attacks against deterministic `.tmp` paths.
+- **File mode leak** (#255, #259): config rewrites preserve the original file mode (or default to `0o600` for new secret-bearing files), so a `0o600` settings file can't become world-readable on rewrite.
+- **Missing parent-dir fsync** (#255, #259): atomic writes now `fsync` the parent directory after `rename` for crash-durable replacements on POSIX.
+- **Non-deterministic memory merge** (#257): `merge_scoped_files` replaced `HashMap::into_values()` with `BTreeMap` plus an explicit `(scope_priority, path)` sort, so the resulting `memory_files` Vec is byte-stable across loads.
+- **Path traversal in cron tools** (#254): `cron_delete`, `remote_trigger`, and the underlying `ScheduleStore::path_for` validate routine ids; `validate_schedule_name` is the single source of truth at the store layer.
+- **Path traversal in team-memory delete** (#257): `delete_team_memory` validates the filename and runs `ensure_path_within` (canonicalize + prefix check) before any fs op.
+- **`MEMORY.md` link traversal** (#257): `load_referenced_files` rejects `..` segments, absolute paths, and symlink leaves so a poisoned team-memory index can't read files outside the memory dir.
+- **Profile loader bypassed migrations** (#255): `services::profiles::load_profile` now routes through `migrations::load_and_migrate_toml`, so old `<config_dir>/agent-code/profiles/<name>.toml` snapshots with `api.token` are upgraded and rewritten on disk.
+- **Output styles**:
+  - **Resolution order** (#256): `/output-style` checks the disk registry before built-in aliases, so a project `default.md` actually overrides the built-in.
+  - **`applies_to` enforcement** (#256): a style with `applies_to: [subagent]` no longer leaks into main-agent prompts.
+  - **Cache busts on edit** (#256): prompt cache key includes a content hash, so in-session edits to the active style file are picked up by `/reload`.
+  - **Subagent propagation** (#256): `Agent`-tool spawned children inherit the active disk style via `AGENT_CODE_DISK_OUTPUT_STYLE`; previously the subagent half of `applies_to` was dead at the subprocess boundary.
+
+### Security
+
+- **Team-memory read-only invariant enforced** (#257): the predicate was previously cosmetic — `is_team_memory_path` was only consulted in the background extraction skip path, while `FileWrite`, `FileEdit`, `MultiEdit`, `NotebookEdit`, and Bash redirections could all silently write to `<project>/.agent/team-memory/`. Now blocked at the permission layer.
+- **Bash bypasses for protected dirs** (#258): non-sed writers (`cp`, `mv`, `tee`, `dd`, etc.), shell redirections, recursive shells, and inline interpreter source can no longer reach `.git/`, `.husky/`, `node_modules/`, or system paths.
+- **`McpAuthKind::Unknown` fails closed** (#259): a future auth marker that's parsed but unsupported now returns `ToolResult::error`, not a non-error result the model could be tricked into trusting.
+- **Pre-validation runs before audit hooks** (#259): inputs that fail `Tool::validate_input` are rejected before `PreToolUse` hooks see them, so audit pipelines no longer log disallowed `Config` keys or attachment-traversal attempts.
+- **Broader Unicode rejection in user-facing inputs** (#259): bidi controls (`U+202A`–`U+202E`), zero-width chars (`U+200B`–`U+200F`), BOM (`U+FEFF`), and Unicode format codepoints rejected in `Brief` title/question/context to prevent rendered-output spoofing.
+
+### Removed
+
+- *(none)*
+
 ## [0.20.0] - 2026-04-27
 
 ### Added
@@ -311,7 +392,9 @@ Initial public release.
 - **Cross-platform support**: Linux (x86_64, aarch64) and macOS (x86_64, Apple Silicon)
 - **Installation methods**: cargo install, Homebrew tap, curl script, prebuilt binaries
 
-[Unreleased]: https://github.com/avala-ai/agent-code/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/avala-ai/agent-code/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/avala-ai/agent-code/compare/v0.21.0...v0.21.1
+[0.21.0]: https://github.com/avala-ai/agent-code/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/avala-ai/agent-code/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/avala-ai/agent-code/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/avala-ai/agent-code/compare/v0.17.0...v0.18.0
