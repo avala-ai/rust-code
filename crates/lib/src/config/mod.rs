@@ -279,7 +279,36 @@ fn resolve_api_key_from_env() -> Option<String> {
 
 /// Returns the user-level config file path.
 pub fn user_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agent-code").join("config.toml"))
+    agent_config_dir().map(|d| d.join("config.toml"))
+}
+
+/// Returns the root directory that holds every agent-code user-scope
+/// config / state file (`config.toml`, `profiles/`, `sessions/`, `skills/`,
+/// `plugins/`, `schedules/`, …).
+///
+/// Resolution order:
+///
+/// 1. `XDG_CONFIG_HOME` env var, when set and non-empty — joined with
+///    `agent-code`. We honor this on every platform, including Windows,
+///    so a single env override redirects user-scope state in tests and
+///    in POSIX-flavored dev shells. The base `dirs::config_dir()` already
+///    consults `XDG_CONFIG_HOME` on Linux but ignores it on Windows
+///    (`dirs` reads `%APPDATA%` via `SHGetKnownFolderPath` there);
+///    re-checking it here is what fixes the cross-platform gap.
+/// 2. `dirs::config_dir()` joined with `agent-code` — the platform
+///    default: `$HOME/.config/agent-code` on Linux,
+///    `~/Library/Application Support/agent-code` on macOS,
+///    `%APPDATA%\agent-code` on Windows.
+///
+/// Use this in preference to `dirs::config_dir().map(|d| d.join("agent-code"))`
+/// so tests and overrides stay consistent across the codebase.
+pub fn agent_config_dir() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
+        && !xdg.is_empty()
+    {
+        return Some(PathBuf::from(xdg).join("agent-code"));
+    }
+    dirs::config_dir().map(|d| d.join("agent-code"))
 }
 
 /// Walk up from the current directory to find `.agent/settings.toml`.

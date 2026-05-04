@@ -317,7 +317,7 @@ fn write_atomic_no_follow(dir: &Path, target: &Path, data: &[u8]) -> Result<(), 
 static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn schedules_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agent-code").join("schedules"))
+    crate::config::agent_config_dir().map(|d| d.join("schedules"))
 }
 
 #[cfg(test)]

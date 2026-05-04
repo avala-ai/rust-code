@@ -154,14 +154,24 @@ mod tests {
 
     #[test]
     fn relative_paths_are_resolved_against_cwd() {
+        // `Path::join` uses the platform's native separator between
+        // components. The permission check sees the rendered string,
+        // which means the deny-substring needs to match what the
+        // platform actually emits — `/` on POSIX, `\` on Windows.
+        // The resolved `PathBuf` compares component-wise, so the
+        // expected value can stay separator-agnostic.
+        #[cfg(windows)]
+        let (denial, cwd) = (r"C:\tmp\project\.git", Path::new(r"C:\tmp\project"));
+        #[cfg(not(windows))]
+        let (denial, cwd) = ("/tmp/project/.git", Path::new("/tmp/project"));
+
         let perms = StubPermissions {
-            denials: vec!["/tmp/project/.git".into()],
+            denials: vec![denial.into()],
             seen: RefCell::new(vec![]),
         };
         let cmd = parse("sed -i 's/x/y/' .git/HEAD");
-        let cwd = Path::new("/tmp/project");
         let err = validate_sed_edits(&cmd, cwd, &perms).unwrap_err();
-        assert_eq!(err.file, PathBuf::from("/tmp/project/.git/HEAD"));
+        assert_eq!(err.file, cwd.join(".git/HEAD"));
     }
 
     #[test]

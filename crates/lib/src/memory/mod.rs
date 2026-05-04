@@ -308,7 +308,7 @@ fn load_project_context(project_root: &Path) -> Option<String> {
 
     // Layer 1: User global context.
     for name in &["AGENTS.md", "CLAUDE.md"] {
-        if let Some(global_path) = dirs::config_dir().map(|d| d.join("agent-code").join(name))
+        if let Some(global_path) = crate::config::agent_config_dir().map(|d| d.join(name))
             && let Some(content) = load_truncated_file(&global_path)
         {
             debug!("Loaded global context from {}", global_path.display());
@@ -607,7 +607,7 @@ fn scope_precedence(scope: types::Scope) -> u8 {
 }
 
 fn user_memory_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agent-code").join("memory"))
+    crate::config::agent_config_dir().map(|d| d.join("memory"))
 }
 
 /// Returns the project-level memory directory (`.agent/` in the project root).

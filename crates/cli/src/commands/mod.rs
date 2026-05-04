@@ -2062,8 +2062,8 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                     println!("  {:<14}  {action}{desc}", b.key);
                 }
                 println!();
-                if let Some(d) = dirs::config_dir() {
-                    let path = d.join("agent-code").join("keybindings.json");
+                if let Some(d) = agent_code_lib::config::agent_config_dir() {
+                    let path = d.join("keybindings.json");
                     if path.exists() {
                         println!("  Overrides file: {}", path.display());
                     } else {
@@ -4099,8 +4099,8 @@ fn execute_tag(args: Option<&str>, engine: &QueryEngine) {
             Ok(mut data) => {
                 let n = data.tags.len();
                 data.tags.clear();
-                let dir = dirs::config_dir()
-                    .map(|d| d.join("agent-code").join("sessions"))
+                let dir = agent_code_lib::config::agent_config_dir()
+                    .map(|d| d.join("sessions"))
                     .expect("config dir");
                 let path = dir.join(format!("{}.json", data.id));
                 match serde_json::to_string_pretty(&data) {

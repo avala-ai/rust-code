@@ -113,7 +113,7 @@ impl KeybindingRegistry {
 }
 
 fn keybindings_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agent-code").join("keybindings.json"))
+    agent_code_lib::config::agent_config_dir().map(|d| d.join("keybindings.json"))
 }
 
 fn load_keybindings_file(path: &PathBuf) -> Result<Vec<Keybinding>, String> {
