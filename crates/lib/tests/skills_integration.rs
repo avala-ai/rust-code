@@ -103,6 +103,101 @@ fn project_skill_overrides_bundled() {
 }
 
 #[test]
+fn bundled_skill_batch_invokes_with_expected_prompt() {
+    let registry = SkillRegistry::load_all(None);
+    let skill = registry.find("batch").expect("batch should be bundled");
+    let body = skill.expand(None);
+    assert!(body.contains("Resolve the target set"));
+    assert!(body.contains("STOP for confirmation"));
+    assert!(body.to_lowercase().contains("you're done"));
+}
+
+#[test]
+fn bundled_skill_loop_invokes_with_expected_prompt() {
+    let registry = SkillRegistry::load_all(None);
+    let skill = registry.find("loop").expect("loop should be bundled");
+    let body = skill.expand(None);
+    assert!(body.contains("exit condition"));
+    assert!(body.contains("ceiling"));
+    assert!(body.to_lowercase().contains("prompt-only"));
+}
+
+#[test]
+fn bundled_skill_remember_invokes_with_expected_prompt() {
+    let registry = SkillRegistry::load_all(None);
+    let skill = registry
+        .find("remember")
+        .expect("remember should be bundled");
+    let body = skill.expand(None);
+    assert!(body.contains("Classify the type"));
+    assert!(body.contains("Pick the scope"));
+    assert!(body.contains("STOP and confirm"));
+}
+
+#[test]
+fn bundled_skill_simplify_invokes_with_expected_prompt() {
+    let registry = SkillRegistry::load_all(None);
+    let skill = registry
+        .find("simplify")
+        .expect("simplify should be bundled");
+    let body = skill.expand(None);
+    assert!(body.contains("Read the diff"));
+    assert!(body.contains("dead weight"));
+    assert!(body.contains("STOP for confirmation"));
+}
+
+#[test]
+fn bundled_skill_stuck_invokes_with_expected_prompt() {
+    let registry = SkillRegistry::load_all(None);
+    let skill = registry.find("stuck").expect("stuck should be bundled");
+    let body = skill.expand(None);
+    assert!(body.contains("Reconstruct what was tried"));
+    assert!(body.contains("3 alternative approaches"));
+    assert!(body.contains("not \"give up\""));
+}
+
+#[test]
+fn bundled_skill_verify_invokes_with_expected_prompt() {
+    let registry = SkillRegistry::load_all(None);
+    let skill = registry.find("verify").expect("verify should be bundled");
+    let body = skill.expand(None);
+    assert!(body.contains("State the claim"));
+    assert!(body.contains("blast radius"));
+    assert!(body.contains("does NOT auto-fix"));
+}
+
+#[test]
+fn bundled_skill_app_builder_invokes_with_expected_prompt() {
+    let registry = SkillRegistry::load_all(None);
+    let skill = registry
+        .find("app-builder")
+        .expect("app-builder should be bundled");
+    let body = skill.expand(None);
+    assert!(body.contains("Clarify the brief"));
+    assert!(body.contains("Pick the stack"));
+    assert!(body.to_lowercase().contains("prompt-only"));
+}
+
+#[test]
+fn phase_8_3_skills_all_present() {
+    let registry = SkillRegistry::load_all(None);
+    for name in [
+        "batch",
+        "loop",
+        "remember",
+        "simplify",
+        "stuck",
+        "verify",
+        "app-builder",
+    ] {
+        assert!(
+            registry.find(name).is_some(),
+            "Phase 8.3 bundled skill '{name}' not found in registry"
+        );
+    }
+}
+
+#[test]
 fn directory_skill_with_skill_md() {
     let dir = tempfile::tempdir().unwrap();
     let skills_dir = dir.path().join(".agent").join("skills");
