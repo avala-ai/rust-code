@@ -12,24 +12,24 @@ How to cut a new release of agent-code.
 
 ## Release naming standard
 
-Use the same names for every release. The PR title is intentionally a conventional-commit subject because squash merges often reuse it as the commit title.
+Release PRs follow the naming and body shape used by recent releases such as #244 and #249. Commit messages still use Conventional Commits, but release PR titles do not.
 
 | Item | Format |
 |------|--------|
 | Branch | `release/vX.Y.Z` |
-| PR title | `chore(release): prepare vX.Y.Z` |
+| PR title | `Release vX.Y.Z` |
 | Release prep commit | `chore(release): prepare vX.Y.Z` |
 | Required PR label | `run-e2e` |
 | Tag | `vX.Y.Z` |
 
-Release PR bodies must use these sections, in this order:
+Release PRs are regular PRs, not drafts. Use checklist items in the PR body for anything still pending.
+
+Release PR bodies use these sections, in this order:
 
 1. `Summary`
 2. `Highlights`
-3. `Verification (RELEASING.md §4)`
+3. `Verification (RELEASING.md section 4)`
 4. `After merge`
-
-Keep the PR in draft until the version bump, `Cargo.lock`, changelog stamp, normal CI, and `run-e2e` checks are complete.
 
 ## Steps
 
@@ -93,10 +93,10 @@ git push -u origin release/vX.Y.Z
 
 ### 6. Open the release PR
 
-Create the PR as a draft and add `run-e2e` immediately:
+Create a regular PR and add `run-e2e` immediately:
 
 ```bash
-gh pr create --draft --title "chore(release): prepare vX.Y.Z" --body-file /tmp/release-pr.md
+gh pr create --title "Release vX.Y.Z" --body-file /tmp/release-pr.md
 gh pr edit --add-label run-e2e
 ```
 
@@ -115,7 +115,7 @@ Cuts **vX.Y.Z**. Bumps `crates/lib`, `crates/cli`, `crates/eval` (path-dep only)
 
 Full changelog is in `CHANGELOG.md` under the `[X.Y.Z]` heading.
 
-## Verification (RELEASING.md §4)
+## Verification (RELEASING.md section 4)
 
 - [x] `run-e2e` label added
 - [ ] `cargo check --all-targets`
@@ -127,10 +127,10 @@ Full changelog is in `CHANGELOG.md` under the `[X.Y.Z]` heading.
 
 ## After merge
 
-Follow RELEASING.md §7: tag `vX.Y.Z` on main and push. Release automation handles Linux/macOS/Windows binaries, crates.io publish, npm publish, Docker image publish, and Homebrew tap update.
+Follow RELEASING.md section 7: tag `vX.Y.Z` on main and push. Release automation handles Linux/macOS/Windows binaries, crates.io publish, npm publish, Docker image publish, and Homebrew tap update.
 ```
 
-Mark the PR ready only after the changelog, lockfile, CI, and E2E checklist items are complete. Merge after approval.
+Merge after the changelog, lockfile, CI, E2E, and approval are complete.
 
 ### 7. Tag and push
 
