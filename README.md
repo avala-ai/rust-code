@@ -29,14 +29,14 @@ Or: `cargo install agent-code` / `brew install avala-ai/tap/agent-code`
 ## Quickstart
 
 ```bash
-agent                          # interactive mode (runs setup wizard on first launch)
+agent                         # interactive mode (runs setup wizard on first launch)
 agent --prompt "fix the tests" # one-shot mode
-agent --model gpt-4.1-mini     # use a specific model
+agent --model gpt-5.4         # use a specific model
 ```
 
 The agent reads your codebase, runs commands, edits files, and handles multi-step tasks. Type `?` for keyboard shortcuts.
 
-## 15 Providers
+## LLM Providers
 
 Works with any LLM. Set one env var and go:
 
@@ -75,11 +75,11 @@ Already signed in with OpenAI Codex? Run `codex login`, then start agent-code wi
 | `?` | Toggle shortcuts panel |
 | `\` + Enter | Multi-line input |
 
-## 32 Built-in Tools
+## Built-in Tools
 
-File ops, search, shell, git, web, LSP, MCP, notebooks, tasks, and more. Tools execute during LLM streaming for faster turns. [Full list →](docs/reference/tools.mdx)
+File ops, search, shell, git worktrees, web access, LSP diagnostics, MCP resources, notebooks, background-task monitoring, scheduled routines, remote triggers, briefs, scoped config updates, MCP auth, tasks, and more. Tools execute during LLM streaming for faster turns. [Full list ->](docs/reference/tools.mdx)
 
-## 24 Bundled Skills
+## Bundled Skills
 
 | Skill | Purpose |
 |-------|---------|
@@ -116,7 +116,7 @@ Add custom skills as markdown files in `.agent/skills/` or `~/.config/agent-code
 # ~/.config/agent-code/config.toml
 
 [api]
-model = "gpt-4.1-mini"
+model = "gpt-5.4"
 
 [permissions]
 default_mode = "ask"   # ask | allow | deny | accept_edits | plan
@@ -147,15 +147,15 @@ client/                    Cross-platform Flutter desktop/web GUI (see client/RE
 
 The engine is a reusable library. The CLI binary is a thin wrapper. The Flutter client in `client/` is a separate front-end that talks to the engine via the `agent_code_client` package.
 
-## 63 Slash Commands
+## Slash Commands
 
-Session management, context control, git operations, agent coordination, configuration, diagnostics, and more. [Full list →](docs/reference/commands.mdx)
+Session management, context control, git operations, agent coordination, configuration, diagnostics, and more. [Full list ->](docs/reference/commands.mdx)
 
-Highlights: `/release-notes`, `/summary`, `/feedback`, `/share`, `/update`, `/uninstall`, `/doctor`, `/plan`, `/model`, `/cost`, `/usage`, `/scroll`, `/rewind`, `/fork`, `/rename`, `/add-dir`, `/btw`, `/effort`, `/thinkback`, `/break-cache`, `/pr-comments`, `/autofix-pr`, `/perf-issue`
+Highlights: `/theme`, `/output-style`, `/plugin`, `/tools`, `/team-remember`, `/profile`, `/tokens`, `/thinkback`, `/pr-comments`, `/autofix-pr`, `/perf-issue`, `/release-notes`, `/summary`, `/update`, `/uninstall`, `/doctor`, `/model`, `/cost`, `/usage`, `/scroll`, `/rewind`, `/fork`, `/rename`, `/add-dir`, `/btw`
 
 ## Security
 
-Protected directories (`.git/`, `.husky/`, `node_modules/`) are blocked from writes regardless of permission settings. Destructive shell commands trigger warnings. [Learn more →](SECURITY.md)
+Protected directories (`.git/`, `.husky/`, `node_modules/`) are blocked from writes regardless of permission settings. Destructive shell commands trigger warnings. [Learn more ->](SECURITY.md)
 
 ## Platforms
 
@@ -171,12 +171,13 @@ Protected directories (`.git/`, `.husky/`, `node_modules/`) are blocked from wri
 ```bash
 git clone https://github.com/avala-ai/agent-code.git
 cd agent-code
-cargo build
-cargo test    # 650+ tests
-cargo clippy  # zero warnings
+cargo check --all-targets
+cargo test --all-targets
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [ROADMAP.md](ROADMAP.md) for planned improvements.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, [RELEASING.md](RELEASING.md) for release steps, and [ROADMAP.md](ROADMAP.md) for planned improvements.
 
 ## License
 
