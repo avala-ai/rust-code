@@ -1,6 +1,5 @@
 //! Runtime facade for terminal themes.
 
-use std::ops::Deref;
 use std::sync::RwLock;
 
 use crossterm::style::Color;
@@ -8,10 +7,24 @@ use crossterm::style::Color;
 #[path = "theme.rs"]
 mod legacy;
 
-pub use legacy::{label, styled, styled_bold};
+pub use self::legacy::{label, styled, styled_bold};
 
 #[derive(Debug, Clone)]
-pub struct Theme(legacy::Theme);
+pub struct Theme {
+    pub accent: Color,
+    pub error: Color,
+    pub warning: Color,
+    pub success: Color,
+    pub muted: Color,
+    pub inactive: Color,
+    pub tool: Color,
+    pub plan: Color,
+    pub text: Color,
+    pub diff_add: Color,
+    pub diff_remove: Color,
+    pub agent_colors: [Color; 8],
+    pub is_dark: bool,
+}
 
 impl Theme {
     pub fn midnight() -> Self {
@@ -68,21 +81,27 @@ impl Theme {
     }
 
     pub fn agent_color(&self, index: usize) -> Color {
-        self.0.agent_color(index)
-    }
-}
-
-impl Deref for Theme {
-    type Target = legacy::Theme;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        self.agent_colors[index % self.agent_colors.len()]
     }
 }
 
 impl From<legacy::Theme> for Theme {
     fn from(theme: legacy::Theme) -> Self {
-        Self(theme)
+        Self {
+            accent: theme.accent,
+            error: theme.error,
+            warning: theme.warning,
+            success: theme.success,
+            muted: theme.muted,
+            inactive: theme.inactive,
+            tool: theme.tool,
+            plan: theme.plan,
+            text: theme.text,
+            diff_add: theme.diff_add,
+            diff_remove: theme.diff_remove,
+            agent_colors: theme.agent_colors,
+            is_dark: theme.is_dark,
+        }
     }
 }
 
