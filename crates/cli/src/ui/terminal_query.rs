@@ -188,9 +188,7 @@ fn read_stdin_until_da1(timeout: Duration) -> Option<Vec<u8>> {
         }
         if n < 0 {
             let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::Interrupted
-                || err.kind() == io::ErrorKind::WouldBlock
-            {
+            if err.kind() == io::ErrorKind::Interrupted || err.kind() == io::ErrorKind::WouldBlock {
                 continue;
             }
             return None;
@@ -257,10 +255,10 @@ fn parse_color_spec(spec: &str) -> Option<Rgb> {
 }
 
 fn parse_hash_color(hex: &str) -> Option<Rgb> {
-    let component_len = hex.len() / 3;
-    if component_len == 0 || component_len > 4 || component_len * 3 != hex.len() {
-        return None;
-    }
+    let component_len = match hex.len() {
+        3 | 6 | 9 | 12 => hex.len() / 3,
+        _ => return None,
+    };
     let r = parse_hex_component(&hex[0..component_len])?;
     let g = parse_hex_component(&hex[component_len..component_len * 2])?;
     let b = parse_hex_component(&hex[component_len * 2..component_len * 3])?;
@@ -346,8 +344,14 @@ mod tests {
     #[test]
     fn parses_rgb_components_with_one_to_four_digits() {
         assert_eq!(parse_background_color(&osc("rgb:f/0/8")), rgb(255, 0, 136));
-        assert_eq!(parse_background_color(&osc("rgb:80/40/20")), rgb(128, 64, 32));
-        assert_eq!(parse_background_color(&osc("rgb:800/400/200")), rgb(128, 64, 32));
+        assert_eq!(
+            parse_background_color(&osc("rgb:80/40/20")),
+            rgb(128, 64, 32)
+        );
+        assert_eq!(
+            parse_background_color(&osc("rgb:800/400/200")),
+            rgb(128, 64, 32)
+        );
         assert_eq!(
             parse_background_color(&osc("rgb:8000/4000/2000")),
             rgb(128, 64, 32)
@@ -397,17 +401,27 @@ mod tests {
 
     #[test]
     fn luminance_threshold_classifies_gray_boundary() {
-        assert_eq!(theme_for_rgb(Rgb { r: 127, g: 127, b: 127 }), SystemTheme::Dark);
         assert_eq!(
-            theme_for_rgb(Rgb { r: 128, g: 128, b: 128 }),
+            theme_for_rgb(Rgb {
+                r: 127,
+                g: 127,
+                b: 127
+            }),
+            SystemTheme::Dark
+        );
+        assert_eq!(
+            theme_for_rgb(Rgb {
+                r: 128,
+                g: 128,
+                b: 128
+            }),
             SystemTheme::Light
         );
     }
 
     #[test]
     fn simulated_query_writes_batch_and_stops_at_da1() {
-        let mut input =
-            Cursor::new(b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?1;2cignored");
+        let mut input = Cursor::new(b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?1;2cignored");
         let mut output = Vec::new();
 
         let theme = query_system_theme_from_io(&mut input, &mut output);
