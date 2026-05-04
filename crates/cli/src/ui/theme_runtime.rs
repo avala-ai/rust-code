@@ -2,12 +2,10 @@
 
 use std::sync::RwLock;
 
-use crossterm::style::Color;
+use crossterm::style::{Color, StyledContent};
 
 #[path = "theme.rs"]
 mod legacy;
-
-pub use self::legacy::{label, styled, styled_bold};
 
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -103,6 +101,18 @@ impl From<legacy::Theme> for Theme {
             is_dark: theme.is_dark,
         }
     }
+}
+
+pub fn styled(text: &str, color: Color) -> StyledContent<String> {
+    legacy::styled(text, color)
+}
+
+pub fn styled_bold(text: &str, color: Color) -> StyledContent<String> {
+    legacy::styled_bold(text, color)
+}
+
+pub fn label(text: &str, bg: Color, fg: Color) -> StyledContent<String> {
+    legacy::label(text, bg, fg)
 }
 
 /// Detect whether the terminal has a light background.
