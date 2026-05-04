@@ -39,6 +39,7 @@ action = "deny"
 markdown = true
 syntax_highlight = true
 theme = "dark"
+inherit_fg = false             # When theme = "auto", inherit the terminal's foreground color
 
 # MCP servers (see MCP Servers page)
 [mcp_servers.filesystem]
@@ -53,6 +54,38 @@ tool_name = "FileWrite"
 type = "shell"
 command = "cargo fmt"
 ```
+
+## Auto theme detection
+
+When `[ui].theme = "auto"`, agent-code asks the terminal for its
+default colours via the OSC 10 (foreground) and OSC 11 (background)
+escape sequences. Both queries fire as a single batch terminated by a
+DA1 sentinel, so detection costs one round-trip on supported
+terminals (Ghostty, kitty, Alacritty, iTerm2, WezTerm, modern
+xterm). The reply is parsed with BT.709 luminance to pick between
+the dark (`midnight`) and light (`daybreak`) palettes.
+
+Detection is skipped silently when stdin/stdout are not a terminal
+(in `agent --serve`, when output is piped, or under CI), and falls
+back to dark when the terminal does not respond.
+
+### `inherit_fg`
+
+`[ui].inherit_fg = true` (default `false`) tells the Auto theme to
+replace its `text` slot with the foreground colour the terminal
+reported via OSC 10, instead of the theme's hardcoded value. Useful
+when you have a custom terminal palette and want plain prose to keep
+your usual reading colour.
+
+Caveats:
+
+- The override only applies when `theme = "auto"`. Picking an explicit
+  theme is taken at face value.
+- Some terminals reply to OSC 10 with the colour they would *otherwise*
+  use, even when the user has installed a colour scheme that overrides
+  it. If your foreground looks wrong, set `inherit_fg = false`.
+- Contrast against the (theme-chosen) background is your concern when
+  this option is enabled.
 
 ## Project config
 

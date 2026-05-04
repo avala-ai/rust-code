@@ -1822,9 +1822,9 @@ Each platform path is small but distinct — bundle into `crates/cli/src/ui/them
 
 **Fix:** Symmetric to 8.15.1 — query OSC 10, parse, expose via `detect_system_foreground()`. Optional consumer: an `inherit-fg` mode for the Auto theme that reuses the terminal's foreground for `text` rather than picking one.
 
-- [ ] Reuse the `terminal_query.rs` infrastructure from 8.15.1 (the `oscColor(code)` builder pattern is generic over the code)
-- [ ] `inherit-fg` toggle in onboarding (additional checkbox below the theme picker, or a setting-only knob)
-- [ ] Tests: the parser is shared; mainly a wiring test
+- [x] Reuse the `terminal_query.rs` infrastructure from 8.15.1 (the `oscColor(code)` builder pattern is generic over the code)
+- [x] `inherit-fg` toggle exposed via `[ui].inherit_fg` config key (onboarding checkbox left as a TODO — picker would need a secondary state machine)
+- [x] Tests: the parser is shared; OSC 10 wiring + theme override matrix covered
 
 ---
 
