@@ -56,7 +56,8 @@ pub fn run_first_run() -> OnboardingResult {
     }
 
     print_welcome();
-    let chosen = pick_theme(default_theme_for_picker()).unwrap_or_else(|| DEFAULT_THEME.to_string());
+    let chosen =
+        pick_theme(default_theme_for_picker()).unwrap_or_else(|| DEFAULT_THEME.to_string());
 
     if let Err(e) = persist_theme(&chosen) {
         tracing::warn!("could not persist theme '{chosen}': {e}");
@@ -315,7 +316,11 @@ fn render_preview(theme: &Theme) -> String {
     let rows = [
         (" ", "fn render(view: &View) {", theme.text),
         ("-", "    let title = view.heading();", theme.diff_remove),
-        ("+", "    let title = view.heading_styled();", theme.diff_add),
+        (
+            "+",
+            "    let title = view.heading_styled();",
+            theme.diff_add,
+        ),
         ("+", "    writeln!(view.out, \"{title}\")?;", theme.diff_add),
         (" ", "}", theme.text),
     ];
@@ -457,10 +462,7 @@ mod tests {
         let parsed: toml::Value = toml::from_str(&raw).unwrap();
         assert_eq!(parsed["api"]["model"].as_str(), Some("gpt-test"));
         assert_eq!(parsed["ui"]["markdown"].as_bool(), Some(false));
-        assert_eq!(
-            parsed["ui"]["theme"].as_str(),
-            Some("dark-colorblind")
-        );
+        assert_eq!(parsed["ui"]["theme"].as_str(), Some("dark-colorblind"));
     }
 
     #[test]
