@@ -59,7 +59,7 @@ pub struct SessionData {
 
 /// Sessions directory path.
 fn sessions_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agent-code").join("sessions"))
+    crate::config::agent_config_dir().map(|d| d.join("sessions"))
 }
 
 /// Serialize session data to pretty JSON and apply the secret masker.

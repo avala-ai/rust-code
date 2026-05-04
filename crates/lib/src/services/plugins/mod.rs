@@ -413,7 +413,7 @@ fn load_native_plugin(path: &Path, source: PluginSource) -> Result<Plugin, Strin
 }
 
 fn user_plugin_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agent-code").join("plugins"))
+    crate::config::agent_config_dir().map(|d| d.join("plugins"))
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use super::selector::{SelectOption, select};
 
 /// Check if the setup wizard should run.
 pub fn needs_setup() -> bool {
-    let config_path = dirs::config_dir().map(|d| d.join("agent-code").join("config.toml"));
+    let config_path = agent_code_lib::config::agent_config_dir().map(|d| d.join("config.toml"));
     match config_path {
         Some(path) => !path.exists(),
         None => true,
@@ -496,7 +496,7 @@ theme = "{}"
         result.permission_mode, result.theme,
     );
 
-    if let Some(config_dir) = dirs::config_dir().map(|d| d.join("agent-code")) {
+    if let Some(config_dir) = agent_code_lib::config::agent_config_dir() {
         let _ = std::fs::create_dir_all(&config_dir);
         let config_path = config_dir.join("config.toml");
         let _ = std::fs::write(&config_path, &config);

@@ -967,7 +967,7 @@ fn serde_yaml_parse(yaml: &str) -> Result<SkillMetadata, String> {
 
 /// Get the user-level skills directory.
 fn user_skills_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agent-code").join("skills"))
+    crate::config::agent_config_dir().map(|d| d.join("skills"))
 }
 
 #[cfg(test)]

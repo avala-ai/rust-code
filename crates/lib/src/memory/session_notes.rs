@@ -39,7 +39,7 @@ _Step by step, what was attempted and done_
 
 /// Get the path for this session's notes file.
 pub fn session_notes_path(session_id: &str) -> Option<PathBuf> {
-    let dir = dirs::config_dir()?.join("agent-code").join("session-notes");
+    let dir = crate::config::agent_config_dir()?.join("session-notes");
     let _ = std::fs::create_dir_all(&dir);
     Some(dir.join(format!("{session_id}.md")))
 }
@@ -89,8 +89,8 @@ pub fn build_update_prompt(session_id: &str, recent_messages: &str) -> String {
 
 /// Clean up old session notes (older than 7 days).
 pub fn cleanup_old_notes() {
-    let dir = match dirs::config_dir() {
-        Some(d) => d.join("agent-code").join("session-notes"),
+    let dir = match crate::config::agent_config_dir() {
+        Some(d) => d.join("session-notes"),
         None => return,
     };
 

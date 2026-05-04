@@ -156,8 +156,8 @@ impl AgentRegistry {
         }
 
         // User-level agents.
-        if let Some(config_dir) = dirs::config_dir() {
-            let user_dir = config_dir.join("agent-code").join("agents");
+        if let Some(config_dir) = crate::config::agent_config_dir() {
+            let user_dir = config_dir.join("agents");
             self.load_agents_from_dir(&user_dir);
         }
     }

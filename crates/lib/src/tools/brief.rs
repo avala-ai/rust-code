@@ -650,15 +650,32 @@ mod tests {
 
     #[test]
     fn validate_attachments_rejects_outside_cwd_and_home() {
-        // /etc/hostname is on every Linux box and outside both cwd
-        // (a tempdir) and the user's home (we override HOME so the
-        // home-prefix check fails too).
+        // The rejected attachment must (a) exist on disk so it gets
+        // past the existence check and (b) live outside both cwd
+        // (a tempdir) and `dirs::home_dir()` so it trips the boundary
+        // check. POSIX honors the `HOME` env override and we use
+        // `/etc/hostname`; on Windows `dirs::home_dir()` reads
+        // `%USERPROFILE%` directly via `SHGetKnownFolderPath` (HOME is
+        // ignored there), so a `TempDir`-based "outside" file would
+        // sit under `%USERPROFILE%\AppData\Local\Temp` and pass the
+        // home-prefix check. Use a stable system path outside the
+        // user profile instead.
         let dir = TempDir::new().unwrap();
         let cwd = dir.path().to_path_buf();
+        // EnvGuard takes the shared env lock even when the override
+        // is a no-op on this platform — that keeps us serialised
+        // against other tests in the crate that mutate HOME.
         let _g = EnvGuard::set("HOME", &cwd);
-        let err = validate_attachments(&["/etc/hostname".to_string()], &cwd).unwrap_err();
+        #[cfg(unix)]
+        let outside = "/etc/hostname".to_string();
+        #[cfg(windows)]
+        let outside = r"C:\Windows\System32\drivers\etc\hosts".to_string();
+        let err = validate_attachments(&[outside], &cwd).unwrap_err();
         match err {
-            ToolError::InvalidInput(s) => assert!(s.contains("under the working")),
+            ToolError::InvalidInput(s) => assert!(
+                s.contains("under the working"),
+                "unexpected rejection message: {s}"
+            ),
             _ => panic!("expected InvalidInput"),
         }
     }

@@ -20,7 +20,7 @@ use crate::config::migrations;
 /// Returns `None` when no config directory can be determined (e.g.
 /// HOME is unset on Unix) — callers should surface a friendly error.
 fn profiles_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("agent-code").join("profiles"))
+    crate::config::agent_config_dir().map(|d| d.join("profiles"))
 }
 
 /// Path for a specific profile name.
@@ -195,33 +195,21 @@ mod tests {
     /// rewritten with `schema_version` stamped (and a `.bak.1`
     /// archived).
     ///
-    /// `dirs::config_dir()` resolves from `XDG_CONFIG_HOME` on Linux
-    /// and `HOME` on macOS, so we point one of those at a tempdir and
-    /// stage the profile inside it. Tests in this module run
-    /// single-threaded by default; the mutex below makes it explicit.
+    /// Profile resolution goes through `agent_config_dir()`, which
+    /// honors `XDG_CONFIG_HOME` on every platform — so a single env
+    /// override is hermetic on Linux, macOS, and Windows alike.
     #[test]
     fn load_profile_migrates_legacy_token_field_and_rewrites_on_disk() {
         use crate::config::migrations::{CURRENT_SCHEMA_VERSION, backup_path};
+        use crate::test_support::EnvGuard;
         use std::fs;
-
-        // Serialize against any other test in this binary that
-        // mutates process-global env state.
-        static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
 
         let tmp = tempfile::tempdir().unwrap();
         let config_root = tmp.path().to_path_buf();
 
-        // Stash both XDG_CONFIG_HOME (Linux) and HOME (macOS) so the
-        // test works on either platform's `dirs::config_dir`.
-        let saved_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let saved_home = std::env::var_os("HOME");
-        // SAFETY: serialized via ENV_GUARD; other tests in this
-        // module take the same lock before mutating env vars.
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &config_root);
-            std::env::set_var("HOME", &config_root);
-        }
+        // The shared EnvGuard serializes against every other
+        // env-mutating test in this crate.
+        let _g = EnvGuard::set("XDG_CONFIG_HOME", &config_root);
 
         // Stage a v0 profile snapshot with the legacy `api.token` field.
         let profile_dir = config_root.join("agent-code").join("profiles");
@@ -233,21 +221,7 @@ mod tests {
         )
         .unwrap();
 
-        let load_result = load_profile("legacy");
-
-        // Restore env before asserting so a panic doesn't leak state.
-        unsafe {
-            match saved_xdg {
-                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match saved_home {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
-
-        let cfg = load_result.expect("profile loads after migration");
+        let cfg = load_profile("legacy").expect("profile loads after migration");
         assert_eq!(cfg.api.model, "legacy-gpt");
         assert_eq!(
             cfg.api.api_key.as_deref(),

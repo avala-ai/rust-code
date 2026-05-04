@@ -51,7 +51,7 @@ fn detect_install_method() -> InstallMethod {
 fn data_directories() -> Vec<(&'static str, PathBuf)> {
     let mut dirs_found = Vec::new();
 
-    if let Some(d) = dirs::config_dir().map(|d| d.join("agent-code"))
+    if let Some(d) = agent_code_lib::config::agent_config_dir()
         && d.exists()
     {
         dirs_found.push(("Config", d));

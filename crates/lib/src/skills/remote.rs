@@ -224,8 +224,8 @@ fn load_cached_index() -> Option<Vec<RemoteSkill>> {
 }
 
 fn user_skills_dir() -> Result<PathBuf, String> {
-    dirs::config_dir()
-        .map(|d| d.join("agent-code").join("skills"))
+    crate::config::agent_config_dir()
+        .map(|d| d.join("skills"))
         .ok_or_else(|| "Cannot determine user config directory".to_string())
 }
 

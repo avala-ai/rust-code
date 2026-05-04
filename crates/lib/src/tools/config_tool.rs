@@ -636,6 +636,10 @@ mod tests {
     /// Smoke-test the user-scope set/get path under a guarded env
     /// override. Wrapped in a process-wide mutex so concurrent tests
     /// reading the user config can't see a half-applied value.
+    ///
+    /// `XDG_CONFIG_HOME` is honored on every platform via the
+    /// [`crate::config::agent_config_dir`] helper, so a single env
+    /// override is hermetic on Linux, macOS, and Windows alike.
     #[tokio::test]
     async fn set_user_scope_writes_to_xdg_config_home() {
         let xdg = TempDir::new().unwrap();
@@ -895,9 +899,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_set_calls_persist_both_keys() {
         // Both writers target distinct user-scope keys against the
-        // same on-disk settings file. EnvGuard pins XDG_CONFIG_HOME
-        // for the duration of the test (and its mutex prevents any
-        // other test from reading user config mid-flight).
+        // same on-disk settings file. `XDG_CONFIG_HOME` is honored
+        // on every platform via the [`crate::config::agent_config_dir`]
+        // helper. The guard's mutex prevents any other test from
+        // reading user config mid-flight.
         let xdg = TempDir::new().unwrap();
         let _g = EnvGuard::set("XDG_CONFIG_HOME", xdg.path());
         let cwd_dir = TempDir::new().unwrap();

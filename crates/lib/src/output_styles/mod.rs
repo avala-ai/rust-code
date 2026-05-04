@@ -543,7 +543,7 @@ fn user_output_styles_dir() -> Option<PathBuf> {
             return Some(PathBuf::from(trimmed));
         }
     }
-    dirs::config_dir().map(|d| d.join("agent-code").join("output-styles"))
+    crate::config::agent_config_dir().map(|d| d.join("output-styles"))
 }
 
 #[cfg(test)]
