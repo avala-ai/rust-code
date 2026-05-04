@@ -72,6 +72,7 @@ impl TaskExecutor for LocalAgentExecutor {
             session_allows: None,
             permission_prompter: None,
             sandbox: None,
+            active_disk_output_style: None,
         };
 
         match AgentTool.call(input, &tool_ctx).await {

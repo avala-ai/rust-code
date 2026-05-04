@@ -384,6 +384,10 @@ fn toml_current_version_file_is_not_rewritten() {
 
 // ---- Backup-rotation order: rotation must run AFTER successful write ----
 
+// POSIX-only: relies on directory mode bits to simulate the atomic
+// write failing. Windows has no equivalent way to make a directory
+// reject child-file creation here, so the assertion would not hold.
+#[cfg(unix)]
 #[test]
 fn backup_rotation_does_not_run_when_atomic_write_fails() {
     // Simulate an atomic-write failure by making the parent directory
