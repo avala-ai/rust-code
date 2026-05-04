@@ -16,6 +16,10 @@ use ratatui::text::{Line, Span};
 pub fn theme_to_ratatui(color: crossterm::style::Color) -> Color {
     match color {
         crossterm::style::Color::Rgb { r, g, b } => Color::Rgb(r, g, b),
+        // The 256-color path is reached for terminals where the emit
+        // mode downgrades truecolor (Apple Terminal, screen/tmux-256color).
+        // Pass the index straight through; ratatui renders it via SGR 38;5.
+        crossterm::style::Color::AnsiValue(n) => Color::Indexed(n),
         crossterm::style::Color::Black => Color::Black,
         crossterm::style::Color::Red => Color::Red,
         crossterm::style::Color::Green => Color::Green,
