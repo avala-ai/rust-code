@@ -5,7 +5,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-RUN cargo build --release --locked
+RUN cargo update --workspace && cargo build --release --locked
 
 # Runtime stage
 FROM debian:bookworm-slim
