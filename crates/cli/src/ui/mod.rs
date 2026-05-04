@@ -6,6 +6,7 @@
 pub mod activity;
 pub mod keybindings;
 pub mod keymap;
+pub mod onboarding;
 pub mod prompt;
 pub mod render;
 pub mod repl;

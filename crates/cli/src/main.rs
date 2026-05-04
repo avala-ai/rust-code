@@ -322,6 +322,22 @@ async fn main() -> anyhow::Result<()> {
         run_setup_wizard();
     }
 
+    // First-run onboarding (welcome banner + theme picker with live
+    // diff preview). Independent of the API-key wizard so users who
+    // already have keys configured still see the polished theme
+    // picker once on first launch. The sentinel ensures the picker
+    // only ever fires once unless the user explicitly invokes
+    // `/theme` later.
+    if cli.prompt.is_none()
+        && !cli.dump_system_prompt
+        && !cli.serve
+        && !cli.acp
+        && cli.command.is_none()
+        && !ui::onboarding::already_onboarded()
+    {
+        ui::onboarding::run_first_run();
+    }
+
     // Detect session environment.
     let session_env = agent_code_lib::services::session_env::SessionEnvironment::detect().await;
     tracing::debug!(
