@@ -1620,16 +1620,16 @@ Shipped in #256 with second-fix in the same PR for resolution-order, `applies_to
 
 We ship 12 skills today. Expand the bundled set to cover the most common day-to-day workflows so new users get value with zero configuration.
 
-- [ ] **batch** — apply a single change across many files with a preview/confirm step
-- [ ] **loop** — run a prompt or slash command on a recurring interval
-- [ ] **remember** — long-term memory write helper with type/scope prompting
-- [ ] **simplify** — review changed code for reuse, quality, and efficiency
-- [ ] **stuck** — escape hatch when the agent has been spinning on the same problem
-- [ ] **verify** — independent verification pass after a non-trivial implementation
+- [x] **batch** — apply a single change across many files with a preview/confirm step
+- [x] **loop** — run a prompt or slash command on a recurring interval (prompt-only; daemon-side cadence lives in cron tools)
+- [x] **remember** — long-term memory write helper with type/scope prompting
+- [x] **simplify** — review changed code for reuse, quality, and efficiency
+- [x] **stuck** — escape hatch when the agent has been spinning on the same problem
+- [x] **verify** — independent verification pass after a non-trivial implementation
 - [ ] **schedule-agent** — wrap the cron tools (8.5) with a friendlier authoring flow
 - [ ] **update-config** — guided edits to settings.json with validation
-- [ ] **app-builder** — agent + sandboxed preview workspace + iframe + chat for scaffolding new projects and iterating on UI
-- [ ] Each skill: standalone test, doc entry, and listed in `/skills`
+- [x] **app-builder** — prompt-only scaffold + iterate flow (sandboxed preview workspace + iframe + chat deferred to follow-up)
+- [x] Each skill: standalone test, doc entry, and listed in `/skills`
 
 ### 8.4 Settings Migrations Framework — Shipped (#255)
 

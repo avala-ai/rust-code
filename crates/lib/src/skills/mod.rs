@@ -17,6 +17,23 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
+/// Bundled skills whose source-of-truth is a markdown file on disk under
+/// `crates/lib/src/skills/bundled/`. Each entry is `(name, contents)` where
+/// `contents` is the raw file embedded at compile time via `include_str!`.
+///
+/// Adding a new bundled skill: drop the markdown file in `bundled/` and
+/// append it here. The body must include valid YAML frontmatter with at
+/// least a `description` field.
+pub const BUNDLED_SKILL_FILES: &[(&str, &str)] = &[
+    ("batch", include_str!("bundled/batch.md")),
+    ("loop", include_str!("bundled/loop.md")),
+    ("remember", include_str!("bundled/remember.md")),
+    ("simplify", include_str!("bundled/simplify.md")),
+    ("stuck", include_str!("bundled/stuck.md")),
+    ("verify", include_str!("bundled/verify.md")),
+    ("app-builder", include_str!("bundled/app-builder.md")),
+];
+
 /// A loaded skill definition.
 ///
 /// Skills are markdown files with YAML frontmatter. The body is a
@@ -123,6 +140,18 @@ impl SkillRegistry {
         Self { skills: Vec::new() }
     }
 
+    /// Load only the skills that ship with the binary, ignoring user
+    /// and project skill directories. Use this in tests that assert on
+    /// the prompt fragments shipped with `agent-code` — `load_all`
+    /// would also pick up `~/.config/agent-code/skills/<name>.md` and
+    /// `<project>/.agent/skills/<name>.md`, which can shadow a bundled
+    /// skill of the same name and silently invalidate the assertion.
+    pub fn load_bundled_only() -> Self {
+        let mut registry = Self::new();
+        registry.load_bundled();
+        registry
+    }
+
     /// Load skills from all configured directories.
     pub fn load_all(project_root: Option<&Path>) -> Self {
         let mut registry = Self::new();
@@ -151,6 +180,28 @@ impl SkillRegistry {
 
     /// Load built-in skills that ship with agent-code.
     fn load_bundled(&mut self) {
+        // First, load skills authored as standalone markdown files under
+        // `crates/lib/src/skills/bundled/`. These ship as part of the binary
+        // via `include_str!`.
+        for (name, contents) in BUNDLED_SKILL_FILES {
+            if self.skills.iter().any(|s| s.name == *name) {
+                continue;
+            }
+            match parse_frontmatter(contents) {
+                Ok((metadata, body)) => {
+                    self.skills.push(Skill {
+                        name: (*name).to_string(),
+                        metadata,
+                        body,
+                        source: PathBuf::new(),
+                    });
+                }
+                Err(e) => {
+                    warn!("Failed to parse bundled skill '{name}': {e}");
+                }
+            }
+        }
+
         let bundled = [
             (
                 "commit",
@@ -374,72 +425,6 @@ impl SkillRegistry {
                  of the public surface.",
             ),
             (
-                "stuck",
-                "Step back and try a different angle when looping",
-                true,
-                "You are stuck. Stop the current approach. Read the last 10 messages of this \
-                 conversation and identify: (1) what you tried, (2) why each attempt failed, \
-                 (3) the assumption every attempt shares. That shared assumption is usually \
-                 the thing that's wrong. List at least two different approaches that don't \
-                 rely on it — e.g. a different file to read, a different tool to reach for, \
-                 a different abstraction level (add logs instead of reading code, or rebuild \
-                 instead of patch-fixing). Pick the most plausible one and take a single \
-                 concrete step. Do not retry anything you've already tried.",
-            ),
-            (
-                "remember",
-                "Save a specific insight to user memory",
-                true,
-                "Extract the insight or preference the user just shared and save it as a \
-                 memory following the two-step write discipline. First classify the memory \
-                 type: `user` for role/preference/knowledge, `feedback` for rules about how \
-                 to approach work, `project` for in-flight context, `reference` for pointers \
-                 to external systems. Pick a short kebab-case filename and write the memory \
-                 file with the required frontmatter (name, description, type). Then add a \
-                 single index line to MEMORY.md under ~150 chars: \
-                 `- [Title](file.md) — one-line hook`. Do not dump content into the index, \
-                 do not duplicate an existing memory, and do not save anything already \
-                 derivable from the codebase (architecture, file paths, git history, debug \
-                 fixes). Finish with one line confirming what was saved.",
-            ),
-            (
-                "simplify",
-                "Run a review-then-simplify pass on recent changes",
-                true,
-                "Inspect the current git diff. Flag anything that can go without changing \
-                 behavior: unused imports and variables, dead branches, redundant helpers \
-                 and wrappers, premature abstractions (a single-caller generic, a trait \
-                 with one impl), speculative error handling (try/catch around infallible \
-                 code, validation for invariants the type system already guarantees), \
-                 defensive copies of immutable data, overly verbose names, comments that \
-                 restate the code. For each finding, cite file:line, explain why it's dead \
-                 weight, and propose the concrete deletion or rewrite. Do not invent new \
-                 abstractions. Do not refactor beyond the diff. Do not touch anything \
-                 whose behavior is load-bearing in a way that isn't obvious from reading \
-                 the code — call that out instead of changing it.",
-            ),
-            (
-                "batch",
-                "Apply the same change across multiple git worktrees",
-                true,
-                "Apply the requested change to every branch or worktree the user named, \
-                 one at a time, in isolated worktrees so the changes don't contaminate \
-                 each other. For each target:\n\n\
-                 1. Use the worktree tool to enter a fresh worktree for the target branch. \
-                 Do not mutate the current working tree.\n\
-                 2. Apply the change. If the diff differs from other targets (e.g. \
-                 filenames moved, imports named differently), adapt per target — do not \
-                 force-paste the same patch blindly.\n\
-                 3. Run the project's test and lint gate for the target's language.\n\
-                 4. If checks pass, commit and note the commit SHA. If checks fail, stop \
-                 on that target and record what broke — do NOT keep pushing if one fails; \
-                 surface the first failure so the user can decide.\n\
-                 5. Leave the worktree in place so the user can inspect.\n\n\
-                 At the end, print a summary table: target | commit or failure | files changed. \
-                 Never force-push, never skip tests, never assume a diff that worked on one \
-                 branch applies cleanly to the next.",
-            ),
-            (
                 "skillify",
                 "Extract the successful workflow from this session into a reusable skill",
                 true,
@@ -548,51 +533,6 @@ impl SkillRegistry {
                  low) with file:line, one-sentence impact, and proposed \
                  remediation. If the diff is genuinely clean after all seven \
                  passes, say so — do not invent findings to justify the review.",
-            ),
-            (
-                "verify",
-                "Double-check a claim or output before acting on it",
-                true,
-                "A claim was made that you are about to act on. Before acting, verify \
-                 it independently. Steps:\n\n\
-                 1. State the claim in one sentence, as you understand it.\n\
-                 2. Identify ONE authoritative source of truth for that claim — \
-                 the code itself (not an AI summary of the code), a test result, \
-                 a command's exit code, a file's contents, or a runtime check. \
-                 Never verify one AI-generated claim with another AI-generated \
-                 claim; that's circular.\n\
-                 3. Check the source. Show what you checked and what you found.\n\
-                 4. If the claim holds: say so and proceed. If it doesn't: \
-                 state the discrepancy, do NOT proceed with the original plan, \
-                 and ask the user how to reconcile.\n\n\
-                 Skip verification only when the cost of being wrong is lower \
-                 than the cost of the check itself. For anything that writes, \
-                 deletes, deploys, or sends — verify.",
-            ),
-            (
-                "loop",
-                "Poll or retry until a condition is met (with backoff and ceiling)",
-                true,
-                "Loop on the condition the user described. Before starting:\n\n\
-                 1. State the exit condition in one sentence — what is true when \
-                 we're done.\n\
-                 2. State the check — the exact command or call used to test the \
-                 condition.\n\
-                 3. State the interval (default: 10s) and the ceiling (default: \
-                 60 iterations). Exit early if the ceiling is reached.\n\n\
-                 Then loop:\n   \
-                 a. Run the check.\n   \
-                 b. If the condition holds, stop and report success with the final \
-                 state.\n   \
-                 c. If it doesn't, print one compact line (iteration N, what the \
-                 check returned), sleep, and continue.\n\
-                 On a transient error (network, 5xx), back off exponentially \
-                 (cap 60s) and keep counting; do not reset the counter. On a \
-                 non-transient error (auth, 4xx, permission), stop — a loop won't \
-                 fix it.\n\n\
-                 At the end, print a one-line summary: \"condition met in N \
-                 iterations\" or \"ceiling reached, last state was X\". Never \
-                 loop past the ceiling without user approval.",
             ),
             (
                 "passes",
@@ -1198,6 +1138,103 @@ mod tests {
                 .iter()
                 .any(|f| f.level == ValidationLevel::Error && f.message.contains("frontmatter"))
         );
+    }
+
+    // ---- bundled skill files (Phase 8.3) ----
+
+    /// The exact set of names we expect in `BUNDLED_SKILL_FILES`. Hardcoded so
+    /// the test fails loudly if a skill is added/removed without the registry
+    /// being kept in sync.
+    const EXPECTED_BUNDLED_SKILL_FILES: &[&str] = &[
+        "batch",
+        "loop",
+        "remember",
+        "simplify",
+        "stuck",
+        "verify",
+        "app-builder",
+    ];
+
+    #[test]
+    fn bundled_skill_files_registry_matches_expected_names() {
+        let actual: Vec<&str> = BUNDLED_SKILL_FILES.iter().map(|(n, _)| *n).collect();
+        let mut sorted_actual = actual.clone();
+        sorted_actual.sort_unstable();
+        let mut sorted_expected = EXPECTED_BUNDLED_SKILL_FILES.to_vec();
+        sorted_expected.sort_unstable();
+        assert_eq!(
+            sorted_actual, sorted_expected,
+            "BUNDLED_SKILL_FILES drift — update either the registry or the test \
+             constant. actual={actual:?}"
+        );
+    }
+
+    #[test]
+    fn every_bundled_skill_file_parses() {
+        for (name, contents) in BUNDLED_SKILL_FILES {
+            let (meta, body) = parse_frontmatter(contents).unwrap_or_else(|e| {
+                panic!("bundled skill '{name}' failed to parse: {e}");
+            });
+            assert!(
+                meta.description.is_some(),
+                "bundled skill '{name}' has no description"
+            );
+            assert!(
+                meta.user_invocable,
+                "bundled skill '{name}' is not user_invocable; bundled skills are \
+                 expected to be invocable as /<name>"
+            );
+            assert!(
+                !body.trim().is_empty(),
+                "bundled skill '{name}' has an empty body"
+            );
+            assert!(
+                body.to_lowercase().contains("you're done")
+                    || body.to_lowercase().contains("youre done")
+                    || body.to_lowercase().contains("you are done"),
+                "bundled skill '{name}' should declare an exit criterion \
+                 (look for 'you're done when...')"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_skill_files_are_loaded_into_registry() {
+        let mut registry = SkillRegistry::new();
+        registry.load_bundled();
+        for name in EXPECTED_BUNDLED_SKILL_FILES {
+            let skill = registry
+                .find(name)
+                .unwrap_or_else(|| panic!("bundled skill '{name}' not registered"));
+            assert!(
+                skill.metadata.user_invocable,
+                "bundled skill '{name}' loaded but not user_invocable"
+            );
+            assert!(
+                !skill.body.trim().is_empty(),
+                "bundled skill '{name}' has empty body in registry"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_skill_expand_returns_body() {
+        let mut registry = SkillRegistry::new();
+        registry.load_bundled();
+        for name in EXPECTED_BUNDLED_SKILL_FILES {
+            let skill = registry.find(name).unwrap();
+            let expanded = skill.expand(None);
+            assert!(
+                expanded.len() > 50,
+                "bundled skill '{name}' expand() produced suspiciously short \
+                 output ({} chars)",
+                expanded.len()
+            );
+            assert_eq!(
+                expanded, skill.body,
+                "bundled skill '{name}' expand(None) should equal raw body"
+            );
+        }
     }
 
     #[test]

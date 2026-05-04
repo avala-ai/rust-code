@@ -105,7 +105,10 @@ File ops, search, shell, git worktrees, web access, LSP diagnostics, MCP resourc
 | `/remember` | Save a specific insight to user memory (two-step write discipline) |
 | `/stuck` | Step back and try a different angle when the agent is looping |
 | `/simplify` | Review-then-simplify pass: flag dead weight in the current diff |
-| `/batch` | Apply the same change across multiple git worktrees |
+| `/batch` | Apply the same change across many files or branches with preview/confirm |
+| `/loop` | Run a prompt or check on a recurring interval until a condition holds |
+| `/verify` | Independent verification pass after a non-trivial implementation |
+| `/app-builder` | Scaffold a new app and iterate on it turn by turn (prompt-only) |
 | `/skillify` | Extract the successful workflow from this session into a reusable skill |
 
 Add custom skills as markdown files in `.agent/skills/` or `~/.config/agent-code/skills/`.
