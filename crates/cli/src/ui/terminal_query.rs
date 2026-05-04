@@ -85,33 +85,36 @@ pub fn prime_terminal_colors() {
 }
 
 fn detect_system_theme_uncached() -> SystemTheme {
-    if let Ok(value) = std::env::var(SYSTEM_THEME_ENV)
-        && let Some(theme) = SystemTheme::from_env(&value)
-    {
-        let _ = FOREGROUND_RGB.set(None);
-        let _ = BACKGROUND_RGB.set(None);
-        return theme;
-    }
-
-    if let Some(theme) = colorfgbg_theme() {
-        let _ = FOREGROUND_RGB.set(None);
-        let _ = BACKGROUND_RGB.set(None);
-        return theme;
-    }
-
-    if std::env::var("TERM_PROGRAM")
+    // Resolve the dark/light classification synchronously from env vars
+    // when possible. The OSC round-trip below populates the raw RGB
+    // caches that `inherit_fg` depends on; running it on every path
+    // (not just when env detection fails) is what makes
+    // `[ui].inherit_fg = true` work on terminals that also export
+    // `COLORFGBG` or `TERM_PROGRAM`. The env-derived classification is
+    // preferred over the luminance-derived one when both are available
+    // — it's what the user explicitly told us.
+    let env_theme = std::env::var(SYSTEM_THEME_ENV)
         .ok()
-        .is_some_and(|p| p == "Apple_Terminal")
-    {
-        let _ = FOREGROUND_RGB.set(None);
-        let _ = BACKGROUND_RGB.set(None);
-        return SystemTheme::Light;
-    }
+        .and_then(|v| SystemTheme::from_env(&v))
+        .or_else(colorfgbg_theme)
+        .or_else(|| {
+            if std::env::var("TERM_PROGRAM")
+                .ok()
+                .is_some_and(|p| p == "Apple_Terminal")
+            {
+                Some(SystemTheme::Light)
+            } else {
+                None
+            }
+        });
 
     let (fg, bg) = query_terminal_colors().unwrap_or((None, None));
     let _ = FOREGROUND_RGB.set(fg);
     let _ = BACKGROUND_RGB.set(bg);
-    bg.map(theme_for_rgb).unwrap_or(SystemTheme::Dark)
+
+    env_theme
+        .or_else(|| bg.map(theme_for_rgb))
+        .unwrap_or(SystemTheme::Dark)
 }
 
 fn colorfgbg_theme() -> Option<SystemTheme> {
