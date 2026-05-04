@@ -257,7 +257,7 @@ fn parse_color_spec(spec: &str) -> Option<Rgb> {
 }
 
 fn parse_hash_color(hex: &str) -> Option<Rgb> {
-    let component_len = hex.len().checked_div(3)?;
+    let component_len = hex.len() / 3;
     if component_len == 0 || component_len > 4 || component_len * 3 != hex.len() {
         return None;
     }
@@ -339,39 +339,18 @@ mod tests {
         format!("\x1b]11;{payload}\x07").into_bytes()
     }
 
+    fn rgb(r: u8, g: u8, b: u8) -> Option<Rgb> {
+        Some(Rgb { r, g, b })
+    }
+
     #[test]
     fn parses_rgb_components_with_one_to_four_digits() {
-        assert_eq!(
-            parse_background_color(&osc("rgb:f/0/8")),
-            Some(Rgb {
-                r: 255,
-                g: 0,
-                b: 136
-            })
-        );
-        assert_eq!(
-            parse_background_color(&osc("rgb:80/40/20")),
-            Some(Rgb {
-                r: 128,
-                g: 64,
-                b: 32
-            })
-        );
-        assert_eq!(
-            parse_background_color(&osc("rgb:800/400/200")),
-            Some(Rgb {
-                r: 128,
-                g: 64,
-                b: 32
-            })
-        );
+        assert_eq!(parse_background_color(&osc("rgb:f/0/8")), rgb(255, 0, 136));
+        assert_eq!(parse_background_color(&osc("rgb:80/40/20")), rgb(128, 64, 32));
+        assert_eq!(parse_background_color(&osc("rgb:800/400/200")), rgb(128, 64, 32));
         assert_eq!(
             parse_background_color(&osc("rgb:8000/4000/2000")),
-            Some(Rgb {
-                r: 128,
-                g: 64,
-                b: 32
-            })
+            rgb(128, 64, 32)
         );
     }
 
@@ -379,47 +358,18 @@ mod tests {
     fn parses_rgba_and_ignores_alpha() {
         assert_eq!(
             parse_background_color(&osc("rgba:ffff/8000/0000/ffff")),
-            Some(Rgb {
-                r: 255,
-                g: 128,
-                b: 0
-            })
+            rgb(255, 128, 0)
         );
     }
 
     #[test]
     fn parses_hash_forms() {
-        assert_eq!(
-            parse_background_color(&osc("#fff")),
-            Some(Rgb {
-                r: 255,
-                g: 255,
-                b: 255
-            })
-        );
-        assert_eq!(
-            parse_background_color(&osc("#804020")),
-            Some(Rgb {
-                r: 128,
-                g: 64,
-                b: 32
-            })
-        );
-        assert_eq!(
-            parse_background_color(&osc("#800400200")),
-            Some(Rgb {
-                r: 128,
-                g: 64,
-                b: 32
-            })
-        );
+        assert_eq!(parse_background_color(&osc("#fff")), rgb(255, 255, 255));
+        assert_eq!(parse_background_color(&osc("#804020")), rgb(128, 64, 32));
+        assert_eq!(parse_background_color(&osc("#800400200")), rgb(128, 64, 32));
         assert_eq!(
             parse_background_color(&osc("#800040002000")),
-            Some(Rgb {
-                r: 128,
-                g: 64,
-                b: 32
-            })
+            rgb(128, 64, 32)
         );
     }
 
@@ -441,37 +391,23 @@ mod tests {
     fn parses_st_terminated_osc_reply() {
         assert_eq!(
             parse_background_color(b"\x1b]11;rgb:0000/ffff/0000\x1b\\"),
-            Some(Rgb {
-                r: 0,
-                g: 255,
-                b: 0
-            })
+            rgb(0, 255, 0)
         );
     }
 
     #[test]
     fn luminance_threshold_classifies_gray_boundary() {
+        assert_eq!(theme_for_rgb(Rgb { r: 127, g: 127, b: 127 }), SystemTheme::Dark);
         assert_eq!(
-            theme_for_rgb(Rgb {
-                r: 127,
-                g: 127,
-                b: 127
-            }),
-            SystemTheme::Dark
-        );
-        assert_eq!(
-            theme_for_rgb(Rgb {
-                r: 128,
-                g: 128,
-                b: 128
-            }),
+            theme_for_rgb(Rgb { r: 128, g: 128, b: 128 }),
             SystemTheme::Light
         );
     }
 
     #[test]
     fn simulated_query_writes_batch_and_stops_at_da1() {
-        let mut input = Cursor::new(b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?1;2cignored");
+        let mut input =
+            Cursor::new(b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?1;2cignored");
         let mut output = Vec::new();
 
         let theme = query_system_theme_from_io(&mut input, &mut output);
