@@ -273,7 +273,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "theme",
         aliases: &[],
-        description: "Switch color theme",
+        description: "Open the theme picker (live preview, persists to settings)",
         hidden: false,
     },
     Command {
@@ -1454,11 +1454,23 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             CommandResult::Handled
         }
         Some("theme") => {
-            println!(
-                "Theme: {} (dark is the default)",
-                engine.state().config.ui.theme
-            );
-            println!("Configure in ~/.config/agent-code/config.toml under [ui]");
+            // Open the same picker the first-run onboarding uses.
+            // `rerun_theme_picker` writes the new theme into
+            // `~/.config/agent-code/config.toml` so the choice
+            // survives across sessions; we mirror it into the live
+            // session config so the next prompt repaints with the
+            // new colours immediately.
+            let current = engine.state().config.ui.theme.clone();
+            match crate::ui::onboarding::rerun_theme_picker(&current) {
+                Some(name) => {
+                    crate::ui::theme::init(&name);
+                    engine.state_mut().config.ui.theme = name.clone();
+                    println!("Theme set to: {name}");
+                }
+                None => {
+                    println!("Theme unchanged: {current}");
+                }
+            }
             CommandResult::Handled
         }
         Some("stats") => {

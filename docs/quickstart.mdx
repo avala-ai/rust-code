@@ -47,7 +47,61 @@ export AGENT_CODE_API_BASE_URL="https://api.your-provider.com/v1"
 agent
 ```
 
-You'll see:
+### First-run onboarding
+
+The first time you launch `agent` on a new machine, you'll see a
+welcome banner with the version, an ASCII logo, and a theme picker
+with a live diff preview pane:
+
+```
+  Welcome to agent-code v<version>
+  ……………………………………………………………………………………………………………………
+
+       <ASCII "AC" monogram>
+
+  ……………………………………………………………………………………………………………………
+
+  Let's get started.
+
+  Choose the text style that looks best with your terminal
+  To change this later, run /theme
+
+   ❯ 1. Auto (match terminal)        ✔
+     2. Dark mode
+     3. Light mode
+     4. Dark mode (colorblind-friendly)
+     5. Light mode (colorblind-friendly)
+     6. Dark mode (ANSI colors only)
+     7. Light mode (ANSI colors only)
+
+   ╌╌╌╌╌╌╌╌╌╌ live diff preview ╌╌╌╌╌╌╌╌╌╌
+     1  fn render(view: &View) {
+     2 -    let title = view.heading();
+     2 +    let title = view.heading_styled();
+     3 -    println!("{title}");
+     3 +    writeln!(view.out, "{title}")?;
+     4  }
+   ↑/↓ move · 1-7 jump · Enter confirm · Esc skip
+```
+
+Use the arrow keys (or `1`–`7`) to highlight a theme; the diff
+preview re-paints in that theme's colours so you can see the result
+before committing. `Enter` saves your choice to
+`~/.config/agent-code/config.toml` under `[ui].theme`. `Esc` skips
+the picker and falls back to `auto` (which follows your terminal's
+background colour).
+
+The colourblind-friendly variants use the
+[Okabe-Ito palette](https://jfly.uni-koeln.de/color/), which is
+distinguishable for protanopia, deuteranopia, and tritanopia. The
+ANSI-only variants restrict themselves to the 16 standard ANSI
+colour codes for terminals that don't support truecolour.
+
+A sentinel file at `~/.config/agent-code/.onboarding-complete`
+records that you've seen the picker so it doesn't re-prompt every
+launch. To re-open the picker any time, type `/theme` at the prompt.
+
+Then you'll see:
 
 ```
  agent  session a1b2c3d

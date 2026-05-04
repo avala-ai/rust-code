@@ -328,6 +328,226 @@ impl Theme {
         }
     }
 
+    /// Dark theme using the Okabe-Ito palette — chosen for protanopia,
+    /// deuteranopia, and tritanopia distinguishability. The eight
+    /// canonical hex values are mapped to semantic slots so diffs and
+    /// status indicators stay separable for users with common forms of
+    /// colour-vision deficiency.
+    pub fn dark_colorblind() -> Self {
+        // Okabe-Ito palette (canonical hex):
+        //   black       #000000
+        //   orange      #E69F00
+        //   sky-blue    #56B4E9
+        //   bluish-green#009E73
+        //   yellow      #F0E442
+        //   blue        #0072B2
+        //   vermillion  #D55E00
+        //   reddish-purple #CC79A7
+        let orange = Color::Rgb {
+            r: 0xE6,
+            g: 0x9F,
+            b: 0x00,
+        };
+        let sky_blue = Color::Rgb {
+            r: 0x56,
+            g: 0xB4,
+            b: 0xE9,
+        };
+        let bluish_green = Color::Rgb {
+            r: 0x00,
+            g: 0x9E,
+            b: 0x73,
+        };
+        let yellow = Color::Rgb {
+            r: 0xF0,
+            g: 0xE4,
+            b: 0x42,
+        };
+        let blue = Color::Rgb {
+            r: 0x00,
+            g: 0x72,
+            b: 0xB2,
+        };
+        let vermillion = Color::Rgb {
+            r: 0xD5,
+            g: 0x5E,
+            b: 0x00,
+        };
+        let reddish_purple = Color::Rgb {
+            r: 0xCC,
+            g: 0x79,
+            b: 0xA7,
+        };
+
+        Self {
+            accent: sky_blue,
+            error: vermillion,
+            warning: orange,
+            success: bluish_green,
+            muted: Color::Rgb {
+                r: 130,
+                g: 130,
+                b: 130,
+            },
+            inactive: Color::Rgb {
+                r: 170,
+                g: 170,
+                b: 170,
+            },
+            tool: reddish_purple,
+            plan: blue,
+            text: Color::White,
+            diff_add: bluish_green,
+            diff_remove: vermillion,
+            agent_colors: [
+                vermillion,
+                blue,
+                bluish_green,
+                yellow,
+                sky_blue,
+                orange,
+                reddish_purple,
+                Color::White,
+            ],
+            is_dark: true,
+        }
+    }
+
+    /// Light counterpart of [`Theme::dark_colorblind`] using the same
+    /// Okabe-Ito palette. The semantic slots are re-mapped to keep
+    /// contrast against a pale background; the eight canonical hex
+    /// values are still exclusively used.
+    pub fn light_colorblind() -> Self {
+        let orange = Color::Rgb {
+            r: 0xE6,
+            g: 0x9F,
+            b: 0x00,
+        };
+        let sky_blue = Color::Rgb {
+            r: 0x56,
+            g: 0xB4,
+            b: 0xE9,
+        };
+        let bluish_green = Color::Rgb {
+            r: 0x00,
+            g: 0x9E,
+            b: 0x73,
+        };
+        let yellow = Color::Rgb {
+            r: 0xF0,
+            g: 0xE4,
+            b: 0x42,
+        };
+        let blue = Color::Rgb {
+            r: 0x00,
+            g: 0x72,
+            b: 0xB2,
+        };
+        let vermillion = Color::Rgb {
+            r: 0xD5,
+            g: 0x5E,
+            b: 0x00,
+        };
+        let reddish_purple = Color::Rgb {
+            r: 0xCC,
+            g: 0x79,
+            b: 0xA7,
+        };
+
+        Self {
+            accent: blue,
+            error: vermillion,
+            warning: orange,
+            success: bluish_green,
+            muted: Color::Rgb {
+                r: 110,
+                g: 110,
+                b: 110,
+            },
+            inactive: Color::Rgb {
+                r: 90,
+                g: 90,
+                b: 90,
+            },
+            tool: reddish_purple,
+            plan: bluish_green,
+            text: Color::Black,
+            diff_add: bluish_green,
+            diff_remove: vermillion,
+            agent_colors: [
+                vermillion,
+                blue,
+                bluish_green,
+                yellow,
+                sky_blue,
+                orange,
+                reddish_purple,
+                Color::Black,
+            ],
+            is_dark: false,
+        }
+    }
+
+    /// Dark theme restricted to the 16 standard ANSI colour codes —
+    /// for terminals without truecolor support. Every slot is one of
+    /// the named [`Color`] variants the standard ANSI palette knows
+    /// (no `Color::Rgb`, no 256-colour indices).
+    pub fn dark_ansi() -> Self {
+        Self {
+            accent: Color::Cyan,
+            error: Color::Red,
+            warning: Color::Yellow,
+            success: Color::Green,
+            muted: Color::DarkGrey,
+            inactive: Color::Grey,
+            tool: Color::Magenta,
+            plan: Color::Blue,
+            text: Color::White,
+            diff_add: Color::Green,
+            diff_remove: Color::Red,
+            agent_colors: [
+                Color::Red,
+                Color::Blue,
+                Color::Green,
+                Color::Yellow,
+                Color::Magenta,
+                Color::Cyan,
+                Color::DarkYellow,
+                Color::DarkMagenta,
+            ],
+            is_dark: true,
+        }
+    }
+
+    /// Light counterpart of [`Theme::dark_ansi`]. Uses the dark ANSI
+    /// variants where contrast on a pale background matters.
+    pub fn light_ansi() -> Self {
+        Self {
+            accent: Color::DarkBlue,
+            error: Color::DarkRed,
+            warning: Color::DarkYellow,
+            success: Color::DarkGreen,
+            muted: Color::DarkGrey,
+            inactive: Color::Grey,
+            tool: Color::DarkMagenta,
+            plan: Color::DarkCyan,
+            text: Color::Black,
+            diff_add: Color::DarkGreen,
+            diff_remove: Color::DarkRed,
+            agent_colors: [
+                Color::DarkRed,
+                Color::DarkBlue,
+                Color::DarkGreen,
+                Color::DarkYellow,
+                Color::DarkMagenta,
+                Color::DarkCyan,
+                Color::Red,
+                Color::Blue,
+            ],
+            is_dark: false,
+        }
+    }
+
     /// Resolve a theme name to a Theme instance.
     pub fn from_name(name: &str) -> Self {
         match name {
@@ -336,6 +556,10 @@ impl Theme {
             "midnight-muted" => Self::midnight_muted(),
             "daybreak-muted" => Self::daybreak_muted(),
             "terminal" => Self::terminal(),
+            "dark-colorblind" => Self::dark_colorblind(),
+            "light-colorblind" => Self::light_colorblind(),
+            "dark-ansi" => Self::dark_ansi(),
+            "light-ansi" => Self::light_ansi(),
             "auto" => {
                 let detected = detect_system_theme();
                 if detected == "light" {
@@ -346,6 +570,20 @@ impl Theme {
             }
             _ => Self::midnight(),
         }
+    }
+
+    /// All known theme identifiers in display order. Drives the
+    /// onboarding picker and the `/theme` slash command.
+    pub fn all_names() -> &'static [&'static str] {
+        &[
+            "auto",
+            "midnight",
+            "daybreak",
+            "dark-colorblind",
+            "light-colorblind",
+            "dark-ansi",
+            "light-ansi",
+        ]
     }
 
     /// Get a subagent color by index (wraps around).
@@ -411,19 +649,36 @@ pub fn resolve_theme(configured: &str) -> String {
 }
 
 // ---- Global theme access ----
+//
+// The active theme is held behind a `RwLock` rather than a `OnceLock`
+// so the `/theme` slash command can re-paint the running session
+// without requiring a restart. Writes happen at most once per user
+// command; reads are cheap because `Theme` is `Clone` and the lock
+// hold time is microseconds.
 
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
-static ACTIVE_THEME: OnceLock<Theme> = OnceLock::new();
+static ACTIVE_THEME: RwLock<Option<Theme>> = RwLock::new(None);
 
-/// Initialize the global theme. Call once at startup.
+/// Initialize (or re-set) the global theme. Safe to call from the
+/// startup path *and* from the `/theme` slash command — the latter
+/// overrides any previously installed theme.
 pub fn init(theme_name: &str) {
-    let _ = ACTIVE_THEME.set(Theme::from_name(theme_name));
+    let theme = Theme::from_name(theme_name);
+    if let Ok(mut guard) = ACTIVE_THEME.write() {
+        *guard = Some(theme);
+    }
 }
 
-/// Get the active theme. Falls back to midnight if not initialized.
-pub fn current() -> &'static Theme {
-    ACTIVE_THEME.get_or_init(Theme::midnight)
+/// Get a snapshot of the active theme. Falls back to midnight if not
+/// initialized. Returns by value (cheap clone) so callers don't need
+/// to hold the lock across rendering.
+pub fn current() -> Theme {
+    ACTIVE_THEME
+        .read()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(Theme::midnight)
 }
 
 #[cfg(test)]
@@ -457,5 +712,146 @@ mod tests {
         let c8 = t.agent_color(8);
         assert!(matches!(c0, Color::Rgb { .. }));
         assert!(matches!(c8, Color::Rgb { .. }));
+    }
+
+    #[test]
+    fn every_named_theme_resolves() {
+        // Tripwire: every name advertised by `all_names` must produce a
+        // theme whose every slot is populated. `Color` has no Default
+        // impl so a missing field is a compile error already; this
+        // covers semantic completeness too — matching `Color::Reset`
+        // on a non-text slot is the "I forgot to set this" footgun.
+        for name in Theme::all_names() {
+            let t = Theme::from_name(name);
+            assert!(
+                !matches!(t.accent, Color::Reset),
+                "theme {name} has unset accent"
+            );
+            assert!(
+                !matches!(t.error, Color::Reset),
+                "theme {name} has unset error"
+            );
+            assert!(
+                !matches!(t.diff_add, Color::Reset),
+                "theme {name} has unset diff_add"
+            );
+            assert!(
+                !matches!(t.diff_remove, Color::Reset),
+                "theme {name} has unset diff_remove"
+            );
+            assert_eq!(
+                t.agent_colors.len(),
+                8,
+                "theme {name} must define 8 agent colours"
+            );
+        }
+    }
+
+    #[test]
+    fn colorblind_palette_uses_okabe_ito_hex_values() {
+        // Spec: every Okabe-Ito canonical hex value must show up in
+        // either dark-colorblind or light-colorblind. The two themes
+        // share the same palette and only re-map semantic slots, so a
+        // single union suffices.
+        let okabe_ito: &[(u8, u8, u8)] = &[
+            (0xE6, 0x9F, 0x00), // orange
+            (0x56, 0xB4, 0xE9), // sky-blue
+            (0x00, 0x9E, 0x73), // bluish-green
+            (0xF0, 0xE4, 0x42), // yellow
+            (0x00, 0x72, 0xB2), // blue
+            (0xD5, 0x5E, 0x00), // vermillion
+            (0xCC, 0x79, 0xA7), // reddish-purple
+        ];
+
+        let collect = |t: &Theme| -> Vec<(u8, u8, u8)> {
+            let mut all = vec![
+                t.accent,
+                t.error,
+                t.warning,
+                t.success,
+                t.tool,
+                t.plan,
+                t.diff_add,
+                t.diff_remove,
+            ];
+            all.extend_from_slice(&t.agent_colors);
+            all.into_iter()
+                .filter_map(|c| match c {
+                    Color::Rgb { r, g, b } => Some((r, g, b)),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let dark = Theme::dark_colorblind();
+        let light = Theme::light_colorblind();
+        let mut union: Vec<(u8, u8, u8)> = collect(&dark);
+        union.extend(collect(&light));
+        union.sort_unstable();
+        union.dedup();
+
+        for triple in okabe_ito {
+            assert!(
+                union.contains(triple),
+                "Okabe-Ito colour {:02X}{:02X}{:02X} missing from colourblind themes",
+                triple.0,
+                triple.1,
+                triple.2,
+            );
+        }
+        // Black (the eighth Okabe-Ito colour) should appear as text in
+        // at least the light variant — assert separately so the union
+        // check stays focused on the chromatic seven.
+        assert!(matches!(light.text, Color::Black));
+    }
+
+    #[test]
+    fn ansi_only_themes_use_no_truecolor() {
+        // For every slot in the ANSI-only themes, the colour must be
+        // one of the 16 standard ANSI variants — no `Rgb`, no
+        // `AnsiValue`. The latter would still resolve in 256-colour
+        // terminals but doesn't degrade in 16-colour ones.
+        fn is_ansi_16(c: Color) -> bool {
+            matches!(
+                c,
+                Color::Reset
+                    | Color::Black
+                    | Color::Red
+                    | Color::Green
+                    | Color::Yellow
+                    | Color::Blue
+                    | Color::Magenta
+                    | Color::Cyan
+                    | Color::Grey
+                    | Color::White
+                    | Color::DarkGrey
+                    | Color::DarkRed
+                    | Color::DarkGreen
+                    | Color::DarkYellow
+                    | Color::DarkBlue
+                    | Color::DarkMagenta
+                    | Color::DarkCyan
+            )
+        }
+        for theme in [Theme::dark_ansi(), Theme::light_ansi()] {
+            for c in [
+                theme.accent,
+                theme.error,
+                theme.warning,
+                theme.success,
+                theme.muted,
+                theme.inactive,
+                theme.tool,
+                theme.plan,
+                theme.text,
+                theme.diff_add,
+                theme.diff_remove,
+            ] {
+                assert!(is_ansi_16(c), "ANSI theme leaked non-ANSI colour {c:?}");
+            }
+            for c in theme.agent_colors {
+                assert!(is_ansi_16(c), "ANSI theme agent colour {c:?} is non-ANSI");
+            }
+        }
     }
 }
