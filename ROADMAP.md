@@ -1678,10 +1678,10 @@ The current coordinator (`crates/lib/src/services/coordinator.rs`) is a session 
 
 A handful of small tools that close usability gaps for the model itself.
 
-- [ ] **Brief** — file a structured research handoff (question, context, attachments) that another session can consume
-- [ ] **Config** — model-callable settings reader/writer with a typed `supported_settings` schema and a hard allow-list (nothing else is mutable from a tool call)
-- [ ] **McpAuth** — re-trigger the OAuth/auth flow for a configured MCP server when a call returns 401, without dropping back to the user
-- [ ] Each tool gated behind a permission rule with sane defaults
+- [x] **Brief** — file a structured research handoff (question, context, attachments) that another session can consume
+- [x] **Config** — model-callable settings reader/writer with a typed `supported_settings` schema and a hard allow-list (nothing else is mutable from a tool call)
+- [x] **McpAuth** — re-trigger the OAuth/auth flow for a configured MCP server when a call returns 401, without dropping back to the user
+- [x] Each tool gated behind a permission rule with sane defaults
 
 ### 8.9 Bash Tool Hardening
 

@@ -260,12 +260,17 @@ async fn execute_single_tool(
         }
     }
 
-    // Validate input.
-    if let Err(msg) = tool.validate_input(&call.input) {
+    // Defensive `validate_input` — the query loop already runs this
+    // before PreToolUse hooks fire, so reaching here with an invalid
+    // input means a non-default code path skipped the engine-level
+    // validation. We re-run it as a belt-and-braces guard; the
+    // upstream short-circuit is what guarantees no hook saw the
+    // bad input.
+    if let Err(err) = tool.validate_input(&call.input) {
         return ToolCallResult {
             tool_use_id: call.id.clone(),
             tool_name: call.name.clone(),
-            result: ToolResult::error(format!("Invalid input: {msg}")),
+            result: ToolResult::error(format!("{err}")),
         };
     }
 

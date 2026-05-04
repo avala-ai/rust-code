@@ -16,6 +16,7 @@
 pub mod atomic;
 pub mod migrations;
 mod schema;
+pub mod supported_settings;
 
 pub use schema::*;
 
@@ -277,14 +278,37 @@ fn resolve_api_key_from_env() -> Option<String> {
 }
 
 /// Returns the user-level config file path.
-pub(crate) fn user_config_path() -> Option<PathBuf> {
+pub fn user_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("agent-code").join("config.toml"))
 }
 
 /// Walk up from the current directory to find `.agent/settings.toml`.
-pub(crate) fn find_project_config() -> Option<PathBuf> {
+pub fn find_project_config() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     find_config_in_ancestors(&cwd)
+}
+
+/// Walk up from `start` to find `.agent/settings.toml`. Public so the
+/// model-callable [`Config`](crate::tools::config_tool) tool and other
+/// helpers can locate the project config relative to a known directory
+/// (the tool's `ToolContext::cwd`) instead of `current_dir`.
+pub fn find_project_config_from(start: &Path) -> Option<PathBuf> {
+    find_config_in_ancestors(start)
+}
+
+/// Walk up from `start` to find the project root that contains `.agent/`.
+/// Returns the directory itself (parent of `.agent/`), not the settings
+/// file path.
+pub fn find_project_root_from(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        if dir.join(".agent").is_dir() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 /// Walk up from the current directory to find `.agent/settings.local.toml`.

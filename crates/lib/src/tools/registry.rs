@@ -117,9 +117,12 @@ impl ToolRegistry {
         registry.register(Arc::new(super::web_search::WebSearchTool));
         registry.register(Arc::new(super::ask_user::AskUserQuestionTool));
         registry.register(Arc::new(super::powershell::PowerShellTool));
+        registry.register(Arc::new(super::brief::BriefTool));
+        registry.register(Arc::new(super::config_tool::ConfigTool));
         registry.register(Arc::new(super::cron_create::CronCreateTool));
-        registry.register(Arc::new(super::cron_list::CronListTool));
         registry.register(Arc::new(super::cron_delete::CronDeleteTool));
+        registry.register(Arc::new(super::cron_list::CronListTool));
+        registry.register(Arc::new(super::mcp_auth::McpAuthTool));
         registry.register(Arc::new(super::remote_trigger::RemoteTriggerTool));
         registry
     }

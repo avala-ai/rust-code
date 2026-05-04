@@ -109,9 +109,12 @@ mod tests {
 
     #[test]
     fn from_config_resolves_paths() {
-        // Use a guaranteed-present $HOME via an env override for determinism.
-        // SAFETY: single-threaded test process.
-        unsafe { std::env::set_var("HOME", "/Users/test") };
+        // Use a guaranteed-present $HOME via the shared cross-test env
+        // guard. The guard holds a process-wide mutex while alive, so
+        // concurrent tests in `tools::brief` / `tools::config_tool`
+        // that also mutate `HOME` can't observe our temporary
+        // `/Users/test` override.
+        let _g = crate::test_support::EnvGuard::set_str("HOME", "/Users/test");
         let cfg = SandboxConfig {
             enabled: true,
             strategy: "seatbelt".to_string(),

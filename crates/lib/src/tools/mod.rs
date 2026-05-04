@@ -22,6 +22,8 @@ pub mod agent;
 pub mod ask_user;
 pub mod bash;
 pub mod bash_parse;
+pub mod brief;
+pub mod config_tool;
 pub mod cron_create;
 pub mod cron_delete;
 pub mod cron_list;
@@ -33,6 +35,7 @@ pub mod file_write;
 pub mod glob;
 pub mod grep;
 pub mod lsp_tool;
+pub mod mcp_auth;
 pub mod mcp_proxy;
 pub mod mcp_resources;
 pub mod monitor;
@@ -60,6 +63,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::error::ToolError;
 use crate::permissions::{PermissionChecker, PermissionDecision};
 
 /// The core trait that all tools must implement.
@@ -88,7 +92,7 @@ pub trait Tool: Send + Sync {
         &self,
         input: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<ToolResult, crate::error::ToolError>;
+    ) -> Result<ToolResult, ToolError>;
 
     /// Whether this tool only reads state (no mutations).
     fn is_read_only(&self) -> bool {
@@ -129,8 +133,19 @@ pub trait Tool: Send + Sync {
         }
     }
 
-    /// Validate tool input before execution.
-    fn validate_input(&self, _input: &serde_json::Value) -> Result<(), String> {
+    /// Validate tool input shape and content BEFORE any side-effecting
+    /// step (PreToolUse hooks, permission prompts, audit logging) runs.
+    ///
+    /// Tools override this to reject obviously-malformed or
+    /// allow-list-violating inputs at the engine boundary. The query
+    /// loop calls `validate_input` first; if it returns `Err`, the
+    /// call short-circuits with no hook fired and no permission
+    /// check, so PreToolUse audit hooks never see disallowed inputs.
+    /// Default returns `Ok(())` so existing tools don't need updating.
+    ///
+    /// Use [`ToolError::InvalidInput`] for shape errors and to keep
+    /// the rejection message visible to the model.
+    fn validate_input(&self, _input: &serde_json::Value) -> Result<(), ToolError> {
         Ok(())
     }
 
