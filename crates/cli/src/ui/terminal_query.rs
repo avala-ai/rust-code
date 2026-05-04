@@ -10,7 +10,7 @@ use crossterm::terminal;
 pub const SYSTEM_THEME_ENV: &str = "AGENT_CODE_SYSTEM_THEME";
 
 const OSC_11_QUERY: &[u8] = b"\x1b]11;?\x07";
-const DA1_QUERY: &[u8] = b"\x1bc";
+const DA1_QUERY: &[u8] = b"\x1b[c";
 const QUERY_TIMEOUT: Duration = Duration::from_secs(1);
 
 static SYSTEM_THEME: OnceLock<SystemTheme> = OnceLock::new();
@@ -477,7 +477,7 @@ mod tests {
         let theme = query_system_theme_from_io(&mut input, &mut output);
 
         assert_eq!(theme, Some(SystemTheme::Light));
-        assert_eq!(output, b"\x1b]11;?\x07\x1bc");
+        assert_eq!(output, b"\x1b]11;?\x07\x1b[c");
         assert_eq!(input.position(), 32);
     }
 }
