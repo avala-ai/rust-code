@@ -6,7 +6,8 @@
 
 <!-- How was this tested? -->
 
-- [ ] `cargo test` passes
-- [ ] `cargo clippy` clean
-- [ ] `cargo fmt` applied
+- [ ] `cargo check --all-targets`
+- [ ] `cargo test --all-targets`
+- [ ] `cargo clippy --all-targets -- -D warnings`
+- [ ] `cargo fmt --all -- --check`
 - [ ] New tests added for new functionality
