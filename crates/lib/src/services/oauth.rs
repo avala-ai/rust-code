@@ -78,6 +78,17 @@ pub struct OAuthProviderConfig {
     /// (e.g. `http://127.0.0.1/callback`) — we only use
     /// the path component.
     pub redirect_uri: String,
+    /// Allow `http://localhost` and `http://127.0.0.1` for
+    /// `authorization_url` and `token_url`. Off by default —
+    /// RFC 6749 §3.1 requires HTTPS for OAuth endpoints, and
+    /// an attacker-controlled HTTP authorization endpoint is
+    /// a credential-theft primitive. Flip this on only when
+    /// pointing at a local test fixture; never in production.
+    /// `redirect_uri` is independently allowed to use
+    /// `http://127.0.0.1` because that is the loopback the
+    /// user controls (see RFC 8252 §7.3).
+    #[doc(hidden)]
+    pub allow_insecure_local: bool,
 }
 
 impl OAuthProviderConfig {
@@ -86,6 +97,78 @@ impl OAuthProviderConfig {
             Some(path) if !path.is_empty() => path,
             _ => "/callback".to_string(),
         }
+    }
+
+    /// Reject any `authorization_url` / `token_url` that is
+    /// not HTTPS. RFC 6749 §3.1: the authorization server
+    /// MUST require TLS. The redirect URI is exempt because
+    /// it is the loopback (RFC 8252 §7.3); we only reject
+    /// non-loopback HTTP redirects. `allow_insecure_local`
+    /// opens a narrow door for `http://localhost` /
+    /// `http://127.0.0.1` endpoints used by local test
+    /// fixtures.
+    fn validate(&self) -> Result<(), OAuthError> {
+        check_endpoint_url(
+            "authorization_url",
+            &self.authorization_url,
+            self.allow_insecure_local,
+        )?;
+        check_endpoint_url("token_url", &self.token_url, self.allow_insecure_local)?;
+        check_redirect_url("redirect_uri", &self.redirect_uri)?;
+        Ok(())
+    }
+}
+
+fn url_scheme_and_host(url: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..host_end];
+    // Strip user-info if any (`user:pass@host`).
+    let host_part = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    // Strip port for the host comparison.
+    let host = host_part.split(':').next().unwrap_or(host_part);
+    Some((scheme, host))
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+}
+
+fn check_endpoint_url(
+    field: &str,
+    url: &str,
+    allow_insecure_local: bool,
+) -> Result<(), OAuthError> {
+    let Some((scheme, host)) = url_scheme_and_host(url) else {
+        return Err(OAuthError::InvalidConfig(format!(
+            "{field} is not a valid URL: {url}"
+        )));
+    };
+    match scheme {
+        "https" => Ok(()),
+        "http" if allow_insecure_local && is_loopback_host(host) => Ok(()),
+        _ => Err(OAuthError::InvalidConfig(format!(
+            "{field} must be https:// (RFC 6749 §3.1); got: {url}"
+        ))),
+    }
+}
+
+fn check_redirect_url(field: &str, url: &str) -> Result<(), OAuthError> {
+    let Some((scheme, host)) = url_scheme_and_host(url) else {
+        return Err(OAuthError::InvalidConfig(format!(
+            "{field} is not a valid URL: {url}"
+        )));
+    };
+    match scheme {
+        "https" => Ok(()),
+        // Loopback HTTP redirect is the user-controlled
+        // loopback the OS routes to us; RFC 8252 §7.3 calls
+        // this out as the recommended pattern for native
+        // apps.
+        "http" if is_loopback_host(host) => Ok(()),
+        _ => Err(OAuthError::InvalidConfig(format!(
+            "{field} must be https:// or http://127.0.0.1 (loopback); got: {url}"
+        ))),
     }
 }
 
@@ -130,6 +213,9 @@ impl TokenSet {
 /// a token into an error.
 #[derive(Debug, Error)]
 pub enum OAuthError {
+    #[error("invalid OAuth provider config: {0}")]
+    InvalidConfig(String),
+
     #[error("failed to launch browser: {0}")]
     BrowserLaunchFailed(String),
 
@@ -139,8 +225,19 @@ pub enum OAuthError {
     #[error("token exchange failed (status {status}): {body}")]
     TokenExchangeFailed { status: u16, body: String },
 
-    #[error("token refresh failed (status {status}): {body}")]
-    RefreshFailed { status: u16, body: String },
+    /// Token-endpoint refresh failure. `transient = true`
+    /// means the cached credentials are still believed
+    /// valid — the caller should retry rather than force a
+    /// re-login. `transient = false` means the refresh
+    /// token was rejected by the provider (RFC 6749 §5.2:
+    /// `invalid_grant` / `invalid_client`, or HTTP 401 with
+    /// no parsable body) and re-authentication is required.
+    #[error("token refresh failed (status {status}, transient={transient}): {body}")]
+    RefreshFailed {
+        status: u16,
+        body: String,
+        transient: bool,
+    },
 
     #[error("re-authentication required")]
     ReauthRequired,
@@ -272,14 +369,42 @@ fn default_browser_launcher(url: &str) -> Result<(), OAuthError> {
 
     let mut last_err = String::from("no opener available");
     for bin in candidates {
-        let res = std::process::Command::new(bin)
+        let spawned = std::process::Command::new(bin)
             .args(args_for(bin))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
-        match res {
-            Ok(_) => return Ok(()),
-            Err(e) => last_err = e.to_string(),
+        let mut child = match spawned {
+            Ok(c) => c,
+            Err(e) => {
+                last_err = format!("{bin}: {e}");
+                continue;
+            }
+        };
+        // The platform openers we use here all hand off to
+        // a background handler and exit promptly:
+        //   - macOS `open` returns 0 once LaunchServices has
+        //     accepted the URL.
+        //   - Linux `xdg-open` returns 0 once the desktop
+        //     handler has been launched.
+        //   - Windows `cmd /C start` returns 0 immediately
+        //     after handing off.
+        // So waiting is short and tells us "the opener did
+        // its job". A non-zero exit (no display, no handler
+        // registered, sandbox refusal) gets surfaced as
+        // BrowserLaunchFailed instead of letting the user
+        // sit through a 5-minute LoopbackTimeout.
+        match child.wait() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => {
+                last_err = match status.code() {
+                    Some(code) => format!("{bin} exited with status {code}"),
+                    None => format!("{bin} terminated by signal"),
+                };
+            }
+            Err(e) => {
+                last_err = format!("{bin}: failed to wait: {e}");
+            }
         }
     }
     Err(OAuthError::BrowserLaunchFailed(last_err))
@@ -302,8 +427,10 @@ pub struct OAuthService {
 impl OAuthService {
     /// Build a service with the default credential store
     /// (file under the agent config directory) and the
-    /// platform's default browser opener.
-    pub fn new(config: OAuthProviderConfig) -> Self {
+    /// platform's default browser opener. Returns
+    /// [`OAuthError::InvalidConfig`] if `config` has any
+    /// non-HTTPS endpoint URL (RFC 6749 §3.1).
+    pub fn new(config: OAuthProviderConfig) -> Result<Self, OAuthError> {
         let store: Arc<dyn CredentialStore> = match FileCredentialStore::default_location() {
             Ok(s) => Arc::new(s),
             Err(_) => Arc::new(NullCredentialStore),
@@ -313,9 +440,15 @@ impl OAuthService {
 
     /// Build a service with a caller-supplied credential
     /// store. Useful for tests and for embedding in a host
-    /// that already manages secrets.
-    pub fn with_store(config: OAuthProviderConfig, store: Arc<dyn CredentialStore>) -> Self {
-        Self {
+    /// that already manages secrets. Returns
+    /// [`OAuthError::InvalidConfig`] if `config` has any
+    /// non-HTTPS endpoint URL.
+    pub fn with_store(
+        config: OAuthProviderConfig,
+        store: Arc<dyn CredentialStore>,
+    ) -> Result<Self, OAuthError> {
+        config.validate()?;
+        Ok(Self {
             config,
             store,
             http: reqwest::Client::builder()
@@ -325,7 +458,7 @@ impl OAuthService {
             service_name: "agent-code".to_string(),
             browser: Arc::new(default_browser_launcher),
             state: Arc::new(Mutex::new(())),
-        }
+        })
     }
 
     /// Override the browser launcher (tests; host apps that
@@ -396,7 +529,12 @@ impl OAuthService {
                     tokens = merge_refresh(tokens, new_tokens);
                     self.store.save(&key, &tokens)?;
                 }
-                Err(OAuthError::RefreshFailed { status, .. }) if is_terminal_refresh(status) => {
+                Err(OAuthError::RefreshFailed {
+                    transient: false, ..
+                }) => {
+                    // Terminal: provider rejected the
+                    // refresh token. Drop the cached creds
+                    // and force a fresh login.
                     let _ = self.store.delete(&key);
                     return Err(OAuthError::ReauthRequired);
                 }
@@ -436,11 +574,43 @@ impl CredentialStore for NullCredentialStore {
     }
 }
 
-/// 4xx on refresh = the token has been revoked or rotated;
-/// the user must re-authenticate. 5xx is treated as a
-/// transient failure and surfaced verbatim.
-fn is_terminal_refresh(status: u16) -> bool {
-    (400..500).contains(&status)
+/// Decide whether a refresh failure is terminal — i.e. the
+/// cached refresh token is dead and the user must re-auth —
+/// or transient — i.e. throttling / outage / network blip,
+/// keep the credentials and let the caller retry.
+///
+/// RFC 6749 §5.2 lists the canonical token-endpoint error
+/// codes. For the refresh path, the unambiguously-terminal
+/// ones are `invalid_grant` (refresh token expired or
+/// revoked) and `invalid_client` (client credentials no
+/// longer valid). HTTP 401 with no parsable error body is
+/// also treated as terminal — the provider is signalling
+/// "this credential is rejected" without bothering with the
+/// JSON envelope.
+///
+/// Everything else — `429`, `503`, `408`, network-level
+/// failures, unparseable bodies on a non-401 — is transient.
+fn is_terminal_refresh(status: u16, body: &str) -> bool {
+    match parse_oauth_error_code(body) {
+        Some(code) if code == "invalid_grant" || code == "invalid_client" => true,
+        Some(_) => false,
+        None => status == 401,
+    }
+}
+
+/// Parse the `error` field out of a token-endpoint JSON
+/// error body (RFC 6749 §5.2). Returns `None` if the body
+/// is empty, not JSON, or has no string `error` field.
+fn parse_oauth_error_code(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    value
+        .get("error")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn merge_refresh(prev: TokenSet, new: TokenSet) -> TokenSet {
@@ -548,7 +718,7 @@ async fn capture_redirect(
             let path_and_query = parse_request_target(&req);
             let Some(path_and_query) = path_and_query else {
                 let _ = socket
-                    .write_all(http_response("Bad Request").as_bytes())
+                    .write_all(http_response_status(400, "Bad Request").as_bytes())
                     .await;
                 continue;
             };
@@ -556,7 +726,7 @@ async fn capture_redirect(
 
             if let Some(err) = params.get("error") {
                 let _ = socket
-                    .write_all(http_response("Authorization failed.").as_bytes())
+                    .write_all(http_response_status(400, "Authorization failed.").as_bytes())
                     .await;
                 if err == "access_denied" {
                     return Err(OAuthError::Cancelled);
@@ -567,28 +737,56 @@ async fn capture_redirect(
                 });
             }
 
-            // State check guards against forged callbacks.
-            if let Some(state) = params.get("state")
-                && state != expected_state
-            {
-                let _ = socket
-                    .write_all(http_response("State mismatch.").as_bytes())
-                    .await;
-                continue;
+            // CSRF defense: a callback that omits `state`
+            // entirely cannot be trusted. RFC 6749 §10.12
+            // requires the client to bind the auth request
+            // to the user agent via `state`; without it, a
+            // local process could deliver a stolen `code`
+            // and have it exchanged. Reject hard — both
+            // missing and mismatched are treated the same.
+            match params.get("state") {
+                Some(state) if state == expected_state => {}
+                Some(_) => {
+                    let _ = socket
+                        .write_all(http_response_status(400, "State mismatch.").as_bytes())
+                        .await;
+                    return Err(OAuthError::LoopbackFailed(
+                        "state parameter did not match expected value".into(),
+                    ));
+                }
+                None => {
+                    let _ = socket
+                        .write_all(http_response_status(400, "Missing state parameter.").as_bytes())
+                        .await;
+                    // If there is also no `code`, this is a
+                    // probe — keep waiting for the real
+                    // callback. If there *is* a `code`, the
+                    // callback is malformed and we must not
+                    // exchange it.
+                    if params.contains_key("code") {
+                        return Err(OAuthError::LoopbackFailed(
+                            "callback missing required state parameter".into(),
+                        ));
+                    }
+                    continue;
+                }
             }
 
             if let Some(code) = params.get("code") {
                 let _ = socket
                     .write_all(
-                        http_response("You can close this tab and return to the terminal.")
-                            .as_bytes(),
+                        http_response_status(
+                            200,
+                            "You can close this tab and return to the terminal.",
+                        )
+                        .as_bytes(),
                     )
                     .await;
                 return Ok(CapturedCode { code: code.clone() });
             }
 
             let _ = socket
-                .write_all(http_response("Waiting for code...").as_bytes())
+                .write_all(http_response_status(200, "Waiting for code...").as_bytes())
                 .await;
         }
     };
@@ -601,7 +799,12 @@ async fn capture_redirect(
     }
 }
 
-fn http_response(body: &str) -> String {
+fn http_response_status(status: u16, body: &str) -> String {
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        _ => "OK",
+    };
     let html = format!(
         "<!doctype html><meta charset=utf-8><title>Auth</title>\
         <body style=\"font-family:system-ui;text-align:center;padding:3em;\">\
@@ -609,7 +812,7 @@ fn http_response(body: &str) -> String {
         html_escape(body)
     );
     format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         html.len(),
         html
     )
@@ -800,13 +1003,21 @@ async fn refresh_tokens(
         .send()
         .await
         .map_err(|e| OAuthError::RefreshFailed {
+            // Network-level failure: never terminal —
+            // refusing to drop creds on a transient outage.
             status: 0,
             body: e.to_string(),
+            transient: true,
         })?;
     let status = response.status().as_u16();
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(OAuthError::RefreshFailed { status, body });
+        let transient = !is_terminal_refresh(status, &body);
+        return Err(OAuthError::RefreshFailed {
+            status,
+            body,
+            transient,
+        });
     }
     let parsed: TokenResponse = response
         .json()
@@ -814,6 +1025,7 @@ async fn refresh_tokens(
         .map_err(|e| OAuthError::RefreshFailed {
             status,
             body: e.to_string(),
+            transient: true,
         })?;
     Ok(parsed.into())
 }
@@ -912,13 +1124,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loopback_rejects_state_mismatch_then_accepts_correct_state() {
+    async fn loopback_rejects_state_mismatch_hard() {
+        // A callback whose `state` param is present but
+        // doesn't match the per-login expected value is
+        // a CSRF attempt — never proceed to token
+        // exchange.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
         let server = tokio::spawn(async move { capture_redirect(listener, "the-state").await });
 
-        // First a bad-state attempt (server keeps waiting).
         let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
@@ -927,9 +1142,59 @@ mod tests {
             .unwrap();
         let mut buf = Vec::new();
         s.read_to_end(&mut buf).await.unwrap();
-        assert!(String::from_utf8_lossy(&buf).contains("State mismatch"));
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.contains("State mismatch"));
+        assert!(response.contains("400"));
 
-        // Then the real one.
+        let err = server.await.unwrap().unwrap_err();
+        assert!(matches!(err, OAuthError::LoopbackFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn loopback_rejects_callback_missing_state_with_code() {
+        // P1 fix: a callback that delivers a `code` but
+        // no `state` is unsafe. RFC 6749 §10.12 binds
+        // the auth request to the user agent via state;
+        // a local process could otherwise smuggle a
+        // stolen code into the loopback. Reject hard
+        // and never call the token endpoint.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move { capture_redirect(listener, "the-state").await });
+
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        // No `state` param at all.
+        s.write_all(b"GET /callback?code=stolen HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        s.read_to_end(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.contains("Missing state parameter"));
+        assert!(response.contains("400"));
+
+        let err = server.await.unwrap().unwrap_err();
+        match err {
+            OAuthError::LoopbackFailed(msg) => {
+                assert!(
+                    msg.contains("state"),
+                    "error must mention the missing state param: {msg}"
+                );
+            }
+            other => panic!("expected LoopbackFailed; got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_accepts_matching_state() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move { capture_redirect(listener, "the-state").await });
+
         let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
@@ -974,6 +1239,7 @@ mod tests {
             client_id: "c".into(),
             scopes: vec![],
             redirect_uri: "http://example.com".into(),
+            allow_insecure_local: false,
         };
         assert_eq!(cfg.redirect_path(), "/callback");
     }
@@ -987,6 +1253,7 @@ mod tests {
             client_id: "client-id".into(),
             scopes: vec!["read".into(), "write".into()],
             redirect_uri: "http://127.0.0.1/cb".into(),
+            allow_insecure_local: false,
         };
         let url =
             build_authorization_url(&cfg, "http://127.0.0.1:1234/cb", "challenge", "the-state");
@@ -1008,6 +1275,7 @@ mod tests {
             client_id: "c".into(),
             scopes: vec![],
             redirect_uri: "http://127.0.0.1/cb".into(),
+            allow_insecure_local: false,
         };
         let url = build_authorization_url(&cfg, "http://127.0.0.1:1/cb", "ch", "st");
         assert!(url.contains("audience=api&response_type=code"));
@@ -1020,6 +1288,7 @@ mod tests {
     fn errors_do_not_carry_or_leak_token_strings() {
         let fake_token = "FAKE_ACCESS_TOKEN_DO_NOT_LEAK_xyzzy";
         let cases: Vec<OAuthError> = vec![
+            OAuthError::InvalidConfig("token_url must be https://".into()),
             OAuthError::BrowserLaunchFailed("xdg-open missing".into()),
             OAuthError::LoopbackFailed("bind failed".into()),
             OAuthError::TokenExchangeFailed {
@@ -1029,6 +1298,12 @@ mod tests {
             OAuthError::RefreshFailed {
                 status: 401,
                 body: "{\"error\":\"invalid_grant\"}".into(),
+                transient: false,
+            },
+            OAuthError::RefreshFailed {
+                status: 429,
+                body: "{\"error\":\"slow_down\"}".into(),
+                transient: true,
             },
             OAuthError::ReauthRequired,
             OAuthError::KeychainError("locked".into()),
@@ -1095,13 +1370,42 @@ mod tests {
     }
 
     #[test]
-    fn is_terminal_refresh_classifies_4xx_only() {
-        assert!(is_terminal_refresh(400));
-        assert!(is_terminal_refresh(401));
-        assert!(is_terminal_refresh(403));
-        assert!(!is_terminal_refresh(500));
-        assert!(!is_terminal_refresh(503));
-        assert!(!is_terminal_refresh(0));
+    fn is_terminal_refresh_uses_rfc6749_error_codes() {
+        // Terminal: provider explicitly rejected the
+        // refresh credential.
+        assert!(is_terminal_refresh(400, r#"{"error":"invalid_grant"}"#));
+        assert!(is_terminal_refresh(401, r#"{"error":"invalid_client"}"#));
+        // Terminal: 401 with no parsable body — the
+        // provider is signalling rejection without the
+        // JSON envelope.
+        assert!(is_terminal_refresh(401, ""));
+        assert!(is_terminal_refresh(401, "Unauthorized"));
+
+        // Transient: 429 throttling, 503 outage, 408
+        // timeout.
+        assert!(!is_terminal_refresh(429, r#"{"error":"slow_down"}"#));
+        assert!(!is_terminal_refresh(503, ""));
+        assert!(!is_terminal_refresh(408, ""));
+        assert!(!is_terminal_refresh(500, ""));
+
+        // Transient: non-401 with unparseable body —
+        // could be anything; do not destroy creds.
+        assert!(!is_terminal_refresh(400, "not json"));
+        assert!(!is_terminal_refresh(403, ""));
+
+        // Transient: other RFC 6749 error codes that
+        // can fire on policy / scope problems and are
+        // not necessarily terminal for the refresh
+        // token specifically.
+        assert!(!is_terminal_refresh(400, r#"{"error":"invalid_request"}"#));
+        assert!(!is_terminal_refresh(400, r#"{"error":"invalid_scope"}"#));
+        assert!(!is_terminal_refresh(
+            400,
+            r#"{"error":"unauthorized_client"}"#
+        ));
+
+        // Network-level (status 0): never terminal.
+        assert!(!is_terminal_refresh(0, "connect timeout"));
     }
 
     // ---- Token endpoint mock ----
@@ -1140,11 +1444,16 @@ mod tests {
     fn cfg_with_token_url(token_url: &str) -> OAuthProviderConfig {
         OAuthProviderConfig {
             provider_name: "stub".into(),
-            authorization_url: "http://unused/auth".into(),
+            // Loopback HTTP is allowed for the
+            // authorization URL only when
+            // `allow_insecure_local` is set; the test
+            // fixtures point at a local mock server.
+            authorization_url: "http://127.0.0.1/auth".into(),
             token_url: token_url.into(),
             client_id: "client-id".into(),
             scopes: vec!["read".into()],
             redirect_uri: "http://127.0.0.1/cb".into(),
+            allow_insecure_local: true,
         }
     }
 
@@ -1171,20 +1480,131 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_flow_4xx_is_terminal() {
+    async fn refresh_flow_invalid_grant_is_terminal() {
         let (url, handle) =
             spawn_fake_token_server(vec![(400, r#"{"error":"invalid_grant"}"#.into())]).await;
         let http = reqwest::Client::new();
         let cfg = cfg_with_token_url(&url);
         let err = refresh_tokens(&http, &cfg, "rev").await.unwrap_err();
         match err {
-            OAuthError::RefreshFailed { status, body } => {
+            OAuthError::RefreshFailed {
+                status,
+                body,
+                transient,
+            } => {
                 assert_eq!(status, 400);
                 assert!(body.contains("invalid_grant"));
+                assert!(!transient, "invalid_grant must be terminal");
             }
             other => panic!("unexpected: {other:?}"),
         }
         let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn refresh_flow_429_is_transient() {
+        // 429 Too Many Requests is throttling, not a
+        // bad credential — keep the cached creds.
+        let (url, handle) =
+            spawn_fake_token_server(vec![(429, r#"{"error":"slow_down"}"#.into())]).await;
+        let http = reqwest::Client::new();
+        let cfg = cfg_with_token_url(&url);
+        let err = refresh_tokens(&http, &cfg, "rt").await.unwrap_err();
+        match err {
+            OAuthError::RefreshFailed {
+                status, transient, ..
+            } => {
+                assert_eq!(status, 429);
+                assert!(transient, "429 throttling must be transient");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn refresh_flow_503_is_transient() {
+        let (url, handle) =
+            spawn_fake_token_server(vec![(503, "service unavailable".into())]).await;
+        let http = reqwest::Client::new();
+        let cfg = cfg_with_token_url(&url);
+        let err = refresh_tokens(&http, &cfg, "rt").await.unwrap_err();
+        match err {
+            OAuthError::RefreshFailed {
+                status, transient, ..
+            } => {
+                assert_eq!(status, 503);
+                assert!(transient, "5xx must be transient");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn current_token_preserves_creds_on_transient_429() {
+        // 429 -> transient -> creds must remain in the
+        // store and the error must surface to the
+        // caller (no silent ReauthRequired).
+        let (url, _handle) =
+            spawn_fake_token_server(vec![(429, r#"{"error":"slow_down"}"#.into())]).await;
+        let store = Arc::new(InMemoryStore::default());
+        let initial = TokenSet {
+            access_token: "stale".into(),
+            refresh_token: Some("rt".into()),
+            expires_at: Some(Utc::now() - chrono::Duration::seconds(1)),
+        };
+        store.save("agent-code:stub", &initial).unwrap();
+
+        let svc = OAuthService::with_store(
+            cfg_with_token_url(&url),
+            store.clone() as Arc<dyn CredentialStore>,
+        )
+        .unwrap();
+        let err = svc.current_token().await.unwrap_err();
+        match err {
+            OAuthError::RefreshFailed {
+                status, transient, ..
+            } => {
+                assert_eq!(status, 429);
+                assert!(transient);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        // Creds must NOT have been deleted on a
+        // transient failure.
+        let saved = store.load("agent-code:stub").unwrap();
+        assert!(
+            saved.is_some(),
+            "transient refresh failure must not drop creds"
+        );
+    }
+
+    #[tokio::test]
+    async fn current_token_preserves_creds_on_transient_503() {
+        let (url, _handle) = spawn_fake_token_server(vec![(503, "outage".into())]).await;
+        let store = Arc::new(InMemoryStore::default());
+        let initial = TokenSet {
+            access_token: "stale".into(),
+            refresh_token: Some("rt".into()),
+            expires_at: Some(Utc::now() - chrono::Duration::seconds(1)),
+        };
+        store.save("agent-code:stub", &initial).unwrap();
+
+        let svc = OAuthService::with_store(
+            cfg_with_token_url(&url),
+            store.clone() as Arc<dyn CredentialStore>,
+        )
+        .unwrap();
+        let err = svc.current_token().await.unwrap_err();
+        assert!(matches!(
+            err,
+            OAuthError::RefreshFailed {
+                transient: true,
+                ..
+            }
+        ));
+        assert!(store.load("agent-code:stub").unwrap().is_some());
     }
 
     #[tokio::test]
@@ -1205,7 +1625,8 @@ mod tests {
         let svc = OAuthService::with_store(
             cfg_with_token_url(&url),
             store.clone() as Arc<dyn CredentialStore>,
-        );
+        )
+        .unwrap();
         let token = svc.current_token().await.unwrap();
         assert_eq!(token, "refreshed");
 
@@ -1217,7 +1638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn current_token_clears_creds_and_demands_reauth_on_4xx() {
+    async fn current_token_clears_creds_and_demands_reauth_on_invalid_grant() {
         let (url, _handle) =
             spawn_fake_token_server(vec![(401, r#"{"error":"invalid_grant"}"#.into())]).await;
         let store = Arc::new(InMemoryStore::default());
@@ -1231,7 +1652,8 @@ mod tests {
         let svc = OAuthService::with_store(
             cfg_with_token_url(&url),
             store.clone() as Arc<dyn CredentialStore>,
-        );
+        )
+        .unwrap();
         let err = svc.current_token().await.unwrap_err();
         assert!(matches!(err, OAuthError::ReauthRequired));
         assert!(store.load("agent-code:stub").unwrap().is_none());
@@ -1240,7 +1662,8 @@ mod tests {
     #[tokio::test]
     async fn current_token_returns_reauth_required_when_no_creds_stored() {
         let store = Arc::new(InMemoryStore::default()) as Arc<dyn CredentialStore>;
-        let svc = OAuthService::with_store(cfg_with_token_url("http://unused/token"), store);
+        let svc =
+            OAuthService::with_store(cfg_with_token_url("http://127.0.0.1/token"), store).unwrap();
         let err = svc.current_token().await.unwrap_err();
         assert!(matches!(err, OAuthError::ReauthRequired));
     }
@@ -1260,9 +1683,10 @@ mod tests {
             .unwrap();
 
         let svc = OAuthService::with_store(
-            cfg_with_token_url("http://unused/token"),
+            cfg_with_token_url("http://127.0.0.1/token"),
             store.clone() as Arc<dyn CredentialStore>,
-        );
+        )
+        .unwrap();
         svc.logout().unwrap();
         assert!(store.load("agent-code:stub").unwrap().is_none());
 
@@ -1285,14 +1709,17 @@ mod tests {
 
         // Authorization URL is unused here — the fake
         // browser launcher is what actually drives the
-        // redirect. We only need an arbitrary string.
+        // redirect. We only need an arbitrary loopback
+        // URL since validation rejects any non-https
+        // endpoint that is not loopback.
         let cfg = OAuthProviderConfig {
             provider_name: "stub".into(),
-            authorization_url: "http://unused/auth".into(),
+            authorization_url: "http://127.0.0.1/auth".into(),
             token_url,
             client_id: "client-id".into(),
             scopes: vec!["read".into()],
             redirect_uri: "http://127.0.0.1/callback".into(),
+            allow_insecure_local: true,
         };
         let store = Arc::new(InMemoryStore::default());
 
@@ -1343,6 +1770,7 @@ mod tests {
         });
 
         let svc = OAuthService::with_store(cfg, store.clone() as Arc<dyn CredentialStore>)
+            .unwrap()
             .with_browser_launcher(launcher);
         let tokens = svc.login().await.unwrap();
         assert_eq!(tokens.access_token, "login-access");
@@ -1400,6 +1828,217 @@ mod tests {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         assert!(!name.contains('/'));
         assert!(!name.contains(".."));
+    }
+
+    // ---- Config validation (HTTPS enforcement) ----
+
+    fn cfg_with_urls(
+        authorization_url: &str,
+        token_url: &str,
+        redirect_uri: &str,
+    ) -> OAuthProviderConfig {
+        OAuthProviderConfig {
+            provider_name: "p".into(),
+            authorization_url: authorization_url.into(),
+            token_url: token_url.into(),
+            client_id: "c".into(),
+            scopes: vec![],
+            redirect_uri: redirect_uri.into(),
+            allow_insecure_local: false,
+        }
+    }
+
+    #[test]
+    fn config_rejects_http_authorization_url() {
+        let cfg = cfg_with_urls(
+            "http://example.com/authorize",
+            "https://example.com/token",
+            "http://127.0.0.1/cb",
+        );
+        let err = cfg.validate().unwrap_err();
+        match err {
+            OAuthError::InvalidConfig(msg) => assert!(msg.contains("authorization_url")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_rejects_http_token_url() {
+        let cfg = cfg_with_urls(
+            "https://example.com/authorize",
+            "http://example.com/token",
+            "http://127.0.0.1/cb",
+        );
+        let err = cfg.validate().unwrap_err();
+        match err {
+            OAuthError::InvalidConfig(msg) => assert!(msg.contains("token_url")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_accepts_https_endpoints() {
+        let cfg = cfg_with_urls(
+            "https://example.com/authorize",
+            "https://example.com/token",
+            "http://127.0.0.1:8080/callback",
+        );
+        cfg.validate()
+            .expect("https + loopback redirect must be accepted");
+    }
+
+    #[test]
+    fn config_accepts_loopback_redirect_uri() {
+        // Loopback HTTP redirect is allowed regardless
+        // of `allow_insecure_local` (RFC 8252 §7.3).
+        for redirect in [
+            "http://127.0.0.1:8080/callback",
+            "http://127.0.0.1/callback",
+            "http://localhost:9000/cb",
+        ] {
+            let cfg = cfg_with_urls(
+                "https://example.com/authorize",
+                "https://example.com/token",
+                redirect,
+            );
+            cfg.validate().unwrap_or_else(|e| {
+                panic!("loopback redirect {redirect:?} must be accepted; got {e}")
+            });
+        }
+    }
+
+    #[test]
+    fn config_rejects_non_loopback_http_redirect() {
+        let cfg = cfg_with_urls(
+            "https://example.com/authorize",
+            "https://example.com/token",
+            "http://example.com/callback",
+        );
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(err, OAuthError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn config_allow_insecure_local_permits_loopback_endpoints() {
+        let mut cfg = cfg_with_urls(
+            "http://127.0.0.1:8000/authorize",
+            "http://localhost:8000/token",
+            "http://127.0.0.1/cb",
+        );
+        cfg.allow_insecure_local = true;
+        cfg.validate()
+            .expect("allow_insecure_local must permit loopback http endpoints");
+    }
+
+    #[test]
+    fn config_allow_insecure_local_does_not_open_arbitrary_http() {
+        let mut cfg = cfg_with_urls(
+            "http://evil.example.com/authorize",
+            "https://example.com/token",
+            "http://127.0.0.1/cb",
+        );
+        cfg.allow_insecure_local = true;
+        let err = cfg.validate().unwrap_err();
+        match err {
+            OAuthError::InvalidConfig(msg) => assert!(msg.contains("authorization_url")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oauth_service_with_store_rejects_invalid_config() {
+        let cfg = cfg_with_urls(
+            "http://evil.example.com/authorize",
+            "https://example.com/token",
+            "http://127.0.0.1/cb",
+        );
+        let store = Arc::new(InMemoryStore::default()) as Arc<dyn CredentialStore>;
+        let result = OAuthService::with_store(cfg, store);
+        match result {
+            Err(OAuthError::InvalidConfig(_)) => {}
+            Err(other) => panic!("expected InvalidConfig; got {other:?}"),
+            Ok(_) => panic!("expected validation failure"),
+        }
+    }
+
+    // ---- Browser-launcher exit-status check ----
+
+    #[cfg(unix)]
+    #[test]
+    fn browser_launcher_reports_non_zero_exit_status() {
+        // Stub an opener-like helper that exits non-zero
+        // (no display, no handler, sandboxed env). The
+        // launcher must surface BrowserLaunchFailed
+        // *immediately*, not let the user wait through
+        // a 5-minute LoopbackTimeout.
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("opener");
+        std::fs::write(&bin, "#!/bin/sh\nexit 7\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms).unwrap();
+
+        let url = "https://example.com/auth";
+        let mut child = std::process::Command::new(&bin)
+            .arg(url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let status = child.wait().unwrap();
+        assert!(!status.success());
+        let code = status.code().unwrap();
+        assert_eq!(code, 7);
+
+        // Now exercise the same logic the launcher
+        // applies: a non-zero exit must surface as
+        // BrowserLaunchFailed with the exit code in the
+        // message.
+        let err = simulate_default_launcher_with_bin(&bin, url).unwrap_err();
+        match err {
+            OAuthError::BrowserLaunchFailed(msg) => {
+                assert!(
+                    msg.contains("status 7"),
+                    "message must include exit code: {msg}"
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// Mirrors the body of [`default_browser_launcher`]
+    /// for a single binary, used to exercise the
+    /// exit-status branch in tests without depending on
+    /// the host's real opener.
+    #[cfg(unix)]
+    fn simulate_default_launcher_with_bin(
+        bin: &std::path::Path,
+        url: &str,
+    ) -> Result<(), OAuthError> {
+        let spawned = std::process::Command::new(bin)
+            .arg(url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match spawned {
+            Ok(c) => c,
+            Err(e) => return Err(OAuthError::BrowserLaunchFailed(e.to_string())),
+        };
+        match child.wait() {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => match status.code() {
+                Some(code) => Err(OAuthError::BrowserLaunchFailed(format!(
+                    "{} exited with status {code}",
+                    bin.display()
+                ))),
+                None => Err(OAuthError::BrowserLaunchFailed(format!(
+                    "{} terminated by signal",
+                    bin.display()
+                ))),
+            },
+            Err(e) => Err(OAuthError::BrowserLaunchFailed(e.to_string())),
+        }
     }
 
     /// In-memory store for tests (avoids touching HOME).
