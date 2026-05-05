@@ -355,9 +355,7 @@ fn reap_child_blocking(child: tokio::process::Child) {
     // zombie until then. Logged at debug so the operator can spot it
     // if it ever matters.
     let _ = child;
-    tracing::debug!(
-        "notifier: spawned without a tokio runtime, child reaped lazily by the OS"
-    );
+    tracing::debug!("notifier: spawned without a tokio runtime, child reaped lazily by the OS");
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
