@@ -663,6 +663,14 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     // dependencies, deprecations). No-op when the registry is empty.
     super::tui::render_warnings_banner();
 
+    // Initialise the rotating-tips service. The bump_session call
+    // increments the persistent session counter used by the cadence
+    // and `show_after_session` rules. We don't render anything yet —
+    // the first tip surfaces after the user's first turn.
+    let mut tips_service = agent_code_lib::services::tips::TipsService::new();
+    let tips_session_count = tips_service.bump_session();
+    let mut tip_shown_this_session = false;
+
     let mut ctrl_c_pending = false;
 
     loop {
@@ -713,6 +721,23 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                     "─".repeat(right).with(t.muted),
                 );
             }
+        }
+
+        // Surface a rotating tip once per session, post-first-turn.
+        // The service handles its own cadence/dismiss/snooze rules
+        // and returns None when nothing should be shown — the loop
+        // never blocks on this.
+        if !tip_shown_this_session && engine.state().turn_count > 0 {
+            if let Some(body) = tips_service
+                .next_tip(tips_session_count)
+                .map(|t| t.body.clone())
+            {
+                eprintln!();
+                eprintln!("  {} {}", "tip".with(t.accent).bold(), body.with(t.muted));
+                eprintln!("  {}", "(/tips off to silence)".with(t.muted),);
+                eprintln!();
+            }
+            tip_shown_this_session = true;
         }
 
         let prompt = format!("{} ", "❯".with(t.accent).bold());

@@ -428,6 +428,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "tips",
+        aliases: &[],
+        description: "Show feature tips (subcommands: dismiss <id>, off, on)",
+        hidden: false,
+    },
+    Command {
         name: "break-cache",
         aliases: &[],
         description: "Force the next request to skip the prompt cache",
@@ -2210,6 +2216,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             execute_team_remember(args, std::path::Path::new(&cwd));
             CommandResult::Handled
         }
+        Some("tips") => {
+            execute_tips(args);
+            CommandResult::Handled
+        }
         Some("break-cache") => {
             if engine.state().break_cache_next {
                 println!("Cache bust already armed for the next request.");
@@ -3032,6 +3042,91 @@ fn execute_cd(args: Option<&str>, engine: &mut QueryEngine) {
     }
 
     println!("cwd: {new_cwd}");
+}
+
+/// Execute `/tips` and its subcommands against the user's
+/// config-dir-backed [`TipsService`](agent_code_lib::services::tips::TipsService).
+///
+/// `/tips`             — list every loaded tip, with state markers.
+/// `/tips dismiss <id>` — never show the named tip again.
+/// `/tips off`         — silence all tips.
+/// `/tips on`          — re-enable.
+fn execute_tips(args: Option<&str>) {
+    let mut svc = agent_code_lib::services::tips::TipsService::new();
+    let mut sink = String::new();
+    run_tips_command(&mut svc, args, &mut sink);
+    print!("{sink}");
+}
+
+/// Inner implementation of `/tips`, factored out so tests can drive
+/// the command against a tempdir-backed service and assert on the
+/// rendered text.
+pub(crate) fn run_tips_command(
+    svc: &mut agent_code_lib::services::tips::TipsService,
+    args: Option<&str>,
+    out: &mut String,
+) {
+    use std::fmt::Write as _;
+
+    let raw = args.map(|s| s.trim()).unwrap_or("");
+    let (sub, rest) = match raw.split_once(char::is_whitespace) {
+        Some((a, b)) => (a.trim(), b.trim()),
+        None => (raw, ""),
+    };
+
+    match sub {
+        "" => {
+            let state = svc.state().clone();
+            if state.disabled {
+                let _ = writeln!(out, "Tips are disabled. Run /tips on to re-enable.");
+            } else if state.snooze_until > 0 {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if state.snooze_until > now {
+                    let days = (state.snooze_until - now) / 86_400 + 1;
+                    let _ = writeln!(out, "Tips are snoozed for ~{days} more day(s).");
+                }
+            }
+            let _ = writeln!(out, "Loaded {} tip(s):", svc.all().len());
+            for tip in svc.all() {
+                let dismissed = state.dismissed.iter().any(|d| d == &tip.id);
+                let marker = if dismissed { " [dismissed]" } else { "" };
+                let preview = tip.body.lines().next().unwrap_or("");
+                let snip = if preview.len() > 72 {
+                    format!("{}…", &preview[..72])
+                } else {
+                    preview.to_string()
+                };
+                let _ = writeln!(out, "  {}{}\n    {}", tip.id, marker, snip);
+            }
+        }
+        "dismiss" => {
+            if rest.is_empty() {
+                let _ = writeln!(out, "Usage: /tips dismiss <id>");
+                return;
+            }
+            if !svc.all().iter().any(|t| t.id == rest) {
+                let _ = writeln!(out, "No tip with id '{rest}'. Run /tips for the list.");
+                return;
+            }
+            svc.dismiss(rest);
+            let _ = writeln!(out, "Dismissed '{rest}'. It won't be shown again.");
+        }
+        "off" => {
+            svc.set_disabled(true);
+            let _ = writeln!(out, "Tips disabled. Run /tips on to re-enable.");
+        }
+        "on" => {
+            svc.set_disabled(false);
+            let _ = writeln!(out, "Tips enabled.");
+        }
+        other => {
+            let _ = writeln!(out, "Unknown subcommand '{other}'.");
+            let _ = writeln!(out, "Try /tips, /tips dismiss <id>, /tips off, /tips on.");
+        }
+    }
 }
 
 /// Execute the /btw command: save a free-form note to user memory.
@@ -7737,5 +7832,80 @@ mod tests {
     fn plugin_command_is_registered() {
         assert!(super::COMMANDS.iter().any(|c| c.name == "plugin"));
         assert!(super::COMMANDS.iter().any(|c| c.name == "plugins"));
+    }
+
+    // ---- /tips command ----
+
+    #[test]
+    fn tips_command_is_registered() {
+        assert!(super::COMMANDS.iter().any(|c| c.name == "tips"));
+    }
+
+    #[test]
+    fn tips_lists_every_bundled_tip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut svc = agent_code_lib::services::tips::TipsService::with_state_dir(dir.path());
+        let mut out = String::new();
+        super::run_tips_command(&mut svc, None, &mut out);
+        assert!(out.contains("Loaded 15 tip(s):"), "output: {out}");
+        assert!(out.contains("plan-mode"));
+        assert!(out.contains("tips-off"));
+    }
+
+    #[test]
+    fn tips_off_then_on_round_trips_through_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut svc = agent_code_lib::services::tips::TipsService::with_state_dir(dir.path());
+
+        let mut out = String::new();
+        super::run_tips_command(&mut svc, Some("off"), &mut out);
+        assert!(out.contains("disabled"));
+        assert!(svc.state().disabled);
+
+        // Reload from disk — the disabled flag must survive.
+        let mut svc2 = agent_code_lib::services::tips::TipsService::with_state_dir(dir.path());
+        assert!(svc2.state().disabled);
+        let mut out = String::new();
+        super::run_tips_command(&mut svc2, Some("on"), &mut out);
+        assert!(out.contains("enabled"));
+        assert!(!svc2.state().disabled);
+    }
+
+    #[test]
+    fn tips_dismiss_persists_and_annotates_listing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut svc = agent_code_lib::services::tips::TipsService::with_state_dir(dir.path());
+
+        let mut out = String::new();
+        super::run_tips_command(&mut svc, Some("dismiss plan-mode"), &mut out);
+        assert!(out.contains("Dismissed 'plan-mode'"));
+
+        let svc2 = agent_code_lib::services::tips::TipsService::with_state_dir(dir.path());
+        assert!(svc2.state().dismissed.iter().any(|d| d == "plan-mode"));
+
+        let mut svc3 = agent_code_lib::services::tips::TipsService::with_state_dir(dir.path());
+        let mut out = String::new();
+        super::run_tips_command(&mut svc3, None, &mut out);
+        assert!(out.contains("plan-mode [dismissed]"));
+    }
+
+    #[test]
+    fn tips_dismiss_unknown_id_is_a_warn_not_a_persist() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut svc = agent_code_lib::services::tips::TipsService::with_state_dir(dir.path());
+        let mut out = String::new();
+        super::run_tips_command(&mut svc, Some("dismiss nope"), &mut out);
+        assert!(out.contains("No tip with id 'nope'"));
+        assert!(svc.state().dismissed.is_empty());
+    }
+
+    #[test]
+    fn tips_unknown_subcommand_explains_usage() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut svc = agent_code_lib::services::tips::TipsService::with_state_dir(dir.path());
+        let mut out = String::new();
+        super::run_tips_command(&mut svc, Some("frobnicate"), &mut out);
+        assert!(out.contains("Unknown subcommand 'frobnicate'"));
+        assert!(out.contains("/tips off"));
     }
 }

@@ -855,30 +855,48 @@ fn load_skill_file(path: &Path) -> Result<Skill, String> {
 /// body content
 /// ```
 fn parse_frontmatter(content: &str) -> Result<(SkillMetadata, String), String> {
+    parse_frontmatter_into::<SkillMetadata>(content)
+}
+
+/// Parse YAML frontmatter into an arbitrary `Deserialize` target.
+///
+/// Other subsystems (tips, output styles, …) embed bundled markdown
+/// with their own metadata schema; they reuse this parser instead of
+/// duplicating the splitter and the simple YAML reader.
+///
+/// When the document has no frontmatter the body is the whole input
+/// and the metadata is `T::default()` — this matches how skills
+/// behave for files that omit the leading `---`.
+pub fn parse_frontmatter_into<T>(content: &str) -> Result<(T, String), String>
+where
+    T: Default + serde::de::DeserializeOwned,
+{
     let trimmed = content.trim_start();
 
     if !trimmed.starts_with("---") {
         // No frontmatter — entire content is the body.
-        return Ok((SkillMetadata::default(), content.to_string()));
+        return Ok((T::default(), content.to_string()));
     }
 
-    // Find the closing ---.
     let after_first = &trimmed[3..];
     let closing = after_first
         .find("\n---")
         .ok_or("Frontmatter not closed (missing closing ---)")?;
 
-    let yaml = &after_first[..closing].trim();
-    let body = &after_first[closing + 4..].trim_start();
+    let yaml = after_first[..closing].trim();
+    let body = after_first[closing + 4..].trim_start();
 
-    let metadata: SkillMetadata = serde_yaml_parse(yaml)?;
+    let metadata: T = serde_yaml_parse(yaml)?;
 
     Ok((metadata, body.to_string()))
 }
 
 /// Parse YAML using a simple key-value approach.
 /// (Avoids adding a full YAML parser dependency.)
-fn serde_yaml_parse(yaml: &str) -> Result<SkillMetadata, String> {
+fn serde_yaml_parse<T>(yaml: &str) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
     // Build a JSON object from simple YAML key: value pairs.
     let mut map = serde_json::Map::new();
 
@@ -889,13 +907,38 @@ fn serde_yaml_parse(yaml: &str) -> Result<SkillMetadata, String> {
         }
         if let Some((key, value)) = line.split_once(':') {
             let key = key.trim();
-            let value = value.trim().trim_matches('"').trim_matches('\'');
+            let raw = value.trim();
 
-            // Handle booleans.
-            let json_value = match value {
-                "true" => serde_json::Value::Bool(true),
-                "false" => serde_json::Value::Bool(false),
-                _ => serde_json::Value::String(value.to_string()),
+            // YAML rule: a quoted scalar is always a string, even
+            // when the contents look numeric or boolean. Preserves
+            // `description: "2026"` as the string "2026" (not the
+            // number 2026) and `userInvocable: "false"` as a string,
+            // matching how a real YAML parser resolves these. Only
+            // values that were unquoted to begin with go through
+            // type coercion below.
+            let (value, was_quoted) = if raw.len() >= 2
+                && ((raw.starts_with('"') && raw.ends_with('"'))
+                    || (raw.starts_with('\'') && raw.ends_with('\'')))
+            {
+                (&raw[1..raw.len() - 1], true)
+            } else {
+                (raw, false)
+            };
+
+            let json_value = if was_quoted {
+                serde_json::Value::String(value.to_string())
+            } else {
+                match value {
+                    "true" => serde_json::Value::Bool(true),
+                    "false" => serde_json::Value::Bool(false),
+                    _ => {
+                        if let Ok(n) = value.parse::<i64>() {
+                            serde_json::Value::Number(n.into())
+                        } else {
+                            serde_json::Value::String(value.to_string())
+                        }
+                    }
+                }
             };
             map.insert(key.to_string(), json_value);
         }
