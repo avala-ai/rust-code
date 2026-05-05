@@ -10,6 +10,7 @@
 //! the conversation, change settings, or execute side effects.
 
 mod heapdump;
+mod settings_sync;
 mod uninstall;
 
 use agent_code_lib::query::QueryEngine;
@@ -581,6 +582,12 @@ pub const COMMANDS: &[Command] = &[
         name: "info",
         aliases: &[],
         description: "One-page snapshot of session state (model, cost, modes, cwd)",
+        hidden: false,
+    },
+    Command {
+        name: "settings",
+        aliases: &[],
+        description: "Settings sync: /settings sync push|pull|list (opt-in remote backup)",
         hidden: false,
     },
 ];
@@ -2265,6 +2272,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                     );
                 }
             }
+            CommandResult::Handled
+        }
+        Some("settings") => {
+            execute_settings(args, engine);
             CommandResult::Handled
         }
         _ => {
@@ -5917,6 +5928,43 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// /settings — opt-in remote backup of settings.toml
+// ---------------------------------------------------------------------------
+
+fn execute_settings(args: Option<&str>, engine: &QueryEngine) {
+    let trimmed = args.unwrap_or("").trim();
+    let (sub, rest) = trimmed
+        .split_once(' ')
+        .map(|(s, r)| (s, Some(r.trim())))
+        .unwrap_or((trimmed, None));
+
+    match sub {
+        "" | "help" => settings_sync::print_usage(),
+        "sync" => {
+            let rest = rest.unwrap_or("").trim();
+            let (action, action_rest) = rest
+                .split_once(' ')
+                .map(|(s, r)| (s, Some(r.trim())))
+                .unwrap_or((rest, None));
+            match action {
+                "" | "help" => settings_sync::print_usage(),
+                "push" => settings_sync::run_push(engine),
+                "pull" => settings_sync::run_pull(engine, action_rest),
+                "list" => settings_sync::run_list(),
+                other => {
+                    println!("Unknown /settings sync subcommand: {other}");
+                    settings_sync::print_usage();
+                }
+            }
+        }
+        other => {
+            println!("Unknown /settings subcommand: {other}");
+            settings_sync::print_usage();
+        }
+    }
 }
 
 #[cfg(test)]
