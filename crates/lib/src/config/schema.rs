@@ -38,6 +38,53 @@ pub struct Config {
     /// no-op).
     #[serde(default)]
     pub limits: std::collections::HashMap<String, ProviderLimitsConfig>,
+    /// Desktop notifier settings.
+    #[serde(default)]
+    pub notifier: NotifierConfig,
+}
+
+/// Desktop notifier configuration.
+///
+/// Drives the `services::notifier::NotifierService`: which kinds of
+/// events surface as a system notification, and the minimum duration a
+/// task must run before completion notifications fire. The service
+/// shells out to platform tools (`osascript` on macOS, `notify-send`
+/// on Linux, `powershell.exe` on Windows) and is a no-op when the
+/// platform path is unavailable, so configuration only gates whether
+/// to attempt at all.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct NotifierConfig {
+    /// Master switch — when false, the service drops every call.
+    pub enabled: bool,
+    /// Suppress notifications when the user's terminal is the
+    /// frontmost application. Best-effort heuristic; only implemented
+    /// on macOS today, ignored on other platforms.
+    pub when_focused: bool,
+    /// Fire when a long-running background task finishes (subject to
+    /// `min_duration_secs`).
+    pub on_task_complete: bool,
+    /// Fire when a permission prompt is surfaced and the terminal is
+    /// not focused.
+    pub on_permission_prompt: bool,
+    /// Fire on unrecoverable agent errors.
+    pub on_error: bool,
+    /// Tasks that completed in less than this many seconds do not
+    /// trigger a notification — the user is plausibly still watching.
+    pub min_duration_secs: u64,
+}
+
+impl Default for NotifierConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            when_focused: false,
+            on_task_complete: true,
+            on_permission_prompt: true,
+            on_error: true,
+            min_duration_secs: 30,
+        }
+    }
 }
 
 /// Per-provider entries for the `[limits.<provider>]` section.
@@ -986,6 +1033,67 @@ enabled = false
         // stay backwards-compatible.
         let full: Config = toml::from_str("[api]\nmodel = \"x\"\n").unwrap();
         assert!(full.session.cleanup_period_days.is_none());
+    }
+
+    // ---- NotifierConfig ----
+
+    #[test]
+    fn notifier_config_default_enabled() {
+        let cfg = NotifierConfig::default();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn notifier_config_default_min_duration_secs_is_thirty() {
+        let cfg = NotifierConfig::default();
+        assert_eq!(cfg.min_duration_secs, 30);
+    }
+
+    #[test]
+    fn notifier_config_default_kind_switches_all_on() {
+        let cfg = NotifierConfig::default();
+        assert!(cfg.on_task_complete);
+        assert!(cfg.on_permission_prompt);
+        assert!(cfg.on_error);
+    }
+
+    #[test]
+    fn notifier_config_default_when_focused_false() {
+        // The `when_focused = false` default ships notifications even
+        // when the terminal is focused. This matches the spec — users
+        // who don't want that explicitly opt in.
+        let cfg = NotifierConfig::default();
+        assert!(!cfg.when_focused);
+    }
+
+    #[test]
+    fn notifier_config_parses_from_toml() {
+        let toml_str = r#"
+enabled = false
+when_focused = true
+on_task_complete = false
+on_permission_prompt = false
+on_error = false
+min_duration_secs = 5
+"#;
+        let cfg: NotifierConfig = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.enabled);
+        assert!(cfg.when_focused);
+        assert!(!cfg.on_task_complete);
+        assert!(!cfg.on_permission_prompt);
+        assert!(!cfg.on_error);
+        assert_eq!(cfg.min_duration_secs, 5);
+    }
+
+    #[test]
+    fn notifier_config_absent_section_stays_default() {
+        let full: Config = toml::from_str("[api]\nmodel = \"x\"\n").unwrap();
+        assert!(full.notifier.enabled);
+        assert_eq!(full.notifier.min_duration_secs, 30);
+        assert!(full.notifier.on_task_complete);
+        assert!(full.notifier.on_permission_prompt);
+        assert!(full.notifier.on_error);
+        assert!(!full.notifier.when_focused);
     }
 
     // ---- FeaturesConfig::default() ----

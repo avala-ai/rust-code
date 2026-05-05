@@ -17,6 +17,7 @@ pub mod git_ops;
 pub mod history;
 pub mod lsp;
 pub mod mcp;
+pub mod notifier;
 pub mod oauth;
 pub mod output_store;
 pub mod plugins;
