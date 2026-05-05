@@ -907,17 +907,36 @@ where
         }
         if let Some((key, value)) = line.split_once(':') {
             let key = key.trim();
-            let value = value.trim().trim_matches('"').trim_matches('\'');
+            let raw = value.trim();
 
-            // Handle booleans and integers; everything else is a string.
-            let json_value = match value {
-                "true" => serde_json::Value::Bool(true),
-                "false" => serde_json::Value::Bool(false),
-                _ => {
-                    if let Ok(n) = value.parse::<i64>() {
-                        serde_json::Value::Number(n.into())
-                    } else {
-                        serde_json::Value::String(value.to_string())
+            // YAML rule: a quoted scalar is always a string, even
+            // when the contents look numeric or boolean. Preserves
+            // `description: "2026"` as the string "2026" (not the
+            // number 2026) and `userInvocable: "false"` as a string,
+            // matching how a real YAML parser resolves these. Only
+            // values that were unquoted to begin with go through
+            // type coercion below.
+            let (value, was_quoted) = if raw.len() >= 2
+                && ((raw.starts_with('"') && raw.ends_with('"'))
+                    || (raw.starts_with('\'') && raw.ends_with('\'')))
+            {
+                (&raw[1..raw.len() - 1], true)
+            } else {
+                (raw, false)
+            };
+
+            let json_value = if was_quoted {
+                serde_json::Value::String(value.to_string())
+            } else {
+                match value {
+                    "true" => serde_json::Value::Bool(true),
+                    "false" => serde_json::Value::Bool(false),
+                    _ => {
+                        if let Ok(n) = value.parse::<i64>() {
+                            serde_json::Value::Number(n.into())
+                        } else {
+                            serde_json::Value::String(value.to_string())
+                        }
                     }
                 }
             };
