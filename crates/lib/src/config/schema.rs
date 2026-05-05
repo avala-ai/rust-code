@@ -33,6 +33,34 @@ pub struct Config {
     /// Session persistence settings (cleanup period, etc.).
     #[serde(default)]
     pub session: SessionConfig,
+    /// Per-provider rate / token / concurrency limits. Absent or
+    /// empty = no limits enforced (the policy service runs as a
+    /// no-op).
+    #[serde(default)]
+    pub limits: std::collections::HashMap<String, ProviderLimitsConfig>,
+}
+
+/// Per-provider entries for the `[limits.<provider>]` section.
+///
+/// Mirrors `services::policy_limits::ProviderLimits`. Kept as a
+/// distinct type so the config schema has no runtime dependency on
+/// services internals — the conversion happens at service-construction
+/// time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProviderLimitsConfig {
+    /// Max requests in any rolling 60-second window.
+    pub requests_per_minute: Option<u64>,
+    /// Max requests in any rolling 60-minute window.
+    pub requests_per_hour: Option<u64>,
+    /// Max tokens in any rolling 60-second window.
+    pub tokens_per_minute: Option<u64>,
+    /// Max tokens in any rolling 60-minute window.
+    pub tokens_per_hour: Option<u64>,
+    /// Max tokens in any rolling 24-hour window.
+    pub tokens_per_day: Option<u64>,
+    /// Max number of in-flight requests at once.
+    pub max_concurrent: Option<u32>,
 }
 
 /// Security and enterprise configuration.

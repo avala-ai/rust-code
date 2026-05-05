@@ -19,6 +19,7 @@ pub mod lsp;
 pub mod mcp;
 pub mod output_store;
 pub mod plugins;
+pub mod policy_limits;
 pub mod pricing;
 pub mod profiles;
 pub mod rules;
