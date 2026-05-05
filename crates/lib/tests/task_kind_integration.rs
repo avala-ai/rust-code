@@ -29,6 +29,7 @@ fn ctx_with_manager(mgr: Arc<TaskManager>) -> ToolContext {
         file_cache: None,
         denial_tracker: None,
         task_manager: Some(mgr),
+        subagent_colors: None,
         session_allows: None,
         permission_prompter: None,
         sandbox: None,

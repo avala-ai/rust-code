@@ -16,6 +16,22 @@ use std::path::PathBuf;
 
 use super::{Tool, ToolContext, ToolResult};
 use crate::error::ToolError;
+use crate::services::subagent_colors::SubagentColor;
+
+/// Pull a stable id out of the input, falling back to a fresh uuid.
+///
+/// Callers (the model, the LocalAgent task executor) may pass a
+/// `subagent_id` field through the JSON input to anchor the color
+/// to a known id; otherwise we generate one so the assignment is
+/// still deterministic across the rest of the call.
+fn resolve_subagent_id(input: &serde_json::Value) -> String {
+    if let Some(id) = input.get("subagent_id").and_then(|v| v.as_str())
+        && !id.is_empty()
+    {
+        return id.to_string();
+    }
+    uuid::Uuid::new_v4().to_string()
+}
 
 pub struct AgentTool;
 
@@ -101,6 +117,19 @@ impl Tool for AgentTool {
 
         let isolation = input.get("isolation").and_then(|v| v.as_str());
 
+        // Resolve a stable id and assign a color through the shared
+        // manager. The id is also used to name a temporary worktree
+        // (when isolation is requested) and is propagated to the
+        // child via `AGENT_CODE_SUBAGENT_ID` so future renderers can
+        // tie tool-call events back to a color.
+        let subagent_id = resolve_subagent_id(&input);
+        let assigned_color: Option<SubagentColor> = if let Some(mgr) = ctx.subagent_colors.as_ref()
+        {
+            Some(mgr.assign(&subagent_id).await)
+        } else {
+            None
+        };
+
         // Determine working directory (worktree isolation if requested).
         let agent_cwd = if isolation == Some("worktree") {
             match create_worktree(&ctx.cwd).await {
@@ -149,6 +178,16 @@ impl Tool for AgentTool {
         // The CLI reads this to filter output styles whose
         // `applies_to` list excludes subagents.
         cmd.env("AGENT_CODE_SUBAGENT", "1");
+
+        // Propagate the subagent id and assigned color to the child.
+        // The child renderer can read these to surface its output in
+        // the same color the lead's `/tasks` table shows for this
+        // agent. Set even when the manager is absent so child code
+        // can rely on `AGENT_CODE_SUBAGENT_ID` being present.
+        cmd.env("AGENT_CODE_SUBAGENT_ID", &subagent_id);
+        if let Some(color) = assigned_color {
+            cmd.env("AGENT_CODE_SUBAGENT_COLOR", color.as_str());
+        }
 
         // Propagate the active disk-loaded output style by name so a
         // style with `applies_to: [subagent]` actually reaches the

@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
+use super::subagent_colors::SubagentColor;
+
 /// Unique task identifier.
 pub type TaskId = String;
 
@@ -176,6 +178,16 @@ pub struct TaskInfo {
     /// legacy records — the task simply has no extra data attached.
     #[serde(default)]
     pub payload: Option<TaskPayload>,
+    /// Stable display color for this task, when one applies.
+    ///
+    /// Set for `LocalAgent` runs by
+    /// [`crate::services::subagent_colors::SubagentColorManager`] so
+    /// `/tasks` and tool output can show each spawned subagent in a
+    /// distinct color. `None` for shell tasks and other non-subagent
+    /// kinds. Round-trips through serde so persisted task state keeps
+    /// its color across reloads.
+    #[serde(default)]
+    pub subagent_color: Option<SubagentColor>,
     /// Wall-clock instants are not portable across processes; skip
     /// them in the persisted form.
     #[serde(skip, default = "std::time::Instant::now")]
@@ -223,6 +235,7 @@ impl TaskManager {
                 command: command.to_string(),
                 cwd: cwd.to_path_buf(),
             }),
+            subagent_color: None,
             started_at: std::time::Instant::now(),
             finished_at: None,
         };
@@ -299,6 +312,25 @@ impl TaskManager {
         kind: TaskKind,
         payload: TaskPayload,
     ) -> TaskId {
+        self.register_with_color(description, kind, payload, None)
+            .await
+    }
+
+    /// Register a non-shell task with an explicit display color.
+    ///
+    /// Same as [`Self::register`] but additionally stamps a
+    /// [`SubagentColor`] on the [`TaskInfo`]. Used by the
+    /// `LocalAgent` executor to record the color the
+    /// [`crate::services::subagent_colors::SubagentColorManager`]
+    /// allocated for this run, so `/tasks` and downstream renderers
+    /// can paint the entry without re-doing the lookup.
+    pub async fn register_with_color(
+        &self,
+        description: &str,
+        kind: TaskKind,
+        payload: TaskPayload,
+        color: Option<SubagentColor>,
+    ) -> TaskId {
         let id = self.allocate_id(id_prefix_for(kind)).await;
         let output_file = task_output_path(&id);
         if let Some(parent) = output_file.parent() {
@@ -312,6 +344,7 @@ impl TaskManager {
             output_file,
             kind,
             payload: Some(payload),
+            subagent_color: color,
             started_at: std::time::Instant::now(),
             finished_at: None,
         };

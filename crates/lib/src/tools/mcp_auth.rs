@@ -232,6 +232,7 @@ mod tests {
             file_cache: None,
             denial_tracker: None,
             task_manager: None,
+            subagent_colors: None,
             session_allows: None,
             permission_prompter: None,
             sandbox: None,

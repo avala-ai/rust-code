@@ -205,6 +205,13 @@ pub struct ToolContext {
         Option<Arc<tokio::sync::Mutex<crate::permissions::tracking::DenialTracker>>>,
     /// Shared background task manager.
     pub task_manager: Option<Arc<crate::services::background::TaskManager>>,
+    /// Per-session stable color assignments for spawned subagents.
+    ///
+    /// Populated for the Agent tool path (and the LocalAgent task
+    /// executor) so each spawned subagent gets a distinct, stable
+    /// color in `/tasks` and downstream UI. Optional so test-only
+    /// `ToolContext`s can pass `None`.
+    pub subagent_colors: Option<Arc<crate::services::subagent_colors::SubagentColorManager>>,
     /// Tools allowed for the rest of the session (via "Allow for session" prompt).
     pub session_allows: Option<Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>>,
     /// Permission prompter for interactive approval.

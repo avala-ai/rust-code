@@ -28,6 +28,7 @@ pub mod secret_masker;
 pub mod session;
 pub mod session_env;
 pub mod shell_passthrough;
+pub mod subagent_colors;
 pub mod telemetry;
 pub mod tokens;
 pub mod warnings;
