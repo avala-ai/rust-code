@@ -192,6 +192,30 @@ pub fn styled(text: &str, color: Color) -> StyledContent<String> {
     legacy::styled(text, color)
 }
 
+/// Resolve a [`SubagentColor`] slot against the supplied theme.
+///
+/// Returns the theme's `subagent_*` slot for the variant. Lives on
+/// the runtime facade rather than the legacy struct because
+/// `SubagentColor` is defined in `agent-code-lib` (the engine has to
+/// hand out colours when it spawns subagents — the CLI is downstream)
+/// and the mapping needs both that type *and* the runtime `Theme`.
+pub fn subagent_theme_color(
+    color: agent_code_lib::services::subagent_colors::SubagentColor,
+    theme: &Theme,
+) -> Color {
+    use agent_code_lib::services::subagent_colors::SubagentColor;
+    match color {
+        SubagentColor::Red => theme.subagent_red,
+        SubagentColor::Blue => theme.subagent_blue,
+        SubagentColor::Green => theme.subagent_green,
+        SubagentColor::Yellow => theme.subagent_yellow,
+        SubagentColor::Purple => theme.subagent_purple,
+        SubagentColor::Orange => theme.subagent_orange,
+        SubagentColor::Pink => theme.subagent_pink,
+        SubagentColor::Cyan => theme.subagent_cyan,
+    }
+}
+
 pub fn styled_bold(text: &str, color: Color) -> StyledContent<String> {
     legacy::styled_bold(text, color)
 }
@@ -445,5 +469,56 @@ mod tests {
         let default_text = theme.text;
         apply_inherit_fg_with(&mut theme, opts(false, true), Some((0xAA, 0xBB, 0xCC)));
         assert_eq!(theme.text, default_text);
+    }
+
+    /// Each `SubagentColor` variant should resolve to the matching
+    /// `subagent_*` slot for any theme. Run across every advertised
+    /// theme so a future palette regression surfaces immediately.
+    #[test]
+    fn subagent_theme_color_maps_to_each_named_slot() {
+        use agent_code_lib::services::subagent_colors::SubagentColor;
+        for name in Theme::all_names() {
+            let theme = Theme::from_name(name);
+            assert_eq!(
+                subagent_theme_color(SubagentColor::Red, &theme),
+                theme.subagent_red,
+                "red mismatch on {name}"
+            );
+            assert_eq!(
+                subagent_theme_color(SubagentColor::Blue, &theme),
+                theme.subagent_blue,
+                "blue mismatch on {name}"
+            );
+            assert_eq!(
+                subagent_theme_color(SubagentColor::Green, &theme),
+                theme.subagent_green,
+                "green mismatch on {name}"
+            );
+            assert_eq!(
+                subagent_theme_color(SubagentColor::Yellow, &theme),
+                theme.subagent_yellow,
+                "yellow mismatch on {name}"
+            );
+            assert_eq!(
+                subagent_theme_color(SubagentColor::Purple, &theme),
+                theme.subagent_purple,
+                "purple mismatch on {name}"
+            );
+            assert_eq!(
+                subagent_theme_color(SubagentColor::Orange, &theme),
+                theme.subagent_orange,
+                "orange mismatch on {name}"
+            );
+            assert_eq!(
+                subagent_theme_color(SubagentColor::Pink, &theme),
+                theme.subagent_pink,
+                "pink mismatch on {name}"
+            );
+            assert_eq!(
+                subagent_theme_color(SubagentColor::Cyan, &theme),
+                theme.subagent_cyan,
+                "cyan mismatch on {name}"
+            );
+        }
     }
 }

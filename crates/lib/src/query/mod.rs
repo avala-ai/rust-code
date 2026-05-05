@@ -877,6 +877,7 @@ impl QueryEngine {
                                                         file_cache: None,
                                                         denial_tracker: None,
                                                         task_manager: None,
+                                                        subagent_colors: None,
                                                         session_allows: None,
                                                         permission_prompter: None,
                                                         sandbox: None,
@@ -1095,6 +1096,7 @@ impl QueryEngine {
                 file_cache: Some(self.file_cache.clone()),
                 denial_tracker: Some(self.denial_tracker.clone()),
                 task_manager: Some(self.state.task_manager.clone()),
+                subagent_colors: Some(self.state.subagent_colors.clone()),
                 session_allows: Some(self.session_allows.clone()),
                 permission_prompter: self.permission_prompter.clone(),
                 sandbox: Some(std::sync::Arc::new(

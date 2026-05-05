@@ -134,6 +134,7 @@ pub async fn execute_tool_calls(
                                     file_cache: ctx_file_cache,
                                     denial_tracker: None,
                                     task_manager: None,
+                                    subagent_colors: None,
                                     session_allows: None,
                                     permission_prompter: None,
                                     // Parallel branch only runs read-only, concurrency-safe

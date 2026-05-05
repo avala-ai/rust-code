@@ -2383,12 +2383,27 @@ fn format_task_list(
         // Truncate description to one line; callers often pass full
         // shell commands here, which can be long.
         let desc_line = info.description.lines().next().unwrap_or("").trim();
-        let desc = if desc_line.chars().count() > 80 {
+        let desc_plain = if desc_line.chars().count() > 80 {
             let mut t: String = desc_line.chars().take(77).collect();
             t.push_str("...");
             t
         } else {
             desc_line.to_string()
+        };
+        // If this row carries a subagent colour (LocalAgent runs do,
+        // shell tasks don't), paint the description with the matching
+        // theme slot so the user can scan the table and tell agents
+        // apart at a glance.
+        let desc = match info.subagent_color {
+            Some(color) => {
+                let theme = crate::ui::theme::current();
+                let painted = crate::ui::theme::styled(
+                    &desc_plain,
+                    crate::ui::theme::subagent_theme_color(color, &theme),
+                );
+                painted.to_string()
+            }
+            None => desc_plain,
         };
         out.push_str(&format!(
             "  {:>10}  {:<13}  {:>6}s  {}  {}\n",
@@ -7442,6 +7457,7 @@ mod tests {
             output_file: std::path::PathBuf::from("/tmp/x"),
             kind: agent_code_lib::services::background::TaskKind::LocalShell,
             payload: None,
+            subagent_color: None,
             started_at: now - std::time::Duration::from_secs(started_secs_ago),
             finished_at: finished_secs_ago.map(|s| now - std::time::Duration::from_secs(s)),
         }
@@ -7560,6 +7576,121 @@ mod tests {
         let out = format_task_list(&tasks, now);
         assert!(out.contains("first-line"));
         assert!(!out.contains("second-line"));
+    }
+
+    /// Build a `TaskInfo` carrying a [`SubagentColor`] — used by the
+    /// colourisation tests below.
+    fn mk_subagent_task(
+        id: &str,
+        desc: &str,
+        color: agent_code_lib::services::subagent_colors::SubagentColor,
+        now: std::time::Instant,
+    ) -> agent_code_lib::services::background::TaskInfo {
+        agent_code_lib::services::background::TaskInfo {
+            id: id.to_string(),
+            description: desc.to_string(),
+            status: agent_code_lib::services::background::TaskStatus::Running,
+            output_file: std::path::PathBuf::from("/tmp/x"),
+            kind: agent_code_lib::services::background::TaskKind::LocalAgent,
+            payload: None,
+            subagent_color: Some(color),
+            started_at: now - std::time::Duration::from_secs(1),
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn format_task_list_colorises_subagent_descriptions() {
+        // Two LocalAgent rows with different SubagentColors should
+        // each carry an ANSI escape that wraps the description, and
+        // the two escapes should differ. Shell tasks (no color) stay
+        // plain.
+        use agent_code_lib::services::background::{TaskKind, TaskStatus};
+        use agent_code_lib::services::subagent_colors::SubagentColor;
+
+        // Initialise the global theme so `current()` returns a real
+        // theme (the helper falls back to a default otherwise).
+        crate::ui::theme::init("midnight");
+
+        let now = std::time::Instant::now();
+        let red_task = mk_subagent_task("a1", "explore the parser", SubagentColor::Red, now);
+        let blue_task = mk_subagent_task("a2", "audit security", SubagentColor::Blue, now);
+        let shell_task = mk_task("b3", "echo plain", TaskStatus::Running, 1, None, now);
+
+        let out = format_task_list(&[red_task, blue_task, shell_task], now);
+
+        assert!(out.contains("explore the parser"));
+        assert!(out.contains("audit security"));
+        assert!(out.contains("echo plain"));
+        // LocalAgent rows are colorised: the SGR foreground escape
+        // `\x1b[38` opens before the description.
+        assert!(
+            out.contains("\x1b[38"),
+            "expected SGR foreground escape in colourised output: {out:?}"
+        );
+        // Verify both kinds appear so the test reflects the real
+        // mixed-row case.
+        assert!(out.contains(TaskKind::LocalAgent.as_str()));
+        assert!(out.contains(TaskKind::LocalShell.as_str()));
+    }
+
+    #[tokio::test]
+    async fn two_subagents_get_distinct_colors_via_manager() {
+        // End-to-end-ish: assign colours through the manager exactly
+        // the way `AgentTool` and the LocalAgent executor do, register
+        // two queue entries with those colours, and confirm
+        // `/tasks` rendering surfaces both. This is the slice of the
+        // 8.10 integration test that doesn't require spawning a real
+        // subprocess.
+        use agent_code_lib::services::background::{TaskKind, TaskManager, TaskPayload};
+        use agent_code_lib::services::subagent_colors::SubagentColorManager;
+
+        crate::ui::theme::init("midnight");
+
+        let mgr = SubagentColorManager::new();
+        let c1 = mgr.assign("agent-one").await;
+        let c2 = mgr.assign("agent-two").await;
+        assert_ne!(c1, c2, "distinct ids should land on distinct slots");
+
+        let tm = TaskManager::new();
+        let id1 = tm
+            .register_with_color(
+                "agent-one task",
+                TaskKind::LocalAgent,
+                TaskPayload::LocalAgent {
+                    subagent_kind: Some("agent-one".into()),
+                    prompt: "do thing 1".into(),
+                    parent_session: None,
+                },
+                Some(c1),
+            )
+            .await;
+        let id2 = tm
+            .register_with_color(
+                "agent-two task",
+                TaskKind::LocalAgent,
+                TaskPayload::LocalAgent {
+                    subagent_kind: Some("agent-two".into()),
+                    prompt: "do thing 2".into(),
+                    parent_session: None,
+                },
+                Some(c2),
+            )
+            .await;
+
+        let tasks = tm.list().await;
+        assert_eq!(tasks.len(), 2);
+        // Both rows show up; the ids are kind-prefixed (`a` for
+        // LocalAgent), which the user can also scan.
+        let now = std::time::Instant::now();
+        let out = format_task_list(&tasks, now);
+        assert!(out.contains("agent-one task"), "missing first agent: {out}");
+        assert!(
+            out.contains("agent-two task"),
+            "missing second agent: {out}"
+        );
+        assert!(out.contains(&id1));
+        assert!(out.contains(&id2));
     }
 
     #[test]

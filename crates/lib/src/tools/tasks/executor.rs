@@ -87,6 +87,10 @@ pub struct TaskContext {
     pub cwd: PathBuf,
     pub cancel: CancellationToken,
     pub task_manager: Option<Arc<TaskManager>>,
+    /// Per-session color assignments for spawned subagents. Optional
+    /// so freshly-built test contexts that don't exercise color
+    /// assignment can still be constructed via [`Self::new`].
+    pub subagent_colors: Option<Arc<crate::services::subagent_colors::SubagentColorManager>>,
 }
 
 impl TaskContext {
@@ -95,6 +99,7 @@ impl TaskContext {
             cwd,
             cancel: CancellationToken::new(),
             task_manager: None,
+            subagent_colors: None,
         }
     }
 }
