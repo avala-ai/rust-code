@@ -194,6 +194,13 @@ struct PickerOption {
     value: &'static str,
 }
 
+// TODO(8.15.5): expose `[ui].inherit_fg` here once the picker grows
+// a secondary toggle row below the theme list. Doing so today would
+// require a small state machine on top of the current arrow-key
+// loop; for now users opt in by editing
+// `~/.config/agent-code/config.toml` directly. See
+// `docs/configuration/settings.mdx` for the option description.
+
 /// Order shown to the user. `auto` first because it is the safest
 /// default — it follows the terminal's own background detection.
 const THEME_OPTIONS: &[PickerOption] = &[

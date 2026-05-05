@@ -1461,9 +1461,11 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             // session config so the next prompt repaints with the
             // new colours immediately.
             let current = engine.state().config.ui.theme.clone();
+            let inherit_fg = engine.state().config.ui.inherit_fg;
             match crate::ui::onboarding::rerun_theme_picker(&current) {
                 Some(name) => {
-                    crate::ui::theme::init(&name);
+                    let resolved = crate::ui::theme::resolve_theme(&name);
+                    crate::ui::theme::init_with_options(&resolved, &name, inherit_fg);
                     engine.state_mut().config.ui.theme = name.clone();
                     println!("Theme set to: {name}");
                 }

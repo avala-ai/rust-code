@@ -623,9 +623,14 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     let model = engine.state().config.api.model.clone();
     let cwd = engine.state().cwd.clone();
 
-    // Initialize theme.
-    let theme_name = super::theme::resolve_theme(&engine.state().config.ui.theme);
-    super::theme::init(&theme_name);
+    // Initialize theme. Pass both the configured value (for the
+    // inherit-fg override, which is Auto-only) and the resolved name
+    // so explicit themes still win when the user picked one
+    // explicitly.
+    let configured_theme = engine.state().config.ui.theme.clone();
+    let inherit_fg = engine.state().config.ui.inherit_fg;
+    let theme_name = super::theme::resolve_theme(&configured_theme);
+    super::theme::init_with_options(&theme_name, &configured_theme, inherit_fg);
     let t = super::theme::current();
 
     println!();

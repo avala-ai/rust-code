@@ -369,6 +369,12 @@ pub struct UiConfig {
     pub syntax_highlight: bool,
     /// Theme name.
     pub theme: String,
+    /// When the resolved theme is the Auto theme, override its `text`
+    /// slot with the foreground colour reported by the terminal via
+    /// OSC 10. Off by default — opt in for accessibility-friendly
+    /// setups where the user's own foreground choice should win over
+    /// the theme default.
+    pub inherit_fg: bool,
     /// Editing mode: "emacs" or "vi".
     pub edit_mode: String,
     /// Between-turn status line customization.
@@ -381,6 +387,7 @@ impl Default for UiConfig {
             markdown: true,
             syntax_highlight: true,
             theme: "dark".to_string(),
+            inherit_fg: false,
             edit_mode: "emacs".to_string(),
             statusline: StatusLineConfig::default(),
         }
@@ -810,6 +817,18 @@ api_key_helper = "/usr/local/bin/get-api-key --profile dev"
     fn ui_config_default_edit_mode_emacs() {
         let cfg = UiConfig::default();
         assert_eq!(cfg.edit_mode, "emacs");
+    }
+
+    #[test]
+    fn ui_config_default_inherit_fg_false() {
+        let cfg = UiConfig::default();
+        assert!(!cfg.inherit_fg);
+    }
+
+    #[test]
+    fn ui_config_inherit_fg_parses_from_toml() {
+        let cfg: UiConfig = toml::from_str("inherit_fg = true\n").unwrap();
+        assert!(cfg.inherit_fg);
     }
 
     // ---- StatusLineConfig ----
