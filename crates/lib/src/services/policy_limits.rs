@@ -634,7 +634,26 @@ impl PolicyService {
             return Ok(PolicyPermit::noop());
         };
 
-        // Window admission. Loop until it fits or we error out.
+        // Concurrency admission FIRST. Recording usage in the sliding
+        // windows before waiting on the semaphore would let a queued
+        // (or canceled-while-queued) caller consume quota without ever
+        // making a provider call — with `max_concurrent = 1`, repeated
+        // cancellations would permanently throttle later real callers
+        // until the windows expired. Holding the permit before we
+        // record means the future is now committed: if the caller
+        // drops us here, the `OwnedSemaphorePermit` releases on its
+        // own (acquire_owned ties it to a struct, not the await
+        // point) and nothing else has been touched.
+        let semaphore_permit = if let Some(sem) = bucket.semaphore.clone() {
+            Some(sem.acquire_owned().await.expect("semaphore never closed"))
+        } else {
+            None
+        };
+
+        // Window admission. Loop until it fits or we error out. The
+        // permit we hold above keeps `max_concurrent` honest while we
+        // wait for headroom; on cancellation here, the permit drops
+        // and no quota was recorded.
         let bucket_id;
         loop {
             let now = Instant::now();
@@ -652,7 +671,13 @@ impl PolicyService {
                 })?;
                 match state.earliest_fit(est_tokens, now) {
                     None => {
-                        // Fits — record and exit the loop.
+                        // Fits — record and exit the loop. We hold
+                        // the semaphore permit, so the caller is now
+                        // committed: any subsequent drop releases the
+                        // permit and the `est_tokens` counted here
+                        // are reconciled by `commit_tokens` (or
+                        // remain as the worst-case estimate if the
+                        // caller never commits).
                         let id = state.record(est_tokens, now);
                         Some(Ok(id))
                     }
@@ -674,15 +699,6 @@ impl PolicyService {
                 None => unreachable!(),
             }
         }
-
-        // Concurrency admission. Use acquire_owned so the permit is
-        // tied to the returned struct's lifetime — if the caller
-        // drops the future before we return, no permit is leaked.
-        let semaphore_permit = if let Some(sem) = bucket.semaphore.clone() {
-            Some(sem.acquire_owned().await.expect("semaphore never closed"))
-        } else {
-            None
-        };
 
         self.inner.telemetry.on_event(PolicyEvent {
             kind: PolicyEventKind::Acquired,
