@@ -29,5 +29,6 @@ pub mod session;
 pub mod session_env;
 pub mod shell_passthrough;
 pub mod telemetry;
+pub mod tips;
 pub mod tokens;
 pub mod warnings;
